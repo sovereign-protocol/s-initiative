@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kanban Board</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <span>Kanban Board</span>
+      </div>
+      <div class="spacer"></div>
+      <span class="pill" id="my-address">-</span>
+      <button onclick="openInviteModal()">Invite</button>
+      <button onclick="leaveDiscussion()">Leave</button>
+      <button class="status-button" id="network-status" onclick="togglePeers()">local</button>
+      <div class="peer-popover" id="peer-popover" style="display: none"></div>
+    </header>
+
+    <main>
+      <div class="board-title">
+        <input id="board-name" value="Kanban Board" readonly />
+      </div>
+      <section id="board" class="board"></section>
+    </main>
+
+    <div id="modal-backdrop" class="modal-backdrop" style="display: none">
+      <div class="modal">
+        <div class="modal-head">
+          <h2 id="modal-title">Card</h2>
+          <button class="icon-button" onclick="closeModal()">x</button>
+        </div>
+        <label>
+          <span>Name</span>
+          <input id="card-name" />
+        </label>
+        <label>
+          <span>Description</span>
+          <textarea id="card-description" rows="5"></textarea>
+        </label>
+        <label>
+          <span>Owner(s)</span>
+          <input id="card-owners" placeholder="Alice, Bob" />
+        </label>
+        <div class="modal-actions">
+          <button class="danger" id="delete-card-button" onclick="deleteCurrentCard()">Delete</button>
+          <span class="spacer"></span>
+          <button onclick="closeModal()">Cancel</button>
+          <button class="primary" onclick="saveCard()">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="invite-backdrop" class="modal-backdrop" style="display: none">
+      <div class="modal invite-modal">
+        <div class="modal-head">
+          <h2>Invite</h2>
+          <button class="icon-button" onclick="closeInviteModal()">x</button>
+        </div>
+        <label>
+          <span>Peer address</span>
+          <input id="invite-address" placeholder="http://127.0.0.1:8009" />
+        </label>
+        <div class="modal-actions">
+          <span class="spacer"></span>
+          <button onclick="closeInviteModal()">Cancel</button>
+          <button class="primary" onclick="invitePeer()">Invite</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let board = null;
+      let address = "";
+      let draggedCardUuid = null;
+      let draggedColumnUuid = null;
+      let modalCardUuid = null;
+      let modalColumnUuid = null;
+      let reloadTimer = null;
+      let eventSource = null;
+
+      async function post(url, data) {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        });
+        let payload = {};
+        try {
+          payload = await res.json();
+        } catch (error) {
+          payload = { status: "error", reason: res.statusText || "Request failed" };
+        }
+        if (!res.ok && !payload.reason) {
+          payload.reason = res.statusText || "Request failed";
+        }
+        return payload;
+      }
+
+      function sortNodes(nodes) {
+        return [...(nodes || [])].sort((a, b) => {
+          const ao = Number(a.data && a.data.order) || 0;
+          const bo = Number(b.data && b.data.order) || 0;
+          return ao - bo || String(a.created_at).localeCompare(String(b.created_at));
+        });
+      }
+
+      function columns() {
+        return sortNodes((board && board.children) || []).filter(
+          (node) => node.data && node.data.type === "kanban_column",
+        );
+      }
+
+      function cards(column) {
+        return sortNodes(column.children || []).filter(
+          (node) => node.data && node.data.type === "kanban_card",
+        );
+      }
+
+      function cardOwnerText(card) {
+        const owners = (card.data && card.data.owners) || [];
+        return Array.isArray(owners) ? owners.join(", ") : String(owners || "");
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      async function loadBoard() {
+        const res = await fetch("/api/kanban/board");
+        const data = await res.json();
+        board = data.board;
+        address = data.address;
+        document.getElementById("my-address").textContent = address;
+        document.getElementById("board-name").value = board.data.name || "Kanban Board";
+        renderNetworkStatus(data.network || {});
+        renderBoard();
+      }
+
+      function renderNetworkStatus(network) {
+        const peers = (network.members || []).filter((member) => member !== address);
+        const status = document.getElementById("network-status");
+        status.textContent = peers.length ? `${peers.length + 1} connected` : "local";
+        status.title = peers.length ? peers.join("\n") : "No discussion peers";
+        const popover = document.getElementById("peer-popover");
+        popover.innerHTML = peers.length
+          ? peers.map((peer) => `<div>${escapeHtml(peer)}</div>`).join("")
+          : "<div>No peers connected</div>";
+      }
+
+      function renderBoard() {
+        const el = document.getElementById("board");
+        el.innerHTML = "";
+        columns().forEach((column) => el.appendChild(renderColumn(column)));
+        const add = document.createElement("button");
+        add.className = "add-column-tile";
+        add.textContent = "Add another column";
+        add.onclick = createColumn;
+        el.appendChild(add);
+      }
+
+      function renderColumn(column) {
+        const columnEl = document.createElement("article");
+        columnEl.className = "column";
+        columnEl.draggable = true;
+        columnEl.dataset.columnUuid = column.uuid;
+        columnEl.innerHTML = `
+          <div class="column-head">
+            <input value="${escapeHtml(column.data.name || "Column")}" onchange="renameColumn('${column.uuid}', this.value)" />
+            <button class="icon-button" onclick="deleteColumn('${column.uuid}')">x</button>
+          </div>
+          <div class="card-list" data-column-uuid="${column.uuid}"></div>
+          <button class="add-card" onclick="openCardModal(null, '${column.uuid}')">Add a card</button>
+        `;
+
+        columnEl.addEventListener("dragstart", (event) => {
+          if (event.target.closest(".card")) return;
+          draggedColumnUuid = column.uuid;
+          columnEl.classList.add("dragging");
+          event.dataTransfer.effectAllowed = "move";
+        });
+        columnEl.addEventListener("dragend", () => {
+          columnEl.classList.remove("dragging");
+          draggedColumnUuid = null;
+        });
+
+        const list = columnEl.querySelector(".card-list");
+        list.addEventListener("dragover", onCardListDragOver);
+        list.addEventListener("drop", (event) => dropCard(event, column.uuid));
+        cards(column).forEach((card) => list.appendChild(renderCard(card)));
+        return columnEl;
+      }
+
+      function renderCard(card) {
+        const el = document.createElement("div");
+        el.className = "card";
+        el.draggable = true;
+        el.dataset.cardUuid = card.uuid;
+        el.innerHTML = `
+          <div class="card-title">${escapeHtml(card.data.name || "Untitled card")}</div>
+          ${card.data.description ? `<div class="card-description">${escapeHtml(card.data.description)}</div>` : ""}
+          ${cardOwnerText(card) ? `<div class="owners">${escapeHtml(cardOwnerText(card))}</div>` : ""}
+        `;
+        el.addEventListener("click", () => openCardModal(card, card.parent_uuid));
+        el.addEventListener("dragstart", (event) => {
+          draggedCardUuid = card.uuid;
+          el.classList.add("dragging");
+          event.stopPropagation();
+          event.dataTransfer.effectAllowed = "move";
+        });
+        el.addEventListener("dragend", () => {
+          el.classList.remove("dragging");
+          draggedCardUuid = null;
+        });
+        return el;
+      }
+
+      function onCardListDragOver(event) {
+        event.preventDefault();
+        const list = event.currentTarget;
+        const after = cardAfterPointer(list, event.clientY);
+        const dragging = document.querySelector(".card.dragging");
+        if (!dragging) return;
+        if (after) {
+          list.insertBefore(dragging, after);
+        } else {
+          list.appendChild(dragging);
+        }
+      }
+
+      function cardAfterPointer(list, y) {
+        const candidates = [...list.querySelectorAll(".card:not(.dragging)")];
+        return candidates.reduce(
+          (closest, child) => {
+            const box = child.getBoundingClientRect();
+            const offset = y - box.top - box.height / 2;
+            if (offset < 0 && offset > closest.offset) {
+              return { offset, element: child };
+            }
+            return closest;
+          },
+          { offset: Number.NEGATIVE_INFINITY, element: null },
+        ).element;
+      }
+
+      async function dropCard(event, columnUuid) {
+        event.preventDefault();
+        if (!draggedCardUuid) return;
+        const list = event.currentTarget;
+        const order = [...list.querySelectorAll(".card")].map((card) => card.dataset.cardUuid);
+        const index = Math.max(0, order.indexOf(draggedCardUuid));
+        await post("/api/kanban/cards/move", {
+          card_uuid: draggedCardUuid,
+          column_uuid: columnUuid,
+          index,
+        });
+        await loadBoard();
+      }
+
+      document.getElementById("board").addEventListener("dragover", (event) => {
+        if (!draggedColumnUuid || event.target.closest(".card-list")) return;
+        event.preventDefault();
+        const boardEl = document.getElementById("board");
+        const after = columnAfterPointer(boardEl, event.clientX);
+        const dragging = document.querySelector(".column.dragging");
+        if (!dragging) return;
+        if (after) {
+          boardEl.insertBefore(dragging, after);
+        } else {
+          boardEl.insertBefore(dragging, boardEl.querySelector(".add-column-tile"));
+        }
+      });
+
+      document.getElementById("board").addEventListener("drop", async (event) => {
+        if (!draggedColumnUuid) return;
+        event.preventDefault();
+        const order = [...document.querySelectorAll(".column")].map(
+          (column) => column.dataset.columnUuid,
+        );
+        const index = Math.max(0, order.indexOf(draggedColumnUuid));
+        await post("/api/kanban/columns/move", { column_uuid: draggedColumnUuid, index });
+        await loadBoard();
+      });
+
+      function columnAfterPointer(boardEl, x) {
+        const candidates = [...boardEl.querySelectorAll(".column:not(.dragging)")];
+        return candidates.reduce(
+          (closest, child) => {
+            const box = child.getBoundingClientRect();
+            const offset = x - box.left - box.width / 2;
+            if (offset < 0 && offset > closest.offset) {
+              return { offset, element: child };
+            }
+            return closest;
+          },
+          { offset: Number.NEGATIVE_INFINITY, element: null },
+        ).element;
+      }
+
+      async function createColumn() {
+        const name = prompt("Column name", "New column");
+        if (!name) return;
+        await post("/api/kanban/columns", { name });
+        await loadBoard();
+      }
+
+      async function renameColumn(columnUuid, name) {
+        await post("/api/kanban/columns/update", { column_uuid: columnUuid, name });
+        await loadBoard();
+      }
+
+      async function deleteColumn(columnUuid) {
+        if (!confirm("Delete this column and all cards?")) return;
+        await post("/api/kanban/columns/delete", { column_uuid: columnUuid });
+        await loadBoard();
+      }
+
+      function openCardModal(card, columnUuid) {
+        modalCardUuid = card ? card.uuid : null;
+        modalColumnUuid = columnUuid;
+        document.getElementById("modal-title").textContent = card ? "Edit card" : "Create card";
+        document.getElementById("card-name").value = card ? card.data.name || "" : "";
+        document.getElementById("card-description").value = card ? card.data.description || "" : "";
+        document.getElementById("card-owners").value = card ? cardOwnerText(card) : "";
+        document.getElementById("delete-card-button").style.display = card ? "" : "none";
+        document.getElementById("modal-backdrop").style.display = "flex";
+      }
+
+      function closeModal() {
+        document.getElementById("modal-backdrop").style.display = "none";
+        modalCardUuid = null;
+        modalColumnUuid = null;
+      }
+
+      async function saveCard() {
+        const card = {
+          name: document.getElementById("card-name").value.trim() || "Untitled card",
+          description: document.getElementById("card-description").value.trim(),
+          owners: document.getElementById("card-owners").value,
+        };
+        if (modalCardUuid) {
+          await post("/api/kanban/cards/update", { card_uuid: modalCardUuid, card });
+        } else {
+          await post("/api/kanban/cards", { column_uuid: modalColumnUuid, card });
+        }
+        closeModal();
+        await loadBoard();
+      }
+
+      async function deleteCurrentCard() {
+        if (!modalCardUuid || !confirm("Delete this card?")) return;
+        await post("/api/kanban/cards/delete", { card_uuid: modalCardUuid });
+        closeModal();
+        await loadBoard();
+      }
+
+      async function invitePeer() {
+        const address = document.getElementById("invite-address").value.trim().replace(/\/$/, "");
+        if (!address) return;
+        document.getElementById("network-status").textContent = "inviting";
+        let result;
+        try {
+          result = await post("/api/kanban/invite", { address });
+        } catch (error) {
+          result = { status: "error", reason: error.message };
+        }
+        document.getElementById("network-status").textContent =
+          result.status === "ok" ? "invited" : "invite failed";
+        if (result.status !== "ok" && result.reason) {
+          alert(result.reason);
+        }
+        if (result.status === "ok") closeInviteModal();
+        await loadBoard();
+      }
+
+      async function leaveDiscussion() {
+        await post("/api/leave", {});
+        document.getElementById("network-status").textContent = "local";
+        await loadBoard();
+      }
+
+      function openInviteModal() {
+        document.getElementById("peer-popover").style.display = "none";
+        document.getElementById("invite-backdrop").style.display = "flex";
+        setTimeout(() => document.getElementById("invite-address").focus(), 0);
+      }
+
+      function closeInviteModal() {
+        document.getElementById("invite-backdrop").style.display = "none";
+      }
+
+      function togglePeers() {
+        const popover = document.getElementById("peer-popover");
+        popover.style.display = popover.style.display === "none" ? "block" : "none";
+      }
+
+      function scheduleLoadBoard() {
+        clearTimeout(reloadTimer);
+        reloadTimer = setTimeout(loadBoard, 120);
+      }
+
+      function startEvents() {
+        if (!window.EventSource) {
+          setInterval(loadBoard, 5000);
+          return;
+        }
+        eventSource = new EventSource("/api/events");
+        eventSource.addEventListener("ready", scheduleLoadBoard);
+        eventSource.addEventListener("changed", scheduleLoadBoard);
+        eventSource.onerror = () => {
+          document.getElementById("network-status").textContent = "reconnecting";
+        };
+      }
+
+      window.onload = () => {
+        loadBoard();
+        startEvents();
+      };
+    </script>
+  </body>
+</html>
