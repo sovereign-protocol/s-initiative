@@ -52,6 +52,18 @@ def card_names(board: dict) -> list[str]:
     return names
 
 
+def find_card_parent(board: dict, card_name: str) -> str | None:
+    if board.get("data", {}).get("type") == "kanban_column":
+        for card in board["children"]:
+            if card.get("data", {}).get("name") == card_name:
+                return board["uuid"]
+    for child in board.get("children", []):
+        found = find_card_parent(child, card_name)
+        if found:
+            return found
+    return None
+
+
 class ServerIntegrationTests(unittest.TestCase):
     def test_kanban_invite_and_sync(self):
         port_a = free_port()
@@ -74,7 +86,7 @@ class ServerIntegrationTests(unittest.TestCase):
 
             for port, config_path in ((port_a, configs[0]), (port_b, configs[1])):
                 processes.append(subprocess.Popen(
-                    [sys.executable, "server.py", str(port), str(config_path)],
+                    [sys.executable, "app_server.py", f"{port}:kanban", str(config_path)],
                     cwd=ROOT,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -91,10 +103,12 @@ class ServerIntegrationTests(unittest.TestCase):
                 column_uuid = board_a["children"][0]["uuid"]
                 request_json(
                     "POST",
-                    f"http://127.0.0.1:{port_a}/api/kanban/cards",
+                    f"http://127.0.0.1:{port_a}/api/kanban/cards/create",
                     {
                         "column_uuid": column_uuid,
-                        "card": {"name": "Synced Card", "description": "", "owners": ""},
+                        "name": "Synced Card",
+                        "description": "",
+                        "owners": [],
                     },
                 )
 
@@ -164,7 +178,7 @@ class ServerIntegrationTests(unittest.TestCase):
 
             for port, config_path in ((port_a, configs[0]), (port_b, configs[1])):
                 processes.append(subprocess.Popen(
-                    [sys.executable, "server.py", str(port), str(config_path)],
+                    [sys.executable, "app_server.py", f"{port}:kanban", str(config_path)],
                     cwd=ROOT,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -188,10 +202,12 @@ class ServerIntegrationTests(unittest.TestCase):
                 column_uuid = board_a["children"][0]["uuid"]
                 request_json(
                     "POST",
-                    f"http://127.0.0.1:{port_a}/api/kanban/cards",
+                    f"http://127.0.0.1:{port_a}/api/kanban/cards/create",
                     {
                         "column_uuid": column_uuid,
-                        "card": {"name": "Local Card", "description": "", "owners": ""},
+                        "name": "Local Card",
+                        "description": "",
+                        "owners": [],
                     },
                 )
 
@@ -210,6 +226,121 @@ class ServerIntegrationTests(unittest.TestCase):
 
                 self.assertIn("Local Card", card_names(final_a["board"]))
                 self.assertIn("Local Card", card_names(final_b["board"]))
+            finally:
+                for process in processes:
+                    process.terminate()
+                for process in processes:
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+                    if process.stdout:
+                        process.stdout.close()
+                    if process.stderr:
+                        process.stderr.close()
+
+    def test_connected_card_move_syncs_with_auto_adopt(self):
+        port_a = free_port()
+        port_b = free_port()
+        processes = []
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            configs = []
+            for port in (port_a, port_b):
+                config = {
+                    "app_module": "kanban_logic",
+                    "ui_file": "kanban.html",
+                    "css_file": "kanban.css",
+                    "storage_file": str(tmp_path / f"kanban_{port}.json"),
+                    "debug": True,
+                }
+                config_path = tmp_path / f"config_{port}.json"
+                config_path.write_text(json.dumps(config), encoding="utf-8")
+                configs.append(config_path)
+
+            for port, config_path in ((port_a, configs[0]), (port_b, configs[1])):
+                processes.append(subprocess.Popen(
+                    [sys.executable, "app_server.py", f"{port}:kanban", str(config_path)],
+                    cwd=ROOT,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                ))
+
+            try:
+                wait_for_server(port_a)
+                wait_for_server(port_b)
+                invite = request_json(
+                    "POST",
+                    f"http://127.0.0.1:{port_a}/api/kanban/invite",
+                    {"address": f"http://127.0.0.1:{port_b}"},
+                    timeout=20,
+                )
+                self.assertEqual(invite["status"], "ok")
+
+                board_a = request_json(
+                    "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                )["board"]
+                source_uuid = board_a["children"][0]["uuid"]
+                target_uuid = board_a["children"][1]["uuid"]
+                create = request_json(
+                    "POST",
+                    f"http://127.0.0.1:{port_a}/api/kanban/cards/create",
+                    {
+                        "column_uuid": source_uuid,
+                        "name": "Moved Card",
+                        "description": "",
+                        "owners": [],
+                    },
+                )
+                card_uuid = create["value"]["uuid"]
+                raw_b = request_json(
+                    "GET", f"http://127.0.0.1:{port_b}/api/prsp"
+                )
+                self.assertEqual(find_card_parent(raw_b, "Moved Card"), source_uuid)
+                request_json(
+                    "POST",
+                    f"http://127.0.0.1:{port_a}/api/kanban/cards/move",
+                    {
+                        "card_uuid": card_uuid,
+                        "column_uuid": target_uuid,
+                        "index": 0,
+                    },
+                )
+                raw_b = request_json(
+                    "GET", f"http://127.0.0.1:{port_b}/api/prsp"
+                )
+                self.assertEqual(find_card_parent(raw_b, "Moved Card"), target_uuid)
+
+                deadline = time.monotonic() + 10
+                final_b = None
+                while time.monotonic() < deadline:
+                    final_b = request_json(
+                        "GET", f"http://127.0.0.1:{port_b}/api/kanban/board"
+                    )
+                    if find_card_parent(final_b["board"], "Moved Card") == target_uuid:
+                        break
+                    time.sleep(0.2)
+
+                self.assertEqual(
+                    find_card_parent(final_b["board"], "Moved Card"),
+                    target_uuid,
+                )
+
+                deadline = time.monotonic() + 10
+                final_a = None
+                while time.monotonic() < deadline:
+                    final_a = request_json(
+                        "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                    )
+                    peer = final_a["peers"].get(f"http://127.0.0.1:{port_b}")
+                    if peer and find_card_parent(peer, "Moved Card") == target_uuid:
+                        break
+                    time.sleep(0.2)
+
+                peer = final_a["peers"].get(f"http://127.0.0.1:{port_b}")
+                self.assertEqual(find_card_parent(peer, "Moved Card"), target_uuid)
             finally:
                 for process in processes:
                     process.terminate()

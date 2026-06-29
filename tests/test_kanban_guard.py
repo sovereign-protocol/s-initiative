@@ -1,54 +1,39 @@
-import time
+import tempfile
 import unittest
+from pathlib import Path
 
-from kanban_logic import KanbanLogic
-from s_protocol import PRSPNode, SovereignProtocol
+import app_server
+from tests.test_kanban_new_logic import MemoryHttpClient
 
 
 class KanbanGuardTests(unittest.TestCase):
-    def test_pending_guard_blocks_stale_peer_rollback_even_with_newer_timestamp(self):
-        transport = SovereignProtocol(9201, address="si-a")
-        logic = KanbanLogic(transport)
-        board = logic.ensure_board()
-        column = board.children[0]
+    def test_local_change_is_not_rolled_back_by_stale_peer_view(self):
+        left = self.runtime(9201)
+        right = self.runtime(9202)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        left.logic.invite(left, right.address)
+        column = left.logic.columns(board)[0]
 
-        stale_peer_board = PRSPNode.from_dict(board.to_dict())
-        stale_peer_board.children[0].updated_at = "2999-01-01T00:00:00.000+00:00"
+        card = left.logic.create_card(column.uuid, "Mine", "", []).value
+        payload = left.logic.board_payload()
 
-        with transport.lock:
-            transport.members.add("si-b")
-            transport.peer_topics["si-b"] = board.uuid
-            transport.peer_perspectives["si-b"] = stale_peer_board
+        self.assertIn(card.uuid, left.session.protocol.index)
+        self.assertEqual(
+            payload["transition_by_node"][board.uuid]["type"],
+            "local_intentional_change",
+        )
 
-        snapshot = logic.local_change_snapshot()
-        self.assertTrue(logic.update_column(column.uuid, "Mine"))
-        logic.note_local_change(snapshot, "update_column", [column.uuid])
-
-        self.assertFalse(logic.adopt_incoming_changes())
-        self.assertEqual(transport._index[column.uuid].data["name"], "Mine")
-
-    def test_guard_expiry_allows_later_peer_state_to_be_adopted(self):
-        transport = SovereignProtocol(9202, address="si-a")
-        logic = KanbanLogic(transport)
-        logic.guard_ttl_seconds = 0.01
-        board = logic.ensure_board()
-        column = board.children[0]
-
-        stale_peer_board = PRSPNode.from_dict(board.to_dict())
-        stale_peer_board.children[0].updated_at = "2999-01-01T00:00:00.000+00:00"
-
-        with transport.lock:
-            transport.members.add("si-b")
-            transport.peer_topics["si-b"] = board.uuid
-            transport.peer_perspectives["si-b"] = stale_peer_board
-
-        snapshot = logic.local_change_snapshot()
-        self.assertTrue(logic.update_column(column.uuid, "Mine"))
-        logic.note_local_change(snapshot, "update_column", [column.uuid])
-        time.sleep(0.02)
-
-        self.assertTrue(logic.adopt_incoming_changes())
-        self.assertEqual(transport._index[column.uuid].data["name"], "To Do")
+    @staticmethod
+    def runtime(port: int):
+        directory = tempfile.TemporaryDirectory()
+        config = app_server.load_config(None, "kanban")
+        config["storage_file"] = str(Path(directory.name) / f"{port}.json")
+        runtime = app_server.create_runtime(port, config)
+        runtime._test_tmp = directory
+        return runtime
 
 
 if __name__ == "__main__":

@@ -1,562 +1,552 @@
-from datetime import datetime, timezone
-import asyncio
-import time
+"""
+Kanban app for the new stack.
 
+Contract:
+  Model:
+    - The discussion topic is always the kanban board node.
+    - Board/columns/cards are regular protocol nodes.
+    - Column data: {type: "kanban_column", name, order}
+    - Card data: {type: "kanban_card", name, description, owners, order}
+
+  API:
+    GET  /api/kanban/board
+    POST /api/kanban/auto_adopt          {enabled}
+    POST /api/kanban/invite              {address}
+    POST /api/kanban/columns/create      {name}
+    POST /api/kanban/columns/rename      {column_uuid, name}
+    POST /api/kanban/columns/delete      {column_uuid}
+    POST /api/kanban/columns/move        {column_uuid, index}
+    POST /api/kanban/cards/create        {column_uuid, name, description, owners}
+    POST /api/kanban/cards/update        {card_uuid, name, description, owners}
+    POST /api/kanban/cards/delete        {card_uuid}
+    POST /api/kanban/cards/move          {card_uuid, column_uuid, index}
+    POST /api/kanban/adopt               {source_addr, node_uuid, adopt_absence}
+"""
+
+from __future__ import annotations
+
+import asyncio
+import copy
+import time
+from typing import Any
+
+from protocol import PRSPNode
+from session import Session, SessionResult
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from universal_logic import DataLogic
-from s_protocol import PRSPNode, SovereignProtocol
+
+DEFAULT_COLUMNS = ["To Do", "Doing", "Done"]
 
 
-def log_error(message: str, error: Exception | None = None) -> None:
-    if error:
-        print(f"[kanban] {message}: {error}", flush=True)
-    else:
-        print(f"[kanban] {message}", flush=True)
+class KanbanLogic:
+    def __init__(self, session: Session, config: dict):
+        self.session = session
+        self.config = config
+        self.pending_guards: list[dict] = []
+        self.guard_ttl_seconds = 12
 
-
-class KanbanLogic(DataLogic):
-    def __init__(self, transport: SovereignProtocol, invite_callback=None):
-        super().__init__(transport)
-        self.local_change_pending = False
-        self.invite_callback = invite_callback
-        self.pending_change_guards = []
-        self.guard_ttl_seconds = 15.0
-
-    def note_local_change(self, snapshot: dict | None = None,
-                          operation: str | None = None,
-                          affected_uuids: list[str] | None = None) -> None:
-        self.local_change_pending = True
-        if snapshot:
-            self._record_pending_change_guard(snapshot, operation, affected_uuids)
-
-    def local_change_snapshot(self) -> dict | None:
+    def board_payload(self, auto_adopt: bool = True) -> dict:
+        if auto_adopt and self.auto_adopt_enabled():
+            self.adopt_incoming_changes()
         board = self.ensure_board()
-        with self.transport.lock:
-            topic_uuid = board.uuid
-            topic = self.transport._index.get(topic_uuid)
-            if not topic:
-                return None
-            peers = [
-                addr for addr in self.transport.members
-                if addr != self.transport.address
-                and self.transport.peer_topics.get(addr) == topic_uuid
-            ]
-            if not peers:
-                return None
-            return {
-                "topic_uuid": topic_uuid,
-                "base_state_hash": topic.state_hash,
-                "peers": peers,
-            }
+        events = self.transition_events(board.uuid)
+        return {
+            "address": self.session.address,
+            "board": board.to_dict(),
+            "network": self.session.get_network_info(),
+            "peers": {
+                addr: tree.to_dict() if tree else None
+                for addr, tree in sorted(self.session.peer_perspectives.items())
+            },
+            "auto_adopt": self.auto_adopt_enabled(),
+            "transition_events": events,
+            "transition_by_node": self.transition_by_node(events),
+        }
 
-    def _record_pending_change_guard(self, snapshot: dict,
-                                     operation: str | None,
-                                     affected_uuids: list[str] | None) -> None:
-        topic_uuid = snapshot.get("topic_uuid")
-        base_state_hash = snapshot.get("base_state_hash")
-        peers = set(snapshot.get("peers") or [])
-        if not topic_uuid or not base_state_hash or not peers:
-            return
-        topic = self.transport._index.get(topic_uuid)
-        if not topic or topic.state_hash == base_state_hash:
-            return
-        now = time.monotonic()
-        self.pending_change_guards.append({
-            "topic_uuid": topic_uuid,
-            "operation": operation,
-            "affected_uuids": list(affected_uuids or []),
-            "base_state_hash": base_state_hash,
-            "expected_state_hash": topic.state_hash,
-            "pending_peers": peers,
-            "created_at": now,
-            "expires_at": now + self.guard_ttl_seconds,
-        })
+    def auto_adopt_enabled(self) -> bool:
+        return bool(self.session.protocol.root.data.get("kanban_auto_adopt", True))
 
-    def _remember_board(self, board_uuid: str) -> None:
-        if self.transport.prsp.data.get("kanban_board_uuid") == board_uuid:
-            return
-        self.transport.prsp.data["kanban_board_uuid"] = board_uuid
-        self.transport._cascade_hash(self.transport.prsp.uuid)
+    def set_auto_adopt(self, enabled: bool) -> SessionResult:
+        root = self.session.protocol.root
+        data = dict(root.data)
+        data["kanban_auto_adopt"] = bool(enabled)
+        return self.session.modify(root.uuid, data, root.weights)
 
     def ensure_board(self) -> PRSPNode:
-        with self.transport.lock:
-            active_topic_uuid = next(iter(self.transport.peer_topics.values()), None)
-            if active_topic_uuid:
-                existing = self.transport._index.get(active_topic_uuid)
-                if existing:
-                    self._remember_board(existing.uuid)
-                    return existing
-            remembered_uuid = self.transport.prsp.data.get("kanban_board_uuid")
-            remembered = self.transport._index.get(remembered_uuid) if remembered_uuid else None
-            if remembered and remembered.data.get("type") == "kanban_board":
-                return remembered
-            board = self._find_by_type(self.transport.prsp, "kanban_board")
-        if board:
-            with self.transport.lock:
-                self._remember_board(board.uuid)
-            return board
-
-        board = self.transport.create_child(
-            self.transport.prsp.uuid,
+        if self.session.active_topic_uuid:
+            active = self.session.protocol.index.get(self.session.active_topic_uuid)
+            if active and active.data.get("type") == "kanban_board":
+                self._remember_board(active.uuid)
+                return active
+        remembered_uuid = self.session.protocol.root.data.get("kanban_board_uuid")
+        remembered = self.session.protocol.index.get(remembered_uuid) if remembered_uuid else None
+        if remembered and remembered.data.get("type") == "kanban_board":
+            return remembered
+        for node in self.session.protocol.index.values():
+            if node.data.get("type") == "kanban_board":
+                self._remember_board(node.uuid)
+                return node
+        board = self.session.create_child(
+            self.session.protocol.root.uuid,
             {"type": "kanban_board", "name": "Kanban Board"},
             {},
-        )
-        for order, name in enumerate(["To Do", "Doing", "Done"]):
-            self.transport.create_child(
+        ).value
+        for order, name in enumerate(DEFAULT_COLUMNS):
+            self.session.create_child(
                 board.uuid,
                 {"type": "kanban_column", "name": name, "order": order},
                 {},
             )
-        with self.transport.lock:
-            self._remember_board(board.uuid)
+        self._remember_board(board.uuid)
         return board
 
-    def accept_topic_invitation(self, tree: PRSPNode) -> str:
-        topic_uuid = super().accept_topic_invitation(tree)
-        with self.transport.lock:
-            self._remember_board(topic_uuid)
-        return topic_uuid
-
-    def board_payload(self) -> dict:
-        self.adopt_incoming_changes()
+    def invite(self, runtime, address: str) -> dict:
         board = self.ensure_board()
-        return {
-            "address": self.transport.address,
-            "board": board.to_dict(),
-            "network": self.transport.get_network_info(),
-        }
+        start = self.session.start_discussion(board.uuid)
+        if start.status != "ok":
+            return {"status": "error", "reason": start.reason}
+        return runtime.adapter.invite_to_discuss(address, board.uuid)
 
-    def adopt_incoming_changes(self) -> bool:
-        changed = False
-        with self.transport.lock:
-            self._prune_pending_change_guards()
-            topic_uuid = next(iter(self.transport.peer_topics.values()), None)
-            if not topic_uuid:
-                return False
-            local_board = self.transport._index.get(topic_uuid)
-            if not local_board:
-                return False
-            if self.local_change_pending:
-                if self._peers_aligned_with_local(topic_uuid, local_board.state_hash):
-                    self.local_change_pending = False
-            for addr in sorted(self.transport.peer_perspectives):
-                if self.transport.peer_topics.get(addr) != topic_uuid:
-                    continue
-                peer_board = self.transport.peer_perspectives.get(addr)
-                if not peer_board or peer_board.uuid != topic_uuid:
-                    continue
-                local_board = self.transport._index.get(topic_uuid)
-                if self._guard_blocks_peer_state(topic_uuid, addr, peer_board.state_hash):
-                    continue
-                if local_board and local_board.state_hash == peer_board.state_hash:
-                    continue
-                imported = PRSPNode.from_dict(peer_board.to_dict())
-                if not self._merge_peer_board(imported):
-                    continue
-                changed = True
-        if changed:
-            self.transport._trigger_sync(topic_uuid)
-        return changed
-
-    def _prune_pending_change_guards(self) -> None:
-        now = time.monotonic()
-        self.pending_change_guards = [
-            guard for guard in self.pending_change_guards
-            if guard.get("pending_peers") and guard.get("expires_at", 0) > now
-        ]
-
-    def _guard_blocks_peer_state(self, topic_uuid: str, peer_addr: str,
-                                 peer_state_hash: str) -> bool:
-        blocked = False
-        for guard in list(self.pending_change_guards):
-            if guard.get("topic_uuid") != topic_uuid:
-                continue
-            pending_peers = guard.get("pending_peers")
-            if peer_addr not in pending_peers:
-                continue
-            if peer_state_hash == guard.get("expected_state_hash"):
-                pending_peers.discard(peer_addr)
-                continue
-            if peer_state_hash == guard.get("base_state_hash"):
-                blocked = True
-                continue
-            pending_peers.discard(peer_addr)
-        self._prune_pending_change_guards()
-        return blocked
-
-    def _peers_aligned_with_local(self, topic_uuid: str, local_state_hash: str) -> bool:
-        peers = [
-            self.transport.peer_perspectives.get(addr)
-            for addr, peer_topic_uuid in self.transport.peer_topics.items()
-            if peer_topic_uuid == topic_uuid
-        ]
-        peer_boards = [peer for peer in peers if peer and peer.uuid == topic_uuid]
-        if not peer_boards:
-            return False
-        return all(peer.state_hash == local_state_hash for peer in peer_boards)
-
-    def _replace_local_subtree(self, tree: PRSPNode) -> bool:
-        existing = self.transport._index.get(tree.uuid)
-        if not existing:
-            return False
-        parent_uuid = existing.parent_uuid
-        if not parent_uuid:
-            return False
-        parent = self.transport._index.get(parent_uuid)
-        if not parent:
-            return False
-        self.transport._deindex_subtree(existing)
-        tree.parent_uuid = parent_uuid
-        parent.children = [
-            tree if child.uuid == tree.uuid else child
-            for child in parent.children
-        ]
-        self.transport._index_subtree(tree)
-        self._refresh_subtree_hashes(tree)
-        self.transport._cascade_hash(parent.uuid)
-        return True
-
-    def _merge_peer_board(self, peer_board: PRSPNode) -> bool:
-        local_board = self.transport._index.get(peer_board.uuid)
-        if not local_board:
-            return False
-        changed = self._merge_node(local_board, peer_board)
-        if changed:
-            self._refresh_subtree_hashes(local_board)
-            self.transport._cascade_hash(local_board.uuid)
-        return changed
-
-    def _merge_node(self, local_node: PRSPNode, peer_node: PRSPNode) -> bool:
-        changed = False
-        if self._peer_is_newer(local_node, peer_node):
-            local_node.data = dict(peer_node.data)
-            local_node.weights = dict(peer_node.weights)
-            local_node.updated_at = peer_node.updated_at
-            changed = True
-
-        local_children = {child.uuid: child for child in local_node.children}
-        for peer_child in peer_node.children:
-            local_child = local_children.get(peer_child.uuid)
-            if local_child:
-                changed = self._merge_node(local_child, peer_child) or changed
-                continue
-
-            imported = PRSPNode.from_dict(peer_child.to_dict())
-            self._remove_existing_uuid_from_local_tree(imported.uuid)
-            imported.parent_uuid = local_node.uuid
-            local_node.children.append(imported)
-            self.transport._index_subtree(imported)
-            changed = True
-        return changed
-
-    def _remove_existing_uuid_from_local_tree(self, node_uuid: str) -> None:
-        existing = self.transport._index.get(node_uuid)
-        if not existing or not existing.parent_uuid:
-            return
-        parent = self.transport._index.get(existing.parent_uuid)
-        if parent:
-            parent.children = [child for child in parent.children if child.uuid != node_uuid]
-        self.transport._deindex_subtree(existing)
-
-    @staticmethod
-    def _peer_is_newer(local_node: PRSPNode, peer_node: PRSPNode) -> bool:
-        if local_node.content_hash == peer_node.content_hash:
-            return False
-        return KanbanLogic._timestamp(peer_node.updated_at) > KanbanLogic._timestamp(local_node.updated_at)
-
-    @staticmethod
-    def _timestamp(value: str) -> float:
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            return parsed.timestamp()
-        except Exception:
-            return 0.0
-
-    def invite_to_discuss(self, peer_addr: str) -> dict:
+    def create_column(self, name: str) -> SessionResult:
         board = self.ensure_board()
-        if not self.invite_callback:
-            return {"status": "error", "reason": "invite callback is not configured"}
-        return self.invite_callback(peer_addr, board.uuid)
-
-    def create_column(self, name: str) -> PRSPNode | None:
-        board = self.ensure_board()
-        order = self._next_order(board.children)
-        return self.transport.create_child(
+        return self._with_guard(lambda: self.session.create_child(
             board.uuid,
-            {"type": "kanban_column", "name": name or "New column", "order": order},
+            {"type": "kanban_column", "name": name or "Column", "order": len(self.columns(board))},
             {},
-        )
+        ))
 
-    def delete_column(self, column_uuid: str) -> bool:
-        return self.transport.delete(column_uuid)
-
-    def update_column(self, column_uuid: str, name: str) -> bool:
-        column = self.transport._index.get(column_uuid)
-        if not column or column.data.get("type") != "kanban_column":
-            return False
+    def rename_column(self, column_uuid: str, name: str) -> SessionResult:
+        column = self._node(column_uuid, "kanban_column")
+        if not column:
+            return SessionResult("error", reason="column not found")
         data = dict(column.data)
         data["name"] = name or "Column"
-        return self.transport.modify(column_uuid, data, column.weights)
+        return self._with_guard(lambda: self.session.modify(column.uuid, data, column.weights))
 
-    def move_column(self, column_uuid: str, index: int) -> bool:
+    def delete_column(self, column_uuid: str) -> SessionResult:
+        return self._with_guard(lambda: self.session.delete(column_uuid))
+
+    def move_column(self, column_uuid: str, index: int) -> SessionResult:
         board = self.ensure_board()
-        columns = self._sorted_children(board, "kanban_column")
-        column = self.transport._index.get(column_uuid)
+        column = self._node(column_uuid, "kanban_column")
         if not column or column.parent_uuid != board.uuid:
-            return False
-        columns = [c for c in columns if c.uuid != column_uuid]
-        index = max(0, min(index, len(columns)))
-        columns.insert(index, column)
-        return self._write_order(columns)
+            return SessionResult("error", reason="column not found")
+        columns = [item for item in self.columns(board) if item.uuid != column_uuid]
+        columns.insert(max(0, min(index, len(columns))), column)
+        return self._reorder(columns)
 
-    def create_card(self, column_uuid: str, card: dict) -> PRSPNode | None:
-        column = self.transport._index.get(column_uuid)
-        if not column or column.data.get("type") != "kanban_column":
-            return None
-        order = self._next_order(column.children)
-        return self.transport.create_child(
-            column_uuid,
+    def create_card(self, column_uuid: str, name: str,
+                    description: str = "", owners: list[str] | None = None) -> SessionResult:
+        column = self._node(column_uuid, "kanban_column")
+        if not column:
+            return SessionResult("error", reason="column not found")
+        return self._with_guard(lambda: self.session.create_child(
+            column.uuid,
             {
                 "type": "kanban_card",
-                "name": card.get("name") or "New card",
-                "description": card.get("description") or "",
-                "owners": self._owners(card.get("owners")),
-                "order": order,
+                "name": name or "Card",
+                "description": description or "",
+                "owners": owners or [],
+                "order": len(self.cards(column)),
             },
             {},
+        ))
+
+    def update_card(self, card_uuid: str, name: str,
+                    description: str = "", owners: list[str] | None = None) -> SessionResult:
+        card = self._node(card_uuid, "kanban_card")
+        if not card:
+            return SessionResult("error", reason="card not found")
+        data = dict(card.data)
+        data.update({
+            "name": name or "Card",
+            "description": description or "",
+            "owners": owners or [],
+        })
+        return self._with_guard(lambda: self.session.modify(card.uuid, data, card.weights))
+
+    def delete_card(self, card_uuid: str) -> SessionResult:
+        return self._with_guard(lambda: self.session.delete(card_uuid))
+
+    def move_card(self, card_uuid: str, column_uuid: str, index: int) -> SessionResult:
+        card = self._node(card_uuid, "kanban_card")
+        column = self._node(column_uuid, "kanban_column")
+        if not card or not column:
+            return SessionResult("error", reason="card or column not found")
+
+        def operation():
+            effects = []
+            if card.parent_uuid != column.uuid:
+                moved = self.session.move(card.uuid, column.uuid)
+                if moved.status != "ok":
+                    return moved
+                effects.extend(moved.effects)
+            fresh_column = self.session.protocol.index[column.uuid]
+            cards = [item for item in self.cards(fresh_column) if item.uuid != card.uuid]
+            fresh_card = self.session.protocol.index[card.uuid]
+            cards.insert(max(0, min(index, len(cards))), fresh_card)
+            reordered = self._reorder(cards)
+            if reordered.status != "ok":
+                return reordered
+            effects.extend(reordered.effects)
+            return SessionResult("ok", value=True, effects=effects)
+
+        return self._with_guard(operation)
+
+    def accept_peer_node(self, source_addr: str, node_uuid: str,
+                         adopt_absence: bool = False) -> SessionResult:
+        if adopt_absence:
+            return self._with_guard(lambda: self.session.delete(node_uuid))
+        peer = self.session.get_cached_peer_subtree(source_addr, node_uuid)
+        if not peer:
+            return SessionResult("error", reason="peer node not found")
+        local = self.session.protocol.index.get(node_uuid)
+        parent_uuid = peer.parent_uuid if peer.parent_uuid in self.session.protocol.index else None
+        if not parent_uuid and local:
+            parent_uuid = local.parent_uuid
+        if not parent_uuid or parent_uuid not in self.session.protocol.index:
+            return SessionResult("error", reason="local parent not found")
+
+        def operation():
+            adopted = copy.deepcopy(peer)
+            adopted.parent_uuid = parent_uuid
+            parent = self.session.protocol.index[parent_uuid]
+            adopted_child_uuids = self._collect_subtree_uuids(adopted) - {adopted.uuid}
+            if adopted_child_uuids:
+                self._remove_uuids_from_tree(
+                    self.session.protocol.root,
+                    adopted_child_uuids,
+                )
+            existing = self.session.protocol.index.get(adopted.uuid)
+            if existing:
+                self.session.protocol.deindex_subtree(existing)
+                old_parent = self.session.protocol.index.get(existing.parent_uuid)
+                if old_parent:
+                    old_parent.children = [
+                        child for child in old_parent.children
+                        if child.uuid != adopted.uuid
+                    ]
+            parent.children = [child for child in parent.children if child.uuid != adopted.uuid]
+            parent.children.append(adopted)
+            self.session.protocol.index_subtree(adopted)
+            self.session.protocol.cascade_hash(parent.uuid)
+            return SessionResult("ok", value=adopted.uuid,
+                                 effects=self.session._sync_effects(adopted.uuid))
+
+        return self._with_guard(operation)
+
+    def adopt_incoming_changes(self) -> bool:
+        board = self.ensure_board()
+        changed = False
+        for addr, peer in sorted(self.session.peer_perspectives.items()):
+            if self.session.peer_topics.get(addr) != board.uuid:
+                continue
+            if not peer or peer.uuid != board.uuid:
+                continue
+            board = self.ensure_board()
+            top_event = self._top_transition_event(addr, board.uuid)
+            if not top_event or top_event["type"] in ("agreement", "accepted_change"):
+                continue
+            if top_event["type"] != "intentional_change":
+                for event in self.session.analyze_peer_transitions(addr, board.uuid):
+                    if event["type"] not in ("intentional_change", "missing_local_node"):
+                        continue
+                    if event["node_uuid"] == board.uuid:
+                        continue
+                    result = self.accept_peer_node(addr, event["node_uuid"])
+                    changed = changed or result.status == "ok"
+                continue
+            self._replace_subtree(peer)
+            changed = True
+        return changed
+
+    def on_peer_update(self) -> SessionResult:
+        if not self.auto_adopt_enabled():
+            return SessionResult("ok", value=False)
+        changed = self.adopt_incoming_changes()
+        if not changed:
+            return SessionResult("ok", value=False)
+        board = self.ensure_board()
+        return SessionResult(
+            "ok",
+            value=True,
+            effects=self.session._sync_effects(board.uuid),
         )
 
-    def update_card(self, card_uuid: str, card: dict) -> bool:
-        node = self.transport._index.get(card_uuid)
-        if not node or node.data.get("type") != "kanban_card":
-            return False
-        data = dict(node.data)
-        data.update({
-            "type": "kanban_card",
-            "name": card.get("name") or "Untitled card",
-            "description": card.get("description") or "",
-            "owners": self._owners(card.get("owners")),
-        })
-        return self.transport.modify(card_uuid, data, node.weights)
+    def transition_events(self, board_uuid: str | None = None) -> list[dict]:
+        board = self.ensure_board()
+        board_uuid = board_uuid or board.uuid
+        events = []
+        for addr in sorted(self.session.peer_perspectives):
+            if self.session.peer_topics.get(addr) != board.uuid:
+                continue
+            events.extend(self.session.analyze_peer_transitions(addr, board_uuid))
+        return events
 
-    def delete_card(self, card_uuid: str) -> bool:
-        return self.transport.delete(card_uuid)
+    def transition_by_node(self, events: list[dict]) -> dict:
+        priority = {
+            "conflict": 6,
+            "parallel_independent_changes": 5,
+            "intentional_change": 4,
+            "local_intentional_change": 3,
+            "missing_local_node": 3,
+            "missing_peer_node": 2,
+            "accepted_change": 1,
+            "agreement": 0,
+        }
+        out = {}
+        for event in events:
+            node_uuid = event.get("node_uuid")
+            if not node_uuid:
+                continue
+            current = out.get(node_uuid)
+            if current and priority.get(current["type"], 0) >= priority.get(event["type"], 0):
+                continue
+            out[node_uuid] = {
+                "type": event["type"],
+                "peer_addr": event.get("peer_addr"),
+            }
+        return out
 
-    def move_card(self, card_uuid: str, column_uuid: str, index: int) -> bool:
-        card = self.transport._index.get(card_uuid)
-        target = self.transport._index.get(column_uuid)
-        if not card or card.data.get("type") != "kanban_card":
-            return False
-        if not target or target.data.get("type") != "kanban_column":
-            return False
-        old_parent_uuid = card.parent_uuid
-        if old_parent_uuid != column_uuid and not self.transport.move(card_uuid, column_uuid):
-            return False
-        changed_columns = []
-        old_parent = self.transport._index.get(old_parent_uuid)
-        if old_parent:
-            changed_columns.append(old_parent)
-        target = self.transport._index.get(column_uuid)
-        if target and target not in changed_columns:
-            changed_columns.append(target)
-        ok = True
-        for column in changed_columns:
-            cards = self._sorted_children(column, "kanban_card")
-            if column.uuid == column_uuid:
-                card = self.transport._index.get(card_uuid)
-                cards = [c for c in cards if c.uuid != card_uuid]
-                index = max(0, min(index, len(cards)))
-                cards.insert(index, card)
-            ok = self._write_order(cards) and ok
-        return ok
+    def columns(self, board: PRSPNode | None = None) -> list[PRSPNode]:
+        board = board or self.ensure_board()
+        return sorted(
+            [child for child in board.children if child.data.get("type") == "kanban_column"],
+            key=lambda node: (float(node.data.get("order", 0)), node.created_at),
+        )
 
-    def _find_by_type(self, node: PRSPNode, node_type: str) -> PRSPNode | None:
-        if node.data.get("type") == node_type:
-            return node
-        for child in node.children:
-            found = self._find_by_type(child, node_type)
-            if found:
-                return found
-        return None
+    def cards(self, column: PRSPNode) -> list[PRSPNode]:
+        return sorted(
+            [child for child in column.children if child.data.get("type") == "kanban_card"],
+            key=lambda node: (float(node.data.get("order", 0)), node.created_at),
+        )
 
-    def _refresh_subtree_hashes(self, node: PRSPNode) -> None:
-        for child in node.children:
-            self._refresh_subtree_hashes(child)
-        node._refresh_hashes()
+    def _with_guard(self, operation) -> SessionResult:
+        board = self.ensure_board()
+        old_hash = board.state_hash
+        result = operation()
+        if result.status == "ok":
+            new_board = self.ensure_board()
+            if new_board.state_hash != old_hash:
+                self.pending_guards.append({
+                    "old_hash": old_hash,
+                    "new_hash": new_board.state_hash,
+                    "pending_peers": set(self.session.members - {self.session.address}),
+                    "expires_at": time.monotonic() + self.guard_ttl_seconds,
+                })
+        return result
 
-    def _sorted_children(self, node: PRSPNode, node_type: str) -> list[PRSPNode]:
-        children = [child for child in node.children if child.data.get("type") == node_type]
-        return sorted(children, key=lambda child: (child.data.get("order", 0), child.created_at))
-
-    def _next_order(self, children: list[PRSPNode]) -> int:
-        if not children:
-            return 0
-        return max(int(child.data.get("order", 0)) for child in children) + 1
-
-    def _write_order(self, nodes: list[PRSPNode]) -> bool:
-        ok = True
+    def _reorder(self, nodes: list[PRSPNode]) -> SessionResult:
+        effects = []
         for order, node in enumerate(nodes):
+            if node.data.get("order") == order:
+                continue
             data = dict(node.data)
             data["order"] = order
-            ok = self.transport.modify(node.uuid, data, node.weights) and ok
-        return ok
+            result = self.session.modify(node.uuid, data, node.weights)
+            if result.status != "ok":
+                return result
+            effects.extend(result.effects)
+        return SessionResult("ok", value=True, effects=effects)
 
-    @staticmethod
-    def _owners(value) -> list[str]:
-        if isinstance(value, list):
-            return [str(item).strip() for item in value if str(item).strip()]
-        if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
-        return []
+    def _replace_subtree(self, peer_board: PRSPNode) -> None:
+        local = self.session.protocol.index.get(peer_board.uuid)
+        if not local or not local.parent_uuid:
+            return
+        parent = self.session.protocol.index[local.parent_uuid]
+        imported = PRSPNode.from_dict(peer_board.to_dict())
+        imported.parent_uuid = parent.uuid
+        self.session.protocol.deindex_subtree(local)
+        parent.children = [imported if child.uuid == local.uuid else child for child in parent.children]
+        self.session.protocol.index_subtree(imported)
+        self.session.protocol.cascade_hash(parent.uuid)
+
+    def _top_transition_event(self, peer_addr: str, board_uuid: str) -> dict | None:
+        events = self.session.analyze_peer_transitions(peer_addr, board_uuid)
+        return events[0] if events else None
+
+    def _guard_blocks(self, addr: str, peer_hash: str) -> bool:
+        blocked = False
+        for guard in self.pending_guards:
+            if addr not in guard["pending_peers"]:
+                continue
+            if peer_hash == guard["new_hash"]:
+                guard["pending_peers"].discard(addr)
+            elif peer_hash == guard["old_hash"]:
+                blocked = True
+            else:
+                guard["pending_peers"].discard(addr)
+        self._prune_guards()
+        return blocked
+
+    def _mark_peer_aligned(self, addr: str, state_hash: str) -> None:
+        for guard in self.pending_guards:
+            if state_hash == guard["new_hash"]:
+                guard["pending_peers"].discard(addr)
+        self._prune_guards()
+
+    def _prune_guards(self) -> None:
+        now = time.monotonic()
+        self.pending_guards = [
+            guard for guard in self.pending_guards
+            if guard["pending_peers"] and guard["expires_at"] > now
+        ]
+
+    def _node(self, uuid: str, node_type: str) -> PRSPNode | None:
+        node = self.session.protocol.index.get(uuid)
+        if node and node.data.get("type") == node_type:
+            return node
+        return None
+
+    def _remember_board(self, board_uuid: str) -> None:
+        root = self.session.protocol.root
+        data = dict(root.data)
+        data["kanban_board_uuid"] = board_uuid
+        self.session.protocol.modify(root.uuid, data, root.weights)
+
+    def _collect_subtree_uuids(self, node: PRSPNode) -> set[str]:
+        out = {node.uuid}
+        for child in node.children:
+            out.update(self._collect_subtree_uuids(child))
+        return out
+
+    def _remove_uuids_from_tree(self, root: PRSPNode, uuids: set[str]) -> None:
+        self._remove_uuids_from_tree_locked(root, uuids)
+
+    def _remove_uuids_from_tree_locked(self, root: PRSPNode, uuids: set[str]) -> bool:
+        changed = False
+        kept = []
+        for child in root.children:
+            if child.uuid in uuids:
+                self.session.protocol.deindex_subtree(child)
+                changed = True
+                continue
+            changed = self._remove_uuids_from_tree_locked(child, uuids) or changed
+            kept.append(child)
+        root.children = kept
+        if changed:
+            root.refresh_hashes()
+        return changed
 
 
-def create_logic(transport: SovereignProtocol, config: dict) -> KanbanLogic:
-    return KanbanLogic(transport, config.get("invite_to_discuss"))
+def create_logic(session: Session, config: dict) -> KanbanLogic:
+    return KanbanLogic(session, config)
 
 
-def build_routes(logic: KanbanLogic, transport: SovereignProtocol, config: dict) -> list[Route]:
-    def notify():
-        callback = config.get("notify_clients")
-        if callback:
-            callback()
+def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
+    async def api_board(request: Request):
+        result = await asyncio.to_thread(logic.on_peer_update)
+        if result.value:
+            await asyncio.to_thread(runtime.adapter.execute_effects, result.effects)
+            runtime.notify_change()
+        return JSONResponse(logic.board_payload(auto_adopt=False))
 
-    def begin_local_change() -> dict | None:
-        return logic.local_change_snapshot()
-
-    def finish_local_change(snapshot: dict | None, ok: bool,
-                            operation: str,
-                            affected_uuids: list[str] | None = None) -> None:
-        if ok:
-            logic.note_local_change(snapshot, operation, affected_uuids)
-            notify()
-
-    async def board(request: Request):
-        transport.reconcile_integrations()
-        return JSONResponse(logic.board_payload())
-
-    async def invite(request: Request):
-        try:
-            data = await request.json()
-            peer_addr = data["address"].strip().rstrip("/")
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                transport.pool, logic.invite_to_discuss, peer_addr
-            )
-            if result.get("status") != "ok":
-                log_error(f"invite to {peer_addr} failed: {result.get('reason', result)}")
-                if _peer_connected_on_active_topic(transport, peer_addr):
-                    result = {"status": "ok", "reason": "peer connected after delayed invite"}
-                else:
-                    for _ in range(12):
-                        await asyncio.sleep(0.25)
-                        if _peer_connected_on_active_topic(transport, peer_addr):
-                            result = {"status": "ok", "reason": "peer connected after delayed invite"}
-                            break
-            if result.get("status") == "ok":
-                notify()
-                return JSONResponse(result)
-            return JSONResponse(result, status_code=409)
-        except Exception as e:
-            log_error("invite route crashed", e)
-            return JSONResponse({"status": "error", "reason": str(e)}, status_code=500)
-
-    async def create_column(request: Request):
-        try:
-            data = await request.json()
-            snapshot = begin_local_change()
-            node = logic.create_column(data.get("name", "New column"))
-            finish_local_change(
-                snapshot,
-                bool(node),
-                "create_column",
-                [node.uuid] if node else [],
-            )
-            return JSONResponse({"status": "ok", "uuid": node.uuid} if node else {"status": "error"})
-        except Exception as e:
-            log_error("create column crashed", e)
-            return JSONResponse({"status": "error", "reason": str(e)}, status_code=500)
-
-    async def update_column(request: Request):
+    async def api_auto_adopt(request: Request):
         data = await request.json()
-        snapshot = begin_local_change()
-        ok = logic.update_column(data["column_uuid"], data.get("name", "Column"))
-        finish_local_change(snapshot, ok, "update_column", [data["column_uuid"]])
-        return JSONResponse({"status": "ok" if ok else "error"}, status_code=200 if ok else 409)
+        return await _json_result(runtime, logic.set_auto_adopt(bool(data.get("enabled"))))
 
-    async def delete_column(request: Request):
+    async def api_invite(request: Request):
         data = await request.json()
-        snapshot = begin_local_change()
-        ok = logic.delete_column(data["column_uuid"])
-        finish_local_change(snapshot, ok, "delete_column", [data["column_uuid"]])
-        return JSONResponse({"status": "ok" if ok else "error"}, status_code=200 if ok else 409)
+        result = await asyncio.to_thread(logic.invite, runtime, data["address"].strip().rstrip("/"))
+        status = 200 if result.get("status") == "ok" else 409
+        if status == 200:
+            runtime.notify_change()
+        return JSONResponse(result, status_code=status)
 
-    async def move_column(request: Request):
+    async def api_create_column(request: Request):
         data = await request.json()
-        snapshot = begin_local_change()
-        ok = logic.move_column(data["column_uuid"], int(data.get("index", 0)))
-        finish_local_change(snapshot, ok, "move_column", [data["column_uuid"]])
-        return JSONResponse({"status": "ok" if ok else "error"}, status_code=200 if ok else 409)
+        return await _json_result(runtime, logic.create_column(data.get("name", "Column")))
 
-    async def create_card(request: Request):
-        try:
-            data = await request.json()
-            snapshot = begin_local_change()
-            node = logic.create_card(data["column_uuid"], data.get("card", {}))
-            affected = [data["column_uuid"]]
-            if node:
-                affected.append(node.uuid)
-            finish_local_change(snapshot, bool(node), "create_card", affected)
-            return JSONResponse({"status": "ok", "uuid": node.uuid} if node else {"status": "error"})
-        except Exception as e:
-            log_error("create card crashed", e)
-            return JSONResponse({"status": "error", "reason": str(e)}, status_code=500)
-
-    async def update_card(request: Request):
+    async def api_rename_column(request: Request):
         data = await request.json()
-        snapshot = begin_local_change()
-        ok = logic.update_card(data["card_uuid"], data.get("card", {}))
-        finish_local_change(snapshot, ok, "update_card", [data["card_uuid"]])
-        return JSONResponse({"status": "ok" if ok else "error"}, status_code=200 if ok else 409)
+        return await _json_result(runtime, logic.rename_column(data["column_uuid"], data.get("name", "Column")))
 
-    async def delete_card(request: Request):
+    async def api_delete_column(request: Request):
         data = await request.json()
-        snapshot = begin_local_change()
-        ok = logic.delete_card(data["card_uuid"])
-        finish_local_change(snapshot, ok, "delete_card", [data["card_uuid"]])
-        return JSONResponse({"status": "ok" if ok else "error"}, status_code=200 if ok else 409)
+        return await _json_result(runtime, logic.delete_column(data["column_uuid"]))
 
-    async def move_card(request: Request):
+    async def api_move_column(request: Request):
         data = await request.json()
-        snapshot = begin_local_change()
-        ok = logic.move_card(data["card_uuid"], data["column_uuid"], int(data.get("index", 0)))
-        finish_local_change(
-            snapshot,
-            ok,
-            "move_card",
-            [data["card_uuid"], data["column_uuid"]],
-        )
-        return JSONResponse({"status": "ok" if ok else "error"}, status_code=200 if ok else 409)
+        return await _json_result(runtime, logic.move_column(data["column_uuid"], int(data.get("index", 0))))
+
+    async def api_create_card(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.create_card(
+            data["column_uuid"],
+            data.get("name", "Card"),
+            data.get("description", ""),
+            _owners(data.get("owners")),
+        ))
+
+    async def api_update_card(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.update_card(
+            data["card_uuid"],
+            data.get("name", "Card"),
+            data.get("description", ""),
+            _owners(data.get("owners")),
+        ))
+
+    async def api_delete_card(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.delete_card(data["card_uuid"]))
+
+    async def api_move_card(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.move_card(
+            data["card_uuid"],
+            data["column_uuid"],
+            int(data.get("index", 0)),
+        ))
+
+    async def api_adopt(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.accept_peer_node(
+            data["source_addr"],
+            data["node_uuid"],
+            bool(data.get("adopt_absence")),
+        ))
 
     return [
-        Route("/api/kanban/board", board),
-        Route("/api/kanban/invite", invite, methods=["POST"]),
-        Route("/api/kanban/columns", create_column, methods=["POST"]),
-        Route("/api/kanban/columns/update", update_column, methods=["POST"]),
-        Route("/api/kanban/columns/delete", delete_column, methods=["POST"]),
-        Route("/api/kanban/columns/move", move_column, methods=["POST"]),
-        Route("/api/kanban/cards", create_card, methods=["POST"]),
-        Route("/api/kanban/cards/update", update_card, methods=["POST"]),
-        Route("/api/kanban/cards/delete", delete_card, methods=["POST"]),
-        Route("/api/kanban/cards/move", move_card, methods=["POST"]),
+        Route("/api/kanban/board", api_board),
+        Route("/api/kanban/auto_adopt", api_auto_adopt, methods=["POST"]),
+        Route("/api/kanban/invite", api_invite, methods=["POST"]),
+        Route("/api/kanban/columns/create", api_create_column, methods=["POST"]),
+        Route("/api/kanban/columns/rename", api_rename_column, methods=["POST"]),
+        Route("/api/kanban/columns/delete", api_delete_column, methods=["POST"]),
+        Route("/api/kanban/columns/move", api_move_column, methods=["POST"]),
+        Route("/api/kanban/cards/create", api_create_card, methods=["POST"]),
+        Route("/api/kanban/cards/update", api_update_card, methods=["POST"]),
+        Route("/api/kanban/cards/delete", api_delete_card, methods=["POST"]),
+        Route("/api/kanban/cards/move", api_move_card, methods=["POST"]),
+        Route("/api/kanban/adopt", api_adopt, methods=["POST"]),
     ]
 
 
-def _peer_connected_on_active_topic(transport: SovereignProtocol, peer_addr: str) -> bool:
-    with transport.lock:
-        topic_uuid = next(iter(transport.peer_topics.values()), None)
-        return bool(topic_uuid and transport.peer_topics.get(peer_addr) == topic_uuid)
+async def _json_result(runtime, result: SessionResult) -> JSONResponse:
+    if result.status != "ok":
+        return JSONResponse({"status": "error", "reason": result.reason}, status_code=409)
+    deliveries = await asyncio.to_thread(runtime.adapter.execute_effects, result.effects)
+    runtime.notify_change()
+    payload: dict[str, Any] = {"status": "ok"}
+    if hasattr(result.value, "to_dict"):
+        payload["value"] = result.value.to_dict()
+    elif result.value is not None:
+        payload["value"] = result.value
+    errors = [item for item in deliveries if not item.ok]
+    if errors:
+        payload["delivery_errors"] = [
+            {"effect_type": item.effect_type, "target": item.target, "reason": item.reason}
+            for item in errors
+        ]
+    return JSONResponse(payload)
+
+
+def _owners(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [item.strip() for item in str(value).split(",") if item.strip()]
