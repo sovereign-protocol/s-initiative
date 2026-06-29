@@ -1,12 +1,13 @@
 from datetime import datetime, timezone
 import asyncio
+import time
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from logic import DataLogic
-from transport import PRSPNode, TransportLayer
+from universal_logic import DataLogic
+from s_protocol import PRSPNode, SovereignProtocol
 
 
 def log_error(message: str, error: Exception | None = None) -> None:
@@ -17,12 +18,62 @@ def log_error(message: str, error: Exception | None = None) -> None:
 
 
 class KanbanLogic(DataLogic):
-    def __init__(self, transport: TransportLayer):
+    def __init__(self, transport: SovereignProtocol, invite_callback=None):
         super().__init__(transport)
         self.local_change_pending = False
+        self.invite_callback = invite_callback
+        self.pending_change_guards = []
+        self.guard_ttl_seconds = 15.0
 
-    def note_local_change(self) -> None:
+    def note_local_change(self, snapshot: dict | None = None,
+                          operation: str | None = None,
+                          affected_uuids: list[str] | None = None) -> None:
         self.local_change_pending = True
+        if snapshot:
+            self._record_pending_change_guard(snapshot, operation, affected_uuids)
+
+    def local_change_snapshot(self) -> dict | None:
+        board = self.ensure_board()
+        with self.transport.lock:
+            topic_uuid = board.uuid
+            topic = self.transport._index.get(topic_uuid)
+            if not topic:
+                return None
+            peers = [
+                addr for addr in self.transport.members
+                if addr != self.transport.address
+                and self.transport.peer_topics.get(addr) == topic_uuid
+            ]
+            if not peers:
+                return None
+            return {
+                "topic_uuid": topic_uuid,
+                "base_state_hash": topic.state_hash,
+                "peers": peers,
+            }
+
+    def _record_pending_change_guard(self, snapshot: dict,
+                                     operation: str | None,
+                                     affected_uuids: list[str] | None) -> None:
+        topic_uuid = snapshot.get("topic_uuid")
+        base_state_hash = snapshot.get("base_state_hash")
+        peers = set(snapshot.get("peers") or [])
+        if not topic_uuid or not base_state_hash or not peers:
+            return
+        topic = self.transport._index.get(topic_uuid)
+        if not topic or topic.state_hash == base_state_hash:
+            return
+        now = time.monotonic()
+        self.pending_change_guards.append({
+            "topic_uuid": topic_uuid,
+            "operation": operation,
+            "affected_uuids": list(affected_uuids or []),
+            "base_state_hash": base_state_hash,
+            "expected_state_hash": topic.state_hash,
+            "pending_peers": peers,
+            "created_at": now,
+            "expires_at": now + self.guard_ttl_seconds,
+        })
 
     def _remember_board(self, board_uuid: str) -> None:
         if self.transport.prsp.data.get("kanban_board_uuid") == board_uuid:
@@ -81,6 +132,7 @@ class KanbanLogic(DataLogic):
     def adopt_incoming_changes(self) -> bool:
         changed = False
         with self.transport.lock:
+            self._prune_pending_change_guards()
             topic_uuid = next(iter(self.transport.peer_topics.values()), None)
             if not topic_uuid:
                 return False
@@ -97,6 +149,8 @@ class KanbanLogic(DataLogic):
                 if not peer_board or peer_board.uuid != topic_uuid:
                     continue
                 local_board = self.transport._index.get(topic_uuid)
+                if self._guard_blocks_peer_state(topic_uuid, addr, peer_board.state_hash):
+                    continue
                 if local_board and local_board.state_hash == peer_board.state_hash:
                     continue
                 imported = PRSPNode.from_dict(peer_board.to_dict())
@@ -106,6 +160,32 @@ class KanbanLogic(DataLogic):
         if changed:
             self.transport._trigger_sync(topic_uuid)
         return changed
+
+    def _prune_pending_change_guards(self) -> None:
+        now = time.monotonic()
+        self.pending_change_guards = [
+            guard for guard in self.pending_change_guards
+            if guard.get("pending_peers") and guard.get("expires_at", 0) > now
+        ]
+
+    def _guard_blocks_peer_state(self, topic_uuid: str, peer_addr: str,
+                                 peer_state_hash: str) -> bool:
+        blocked = False
+        for guard in list(self.pending_change_guards):
+            if guard.get("topic_uuid") != topic_uuid:
+                continue
+            pending_peers = guard.get("pending_peers")
+            if peer_addr not in pending_peers:
+                continue
+            if peer_state_hash == guard.get("expected_state_hash"):
+                pending_peers.discard(peer_addr)
+                continue
+            if peer_state_hash == guard.get("base_state_hash"):
+                blocked = True
+                continue
+            pending_peers.discard(peer_addr)
+        self._prune_pending_change_guards()
+        return blocked
 
     def _peers_aligned_with_local(self, topic_uuid: str, local_state_hash: str) -> bool:
         peers = [
@@ -199,7 +279,9 @@ class KanbanLogic(DataLogic):
 
     def invite_to_discuss(self, peer_addr: str) -> dict:
         board = self.ensure_board()
-        return self.transport.invite_to_discuss(peer_addr, board.uuid)
+        if not self.invite_callback:
+            return {"status": "error", "reason": "invite callback is not configured"}
+        return self.invite_callback(peer_addr, board.uuid)
 
     def create_column(self, name: str) -> PRSPNode | None:
         board = self.ensure_board()
@@ -333,15 +415,25 @@ class KanbanLogic(DataLogic):
         return []
 
 
-def create_logic(transport: TransportLayer, config: dict) -> KanbanLogic:
-    return KanbanLogic(transport)
+def create_logic(transport: SovereignProtocol, config: dict) -> KanbanLogic:
+    return KanbanLogic(transport, config.get("invite_to_discuss"))
 
 
-def build_routes(logic: KanbanLogic, transport: TransportLayer, config: dict) -> list[Route]:
+def build_routes(logic: KanbanLogic, transport: SovereignProtocol, config: dict) -> list[Route]:
     def notify():
         callback = config.get("notify_clients")
         if callback:
             callback()
+
+    def begin_local_change() -> dict | None:
+        return logic.local_change_snapshot()
+
+    def finish_local_change(snapshot: dict | None, ok: bool,
+                            operation: str,
+                            affected_uuids: list[str] | None = None) -> None:
+        if ok:
+            logic.note_local_change(snapshot, operation, affected_uuids)
+            notify()
 
     async def board(request: Request):
         transport.reconcile_integrations()
@@ -376,10 +468,14 @@ def build_routes(logic: KanbanLogic, transport: TransportLayer, config: dict) ->
     async def create_column(request: Request):
         try:
             data = await request.json()
+            snapshot = begin_local_change()
             node = logic.create_column(data.get("name", "New column"))
-            if node:
-                logic.note_local_change()
-                notify()
+            finish_local_change(
+                snapshot,
+                bool(node),
+                "create_column",
+                [node.uuid] if node else [],
+            )
             return JSONResponse({"status": "ok", "uuid": node.uuid} if node else {"status": "error"})
         except Exception as e:
             log_error("create column crashed", e)
@@ -387,35 +483,34 @@ def build_routes(logic: KanbanLogic, transport: TransportLayer, config: dict) ->
 
     async def update_column(request: Request):
         data = await request.json()
+        snapshot = begin_local_change()
         ok = logic.update_column(data["column_uuid"], data.get("name", "Column"))
-        if ok:
-            logic.note_local_change()
-            notify()
+        finish_local_change(snapshot, ok, "update_column", [data["column_uuid"]])
         return JSONResponse({"status": "ok" if ok else "error"}, status_code=200 if ok else 409)
 
     async def delete_column(request: Request):
         data = await request.json()
+        snapshot = begin_local_change()
         ok = logic.delete_column(data["column_uuid"])
-        if ok:
-            logic.note_local_change()
-            notify()
+        finish_local_change(snapshot, ok, "delete_column", [data["column_uuid"]])
         return JSONResponse({"status": "ok" if ok else "error"}, status_code=200 if ok else 409)
 
     async def move_column(request: Request):
         data = await request.json()
+        snapshot = begin_local_change()
         ok = logic.move_column(data["column_uuid"], int(data.get("index", 0)))
-        if ok:
-            logic.note_local_change()
-            notify()
+        finish_local_change(snapshot, ok, "move_column", [data["column_uuid"]])
         return JSONResponse({"status": "ok" if ok else "error"}, status_code=200 if ok else 409)
 
     async def create_card(request: Request):
         try:
             data = await request.json()
+            snapshot = begin_local_change()
             node = logic.create_card(data["column_uuid"], data.get("card", {}))
+            affected = [data["column_uuid"]]
             if node:
-                logic.note_local_change()
-                notify()
+                affected.append(node.uuid)
+            finish_local_change(snapshot, bool(node), "create_card", affected)
             return JSONResponse({"status": "ok", "uuid": node.uuid} if node else {"status": "error"})
         except Exception as e:
             log_error("create card crashed", e)
@@ -423,26 +518,28 @@ def build_routes(logic: KanbanLogic, transport: TransportLayer, config: dict) ->
 
     async def update_card(request: Request):
         data = await request.json()
+        snapshot = begin_local_change()
         ok = logic.update_card(data["card_uuid"], data.get("card", {}))
-        if ok:
-            logic.note_local_change()
-            notify()
+        finish_local_change(snapshot, ok, "update_card", [data["card_uuid"]])
         return JSONResponse({"status": "ok" if ok else "error"}, status_code=200 if ok else 409)
 
     async def delete_card(request: Request):
         data = await request.json()
+        snapshot = begin_local_change()
         ok = logic.delete_card(data["card_uuid"])
-        if ok:
-            logic.note_local_change()
-            notify()
+        finish_local_change(snapshot, ok, "delete_card", [data["card_uuid"]])
         return JSONResponse({"status": "ok" if ok else "error"}, status_code=200 if ok else 409)
 
     async def move_card(request: Request):
         data = await request.json()
+        snapshot = begin_local_change()
         ok = logic.move_card(data["card_uuid"], data["column_uuid"], int(data.get("index", 0)))
-        if ok:
-            logic.note_local_change()
-            notify()
+        finish_local_change(
+            snapshot,
+            ok,
+            "move_card",
+            [data["card_uuid"], data["column_uuid"]],
+        )
         return JSONResponse({"status": "ok" if ok else "error"}, status_code=200 if ok else 409)
 
     return [
@@ -459,7 +556,7 @@ def build_routes(logic: KanbanLogic, transport: TransportLayer, config: dict) ->
     ]
 
 
-def _peer_connected_on_active_topic(transport: TransportLayer, peer_addr: str) -> bool:
+def _peer_connected_on_active_topic(transport: SovereignProtocol, peer_addr: str) -> bool:
     with transport.lock:
         topic_uuid = next(iter(transport.peer_topics.values()), None)
         return bool(topic_uuid and transport.peer_topics.get(peer_addr) == topic_uuid)
