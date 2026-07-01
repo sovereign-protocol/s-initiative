@@ -247,11 +247,11 @@ class KanbanLogic:
                 continue
             board = self.ensure_board()
             top_event = self._top_transition_event(addr, board.uuid)
-            if not top_event or top_event["type"] in ("agreement", "accepted_change"):
+            if not top_event or top_event["type"] == "in_agreement":
                 continue
-            if top_event["type"] != "intentional_change":
+            if top_event["type"] != "peer_made_changes":
                 for event in self.session.analyze_peer_transitions(addr, board.uuid):
-                    if event["type"] not in ("intentional_change", "missing_local_node"):
+                    if event["type"] not in ("peer_made_changes", "local_missing_node"):
                         continue
                     if event["node_uuid"] == board.uuid:
                         continue
@@ -287,27 +287,34 @@ class KanbanLogic:
 
     def transition_by_node(self, events: list[dict]) -> dict:
         priority = {
-            "conflict": 6,
-            "parallel_independent_changes": 5,
-            "intentional_change": 4,
-            "local_intentional_change": 3,
-            "missing_local_node": 3,
-            "missing_peer_node": 2,
-            "accepted_change": 1,
-            "agreement": 0,
+            "divergence": 6,
+            "cannot_compare": 5,
+            "peer_made_changes": 4,
+            "local_missing_node": 4,
+            "local_made_changes": 3,
+            "peer_missing_node": 3,
+            "in_agreement": 0,
         }
         out = {}
         for event in events:
             node_uuid = event.get("node_uuid")
             if not node_uuid:
                 continue
-            current = out.get(node_uuid)
-            if current and priority.get(current["type"], 0) >= priority.get(event["type"], 0):
-                continue
-            out[node_uuid] = {
+            event_info = {
                 "type": event["type"],
                 "peer_addr": event.get("peer_addr"),
             }
+            current = out.get(node_uuid)
+            if current:
+                if event["type"] != "in_agreement":
+                    current.setdefault("events", []).append(dict(event_info))
+                if priority.get(current["type"], 0) >= priority.get(event["type"], 0):
+                    continue
+                current.update(event_info)
+                continue
+            out[node_uuid] = dict(event_info)
+            if event["type"] != "in_agreement":
+                out[node_uuid]["events"] = [dict(event_info)]
         return out
 
     def columns(self, board: PRSPNode | None = None) -> list[PRSPNode]:

@@ -167,7 +167,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         payload = right.logic.board_payload()
         self.assertEqual(
             payload["transition_by_node"][card.uuid]["type"],
-            "missing_local_node",
+            "local_missing_node",
         )
         adopt = right.logic.accept_peer_node(left.address, card.uuid)
         self.assertEqual(adopt.status, "ok")
@@ -189,7 +189,31 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertIn(card.uuid, left.session.protocol.index)
         self.assertEqual(
             payload["transition_by_node"][board.uuid]["type"],
-            "local_intentional_change",
+            "local_made_changes",
+        )
+
+    def test_transition_by_node_keeps_all_peer_events(self):
+        runtime = self.runtime(8311)
+        node_uuid = "node-1"
+
+        out = runtime.logic.transition_by_node([
+            {
+                "node_uuid": node_uuid,
+                "type": "peer_missing_node",
+                "peer_addr": "http://127.0.0.1:8002",
+            },
+            {
+                "node_uuid": node_uuid,
+                "type": "divergence",
+                "peer_addr": "http://127.0.0.1:8003",
+            },
+        ])
+
+        self.assertEqual(out[node_uuid]["type"], "divergence")
+        self.assertEqual(len(out[node_uuid]["events"]), 2)
+        self.assertEqual(
+            [event["peer_addr"] for event in out[node_uuid]["events"]],
+            ["http://127.0.0.1:8002", "http://127.0.0.1:8003"],
         )
 
     @staticmethod

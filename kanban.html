@@ -370,13 +370,64 @@
     }
     function hasActionableTransition(uuid) {
       const info = transitionInfo(uuid);
-      return info && !["agreement", "accepted_change"].includes(info.type);
+      return info && info.type !== "in_agreement";
     }
     function applyTransitionClass(element, uuid) {
       const info = transitionInfo(uuid);
-      if (!info || ["agreement", "accepted_change"].includes(info.type)) return;
+      if (!info || info.type === "in_agreement") return;
       element.classList.add("diff", `event-${info.type}`);
-      element.title = `${info.type} from ${info.peer_addr}`;
+      element.title = transitionLabel(info);
+      element.dataset.transitionLabel = transitionLabel(info);
+    }
+    function transitionLabel(info) {
+      const events = (info.events || [info]).filter((event) => event.type !== "in_agreement");
+      if (events.length > 1) return groupedTransitionLabel(events);
+      const peer = peerLabel(info.peer_addr);
+      const labels = {
+        in_agreement: "In agreement",
+        peer_made_changes: `Changes from ${peer}`,
+        local_made_changes: `My changes not in ${peer}`,
+        local_missing_node: `Only in ${peer}`,
+        peer_missing_node: `Missing in ${peer}`,
+        divergence: `Diverged from ${peer}`,
+        cannot_compare: `Cannot compare with ${peer}`,
+      };
+      return labels[info.type] || "Difference";
+    }
+    function groupedTransitionLabel(events) {
+      const order = [
+        "divergence",
+        "cannot_compare",
+        "peer_made_changes",
+        "local_missing_node",
+        "local_made_changes",
+        "peer_missing_node",
+      ];
+      const labels = {
+        divergence: "Diverged from",
+        cannot_compare: "Cannot compare with",
+        peer_made_changes: "Changes from",
+        local_missing_node: "Only in",
+        local_made_changes: "My changes not in",
+        peer_missing_node: "Missing in",
+      };
+      return order
+        .filter((type) => events.some((event) => event.type === type))
+        .map((type) => {
+          const peers = events
+            .filter((event) => event.type === type)
+            .map((event) => peerLabel(event.peer_addr));
+          return `${labels[type]} ${dedupe(peers).join(", ")}`;
+        })
+        .join("; ");
+    }
+    function dedupe(items) {
+      return [...new Set(items)];
+    }
+    function peerLabel(address) {
+      const text = String(address || "");
+      const match = text.match(/:(\d+)(?:\/)?$/);
+      return match ? match[1] : text.replace(/^https?:\/\//, "") || "peer";
     }
     function findNode(node, uuid) {
       if (!node) return null;
