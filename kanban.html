@@ -8,8 +8,14 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="brand-mark"></span><strong>Kanban Board</strong></div>
+    <div class="brand"><span class="brand-mark"></span><strong>S-Kanban</strong><span class="brand-subtitle">Perspectives</span></div>
     <div class="top-actions">
+      <select id="boardSelect"></select>
+      <button id="newBoardBtn">New</button>
+      <button id="copyBoardBtn">Copy</button>
+      <button id="deleteBoardBtn">Delete</button>
+      <button id="shareBoardBtn">Share</button>
+      <button id="profileBtn">Profile</button>
       <label class="toggle"><input id="autoAdopt" type="checkbox"> Auto-adopt</label>
       <button id="inviteBtn">Invite</button>
       <button id="leaveBtn">Leave</button>
@@ -19,7 +25,7 @@
 
   <main>
     <div class="board-title">
-      <input id="boardName" readonly>
+      <input id="boardName">
       <span id="statusText"></span>
     </div>
     <section id="board" class="board"></section>
@@ -30,7 +36,9 @@
       <h2 id="cardModalTitle">Card</h2>
       <label>Name<input id="cardName"></label>
       <label>Description<textarea id="cardDescription" rows="5"></textarea></label>
-      <label>Owner(s)<input id="cardOwners" placeholder="Alice, Bob"></label>
+      <label>Participants<input id="cardParticipants" list="participantOptions" placeholder="Owner, participant, participant"></label>
+      <div id="participantPicker" class="user-picker"></div>
+      <datalist id="participantOptions"></datalist>
       <menu>
         <button id="deleteCardBtn" type="button" class="danger">Delete</button>
         <span></span>
@@ -58,6 +66,7 @@
     let dragActive = false;
     let modalCard = null;
     let modalColumn = null;
+    let statusResetAt = 0;
 
     const el = (id) => document.getElementById(id);
 
@@ -80,6 +89,7 @@
         state = await api("/api/kanban/board");
         el("boardName").value = state.board.data.name || "Kanban Board";
         el("autoAdopt").checked = Boolean(state.auto_adopt);
+        renderBoardSelector();
         renderNetwork();
         renderBoard();
       } catch (error) {
@@ -89,9 +99,131 @@
 
     function renderNetwork() {
       const peers = (state.network.members || []).filter((item) => item !== state.address);
-      el("networkBtn").textContent = peers.length ? `${peers.length + 1} connected` : "local";
-      el("networkBtn").title = peers.join("\\n");
-      el("statusText").textContent = state.address;
+      const held = peers.filter((addr) => peerStatus(addr).state === "on_hold");
+      const networkBtn = el("networkBtn");
+      networkBtn.replaceChildren();
+      networkBtn.className = peers.length ? "peer-cluster" : "peer-cluster local";
+      if (!peers.length) {
+        networkBtn.textContent = "local";
+      } else {
+        for (const addr of peers.slice(0, 4)) {
+          const user = userForParticipant(addr);
+          const avatar = document.createElement("span");
+          avatar.className = "header-avatar";
+          if (peerStatus(addr).state === "on_hold") avatar.classList.add("on-hold");
+          avatar.textContent = initials(user.name || peerLabel(addr));
+          avatar.title = peerLabel(addr);
+          networkBtn.append(avatar);
+        }
+        if (peers.length > 4) {
+          const more = document.createElement("span");
+          more.className = "header-avatar more";
+          more.textContent = `+${peers.length - 4}`;
+          networkBtn.append(more);
+        }
+      }
+      el("networkBtn").title = peers.map((addr) => {
+        const status = peerStatus(addr);
+        const suffix = status.state === "on_hold"
+          ? ` (on hold${status.last_error ? `: ${status.last_error}` : ""})`
+          : "";
+        return `${peerLabel(addr)}${suffix}`;
+      }).join("\\n");
+      if (Date.now() > statusResetAt) {
+        el("statusText").textContent = state.address;
+        el("statusText").className = "idle";
+      }
+    }
+
+    function openNetworkPanel() {
+      el("simpleTitle").textContent = "Peers";
+      const fields = el("simpleFields");
+      fields.replaceChildren();
+      const peers = (state.network.members || []).filter((item) => item !== state.address);
+      if (!peers.length) {
+        const empty = document.createElement("p");
+        empty.className = "confirm-text";
+        empty.textContent = "No connected peers.";
+        fields.append(empty);
+      }
+      for (const addr of peers) {
+        const row = document.createElement("div");
+        row.className = "peer-row";
+        const name = document.createElement("strong");
+        name.textContent = peerLabel(addr);
+        const status = document.createElement("span");
+        const info = peerStatus(addr);
+        status.textContent = info.state === "on_hold" ? "on hold" : "online";
+        status.className = info.state === "on_hold" ? "peer-hold" : "peer-online";
+        const topics = document.createElement("span");
+        const topicUuids = state.network?.peers?.[addr]?.topic_uuids || [];
+        topics.textContent = topicUuids.length
+          ? topicUuids.map((uuid) => uuid.slice(0, 8)).join(", ")
+          : "no topics";
+        row.append(name, status, topics);
+        fields.append(row);
+      }
+      el("simpleForm").onsubmit = (event) => {
+        event.preventDefault();
+        el("simpleModal").close();
+      };
+      el("simpleModal").showModal();
+    }
+
+    function renderBoardSelector() {
+      const select = el("boardSelect");
+      select.replaceChildren();
+      for (const board of state.boards || []) {
+        const option = document.createElement("option");
+        option.value = board.uuid;
+        option.textContent = board.data.name || "Kanban Board";
+        option.selected = board.uuid === state.board.uuid;
+        select.append(option);
+      }
+      renderParticipantOptions();
+    }
+
+    function renderParticipantOptions() {
+      const options = el("participantOptions");
+      options.replaceChildren();
+      for (const user of state.users || []) {
+        const option = document.createElement("option");
+        option.value = user.name;
+        option.label = user.address;
+        options.append(option);
+      }
+    }
+
+    function renderUserPicker(containerId, inputId) {
+      const container = el(containerId);
+      container.replaceChildren();
+      const selected = normalizeParticipantsInput(el(inputId).value);
+      for (const user of state.users || []) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "user-choice";
+        if (selected.includes(user.address)) button.classList.add("selected");
+        const avatar = document.createElement("span");
+        avatar.className = "participant-avatar";
+        if (user.picture) {
+          avatar.style.backgroundImage = `url("${cssUrl(user.picture)}")`;
+        } else {
+          avatar.textContent = initials(user.name);
+        }
+        const name = document.createElement("span");
+        name.textContent = user.name;
+        button.append(avatar, name);
+        button.onclick = () => {
+          const index = selected.indexOf(user.address);
+          if (index >= 0) selected.splice(index, 1);
+          else selected.push(user.address);
+          el(inputId).value = [...selected]
+            .map((address) => userForParticipant(address).name)
+            .join(", ");
+          renderUserPicker(containerId, inputId);
+        };
+        container.append(button);
+      }
     }
 
     function renderBoard() {
@@ -111,7 +243,7 @@
       const article = document.createElement("article");
       article.className = "column";
       if (ghost) article.classList.add("ghost");
-      article.draggable = true;
+      article.draggable = !ghost;
       article.dataset.uuid = column.uuid;
       applyTransitionClass(article, column.uuid);
 
@@ -124,9 +256,13 @@
         column_uuid: column.uuid,
         name: name.value,
       }), "Column renamed");
-      const del = icon("x", () => run(() => api("/api/kanban/columns/delete", {
-        column_uuid: column.uuid,
-      }), "Column deleted"));
+      const del = icon("x", () => confirmAction(
+        "Delete column?",
+        "This deletes the column and all cards inside it.",
+        () => run(() => api("/api/kanban/columns/delete", {
+          column_uuid: column.uuid,
+        }), "Column deleted"),
+      ));
       if (ghost) del.style.display = "none";
       head.append(name, del);
       const tools = document.createElement("div");
@@ -140,8 +276,10 @@
       const list = document.createElement("div");
       list.className = "card-list";
       list.dataset.columnUuid = column.uuid;
-      list.ondragover = onCardDragOver;
-      list.ondrop = (event) => dropCard(event, column.uuid);
+      if (!ghost) {
+        list.ondragover = onCardDragOver;
+        list.ondrop = (event) => dropCard(event, column.uuid);
+      }
       cards(column).forEach((card) => list.append(renderCard(card)));
       if (!ghost) {
         ghostCards(column.uuid).forEach((card) => list.append(renderCard(card, true)));
@@ -154,19 +292,21 @@
       add.onclick = () => openCard(null, column.uuid);
       if (!ghost) article.append(add);
 
-      article.ondragstart = (event) => {
-        if (event.target.closest(".card")) return;
-        draggedColumn = column.uuid;
-        dragActive = true;
-        article.classList.add("dragging");
-      };
-      article.ondragend = () => {
-        article.classList.remove("dragging");
-        draggedColumn = null;
-        dragActive = false;
-      };
-      article.ondragover = (event) => event.preventDefault();
-      article.ondrop = (event) => dropColumn(event, column.uuid);
+      if (!ghost) {
+        article.ondragstart = (event) => {
+          if (event.target.closest(".card")) return;
+          draggedColumn = column.uuid;
+          dragActive = true;
+          article.classList.add("dragging");
+        };
+        article.ondragend = () => {
+          article.classList.remove("dragging");
+          draggedColumn = null;
+          dragActive = false;
+        };
+        article.ondragover = (event) => event.preventDefault();
+        article.ondrop = (event) => dropColumn(event, column.uuid);
+      }
       return article;
     }
 
@@ -175,14 +315,21 @@
       node.className = "card";
       if (ghost) node.classList.add("ghost");
       applyTransitionClass(node, card.uuid);
-      node.draggable = true;
+      node.draggable = !ghost;
       node.dataset.uuid = card.uuid;
-      const owners = Array.isArray(card.data.owners) ? card.data.owners.join(", ") : "";
-      node.innerHTML = `
-        <div class="card-title">${escapeHtml(card.data.name || "Card")}</div>
-        ${card.data.description ? `<div class="card-desc">${escapeHtml(card.data.description)}</div>` : ""}
-        ${owners ? `<div class="owners">${escapeHtml(owners)}</div>` : ""}
-      `;
+      node.replaceChildren();
+      const title = document.createElement("div");
+      title.className = "card-title";
+      title.textContent = card.data.name || "Card";
+      node.append(title);
+      if (card.data.description) {
+        const desc = document.createElement("div");
+        desc.className = "card-desc";
+        desc.textContent = card.data.description;
+        node.append(desc);
+      }
+      const participantItems = Array.isArray(card.data.participants) ? card.data.participants : [];
+      if (participantItems.length) node.append(renderParticipants(participantItems));
       if (!state.auto_adopt && hasActionableTransition(card.uuid)) {
         node.append(adoptButton(card.uuid));
       }
@@ -191,18 +338,48 @@
         if (event.target.closest("button")) return;
         openCard(card, card.parent_uuid);
       };
-      node.ondragstart = (event) => {
-        draggedCard = card.uuid;
-        dragActive = true;
-        node.classList.add("dragging");
-        event.stopPropagation();
-      };
-      node.ondragend = () => {
-        draggedCard = null;
-        dragActive = false;
-        node.classList.remove("dragging");
-      };
+      if (!ghost) {
+        node.ondragstart = (event) => {
+          draggedCard = card.uuid;
+          dragActive = true;
+          node.classList.add("dragging");
+          event.stopPropagation();
+        };
+        node.ondragend = () => {
+          draggedCard = null;
+          dragActive = false;
+          node.classList.remove("dragging");
+        };
+      }
       return node;
+    }
+
+    function renderParticipants(participants) {
+      const wrap = document.createElement("div");
+      wrap.className = "participants";
+      wrap.title = "Participants; first is owner";
+      participants.forEach((participant, index) => {
+        const user = userForParticipant(participant);
+        const avatar = document.createElement("span");
+        avatar.className = "participant-avatar";
+        if (index === 0) avatar.classList.add("owner");
+        avatar.title = index === 0 ? `${user.name} (owner)` : user.name;
+        if (user.picture) {
+          avatar.style.backgroundImage = `url("${cssUrl(user.picture)}")`;
+          avatar.textContent = "";
+        } else {
+          avatar.textContent = initials(user.name);
+        }
+        if (user.address === state.address) avatar.classList.add("me");
+        wrap.append(avatar);
+        if (index === 0) {
+          const owner = document.createElement("span");
+          owner.className = "owner-label";
+          owner.textContent = user.name;
+          wrap.append(owner);
+        }
+      });
+      return wrap;
     }
 
     function adoptButton(uuid) {
@@ -235,7 +412,10 @@
       el("cardModalTitle").textContent = card ? "Edit Card" : "Add Card";
       el("cardName").value = card ? card.data.name || "" : "";
       el("cardDescription").value = card ? card.data.description || "" : "";
-      el("cardOwners").value = card && Array.isArray(card.data.owners) ? card.data.owners.join(", ") : "";
+      el("cardParticipants").value = card && Array.isArray(card.data.participants)
+        ? card.data.participants.map((participant) => userForParticipant(participant).name).join(", ")
+        : "";
+      renderUserPicker("participantPicker", "cardParticipants");
       el("deleteCardBtn").style.display = card ? "inline-block" : "none";
       el("cardModal").showModal();
     }
@@ -245,7 +425,7 @@
       const payload = {
         name: el("cardName").value,
         description: el("cardDescription").value,
-        owners: el("cardOwners").value,
+        participants: normalizeParticipantsInput(el("cardParticipants").value),
       };
       if (modalCard) {
         payload.card_uuid = modalCard.uuid;
@@ -259,8 +439,14 @@
 
     el("deleteCardBtn").onclick = async () => {
       if (!modalCard) return;
-      await run(() => api("/api/kanban/cards/delete", {card_uuid: modalCard.uuid}), "Card deleted");
-      el("cardModal").close();
+      await confirmAction(
+        "Delete card?",
+        "This removes the card from this board.",
+        async () => {
+          await run(() => api("/api/kanban/cards/delete", {card_uuid: modalCard.uuid}), "Card deleted");
+          el("cardModal").close();
+        },
+      );
     };
     el("cancelCardBtn").onclick = () => el("cardModal").close();
 
@@ -285,6 +471,24 @@
     }
     el("cancelSimpleBtn").onclick = () => el("simpleModal").close();
 
+    function confirmAction(title, message, action) {
+      el("simpleTitle").textContent = title;
+      const body = document.createElement("p");
+      body.className = "confirm-text";
+      body.textContent = message;
+      el("simpleFields").replaceChildren(body);
+      el("simpleForm").onsubmit = async (event) => {
+        event.preventDefault();
+        try {
+          await action();
+          el("simpleModal").close();
+        } catch (error) {
+          showStatus(error.message, true);
+        }
+      };
+      el("simpleModal").showModal();
+    }
+
     async function dropCard(event, columnUuid) {
       event.preventDefault();
       event.stopPropagation();
@@ -292,12 +496,16 @@
       const order = [...event.currentTarget.querySelectorAll(".card")].map((item) => item.dataset.uuid);
       const cardUuid = draggedCard;
       draggedCard = null;
-      dragActive = false;
-      await run(() => api("/api/kanban/cards/move", {
-        card_uuid: cardUuid,
-        column_uuid: columnUuid,
-        index: Math.max(0, order.indexOf(cardUuid)),
-      }), "Card moved");
+      try {
+        await run(() => api("/api/kanban/cards/move", {
+          card_uuid: cardUuid,
+          column_uuid: columnUuid,
+          index: Math.max(0, order.indexOf(cardUuid)),
+        }), "Card moved");
+      } finally {
+        dragActive = false;
+        await loadBoard();
+      }
     }
 
     async function dropColumn(event, targetUuid) {
@@ -307,11 +515,15 @@
       const index = order.indexOf(targetUuid);
       const columnUuid = draggedColumn;
       draggedColumn = null;
-      dragActive = false;
-      await run(() => api("/api/kanban/columns/move", {
-        column_uuid: columnUuid,
-        index,
-      }), "Column moved");
+      try {
+        await run(() => api("/api/kanban/columns/move", {
+          column_uuid: columnUuid,
+          index,
+        }), "Column moved");
+      } finally {
+        dragActive = false;
+        await loadBoard();
+      }
     }
 
     function onCardDragOver(event) {
@@ -378,6 +590,17 @@
       element.classList.add("diff", `event-${info.type}`);
       element.title = transitionLabel(info);
       element.dataset.transitionLabel = transitionLabel(info);
+      element.dataset.transitionSymbol = transitionSymbol(info.type);
+    }
+    function transitionSymbol(type) {
+      return {
+        peer_made_changes: "+",
+        local_missing_node: "+",
+        local_made_changes: "~",
+        peer_missing_node: "-",
+        divergence: "!",
+        cannot_compare: "?",
+      }[type] || "*";
     }
     function transitionLabel(info) {
       const events = (info.events || [info]).filter((event) => event.type !== "in_agreement");
@@ -425,9 +648,62 @@
       return [...new Set(items)];
     }
     function peerLabel(address) {
+      const identityName = peerIdentityValue(address, "name");
+      if (identityName) return identityName;
       const text = String(address || "");
       const match = text.match(/:(\d+)(?:\/)?$/);
       return match ? match[1] : text.replace(/^https?:\/\//, "") || "peer";
+    }
+    function peerStatus(address) {
+      return state.network?.peer_status?.[address]
+        || state.network?.peers?.[address]?.status
+        || {state: "online", failures: 0, last_error: null};
+    }
+    function userForParticipant(participant) {
+      const users = state.users || [];
+      return users.find((user) => user.address === participant)
+        || users.find((user) => user.name === participant)
+        || {address: participant, name: participant, picture: ""};
+    }
+    function normalizeParticipantsInput(value) {
+      return String(value || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .map((item) => {
+          const user = (state.users || []).find((candidate) =>
+            candidate.name === item || candidate.address === item);
+          return user ? user.address : item;
+        });
+    }
+    function initials(name) {
+      return String(name || "?")
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((part) => part[0].toUpperCase())
+        .join("") || "?";
+    }
+    function cssUrl(value) {
+      return String(value || "").replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+    }
+    function peerIdentityValue(address, field) {
+      const root = (state.peers || {})[address];
+      const node = findIdentityField(root, field);
+      return node?.data?.value || node?.data?.[field] || "";
+    }
+    function findIdentityField(node, field) {
+      if (!node) return null;
+      if (node.data?.type === "identity_user") {
+        if (field === "name" && node.data?.display_name) return {data: {value: node.data.display_name}};
+        return node.data?.[field] ? node : null;
+      }
+      if (node.data?.type === "identity_field" && node.data?.field === field) return node;
+      for (const child of node.children || []) {
+        const found = findIdentityField(child, field);
+        if (found) return found;
+      }
+      return null;
     }
     function findNode(node, uuid) {
       if (!node) return null;
@@ -442,6 +718,7 @@
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = text;
+      button.setAttribute("aria-label", text);
       button.onclick = (event) => {
         event.stopPropagation();
         action();
@@ -459,13 +736,38 @@
     }
     function showStatus(message, error = false) {
       el("statusText").textContent = message;
-      el("statusText").className = error ? "error" : "";
-    }
-    function escapeHtml(value) {
-      return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+      el("statusText").className = error ? "toast error" : "toast";
+      statusResetAt = Date.now() + 3500;
     }
 
     el("autoAdopt").onchange = () => run(() => api("/api/kanban/auto_adopt", {enabled: el("autoAdopt").checked}), "Auto-adopt updated");
+    el("networkBtn").onclick = openNetworkPanel;
+    el("boardSelect").onchange = () => run(() => api("/api/kanban/boards/select", {board_uuid: el("boardSelect").value}), "Board selected");
+    el("boardName").onchange = () => run(() => api("/api/kanban/boards/rename", {
+      board_uuid: state.board.uuid,
+      name: el("boardName").value,
+    }), "Board renamed");
+    el("newBoardBtn").onclick = () => openSimple("New Board", [{name: "name", label: "Name", value: "Kanban Board"}],
+      async (form) => api("/api/kanban/boards/create", {name: form.get("name")}));
+    el("copyBoardBtn").onclick = () => run(() => api("/api/kanban/boards/copy", {board_uuid: state.board.uuid}), "Board copied");
+    el("deleteBoardBtn").onclick = () => confirmAction(
+      "Delete board?",
+      "This deletes the current board and all cards inside it.",
+      () => run(() => api("/api/kanban/boards/delete", {board_uuid: state.board.uuid}), "Board deleted"),
+    );
+    el("shareBoardBtn").onclick = () => openSimple("Share Board", [
+      {name: "address", label: "Peer address", value: "http://127.0.0.1:8002"},
+    ], async (form) => api("/api/kanban/boards/share", {
+      address: form.get("address"),
+      board_uuid: state.board.uuid,
+    }));
+    el("profileBtn").onclick = () => openSimple("Profile", [
+      {name: "name", label: "Name", value: state.user_profile?.data?.display_name || state.address},
+      {name: "picture", label: "Picture URL", value: state.user_profile?.data?.picture || ""},
+    ], async (form) => api("/api/kanban/profile", {
+      name: form.get("name"),
+      picture: form.get("picture"),
+    }));
     el("inviteBtn").onclick = () => openSimple("Invite", [{name: "address", label: "Peer address", value: "http://127.0.0.1:8002"}],
       async (form) => api("/api/kanban/invite", {address: form.get("address")}));
     el("leaveBtn").onclick = () => run(() => api("/api/leave", {}), "Left discussion");

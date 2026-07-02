@@ -24,7 +24,19 @@ class MemoryHttpClient:
                   timeout: float = 5) -> dict:
         runtime, path = self._split(url)
         if path == "/api/join_discussion":
-            return runtime.adapter.join_discussion(payload["address"], payload.get("topic_uuid"))
+            join = getattr(runtime.logic, "join_discussion", None)
+            if join:
+                return join(
+                    runtime,
+                    payload["address"],
+                    payload.get("topic_uuid"),
+                    payload.get("topic_uuids"),
+                )
+            return runtime.adapter.join_discussion(
+                payload["address"],
+                payload.get("topic_uuid"),
+                payload.get("topic_uuids"),
+            )
         if path == "/p2p/join":
             response, status = runtime.adapter.p2p_join(payload)
             if status != 200:
@@ -61,6 +73,10 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertEqual(board.data["type"], "kanban_board")
         self.assertEqual(
+            runtime.session.protocol.index[board.parent_uuid].data,
+            {"type": "kanban_app", "name": "S-Kanban"},
+        )
+        self.assertEqual(
             [column.data["name"] for column in runtime.logic.columns(board)],
             ["To Do", "Doing", "Done"],
         )
@@ -79,7 +95,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         moved = runtime.session.protocol.index[card.uuid]
         self.assertEqual(moved.parent_uuid, doing.uuid)
         self.assertEqual(moved.data["name"], "Task 2")
-        self.assertEqual(moved.data["owners"], ["B"])
+        self.assertEqual(moved.data["participants"], ["B"])
 
     def test_two_clients_auto_adopt_collaborate(self):
         left = self.runtime(8303)
@@ -92,6 +108,9 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         invite = left.logic.invite(left, right.address)
         self.assertEqual(invite["status"], "ok")
+        self.assertNotIn(board.uuid, right.session.protocol.index)
+        share = left.logic.share_board(left, right.address, board.uuid)
+        self.assertEqual(share["status"], "ok")
         self.assertEqual(right.logic.ensure_board().uuid, board.uuid)
 
         column = left.logic.columns(board)[0]
@@ -110,6 +129,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.adapter.http = client
         board = left.logic.ensure_board()
         left.logic.invite(left, right.address)
+        left.logic.share_board(left, right.address, board.uuid)
         first, second = left.logic.columns(board)[:2]
         card = left.logic.create_card(first.uuid, "Move me", "", []).value
         left.adapter.execute_effects(left.session._sync_effects(board.uuid))
@@ -129,6 +149,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.adapter.http = client
         board = left.logic.ensure_board()
         left.logic.invite(left, right.address)
+        left.logic.share_board(left, right.address, board.uuid)
         first, second = left.logic.columns(board)[:2]
 
         card = left.logic.create_card(first.uuid, "Hash safe", "", []).value
@@ -156,6 +177,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.adapter.http = client
         board = left.logic.ensure_board()
         left.logic.invite(left, right.address)
+        left.logic.share_board(left, right.address, board.uuid)
         right.logic.set_auto_adopt(False)
 
         column = left.logic.columns(board)[0]
@@ -181,6 +203,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.adapter.http = client
         board = left.logic.ensure_board()
         left.logic.invite(left, right.address)
+        left.logic.share_board(left, right.address, board.uuid)
         column = left.logic.columns(board)[0]
 
         card = left.logic.create_card(column.uuid, "Local", "", []).value
@@ -215,6 +238,161 @@ class KanbanNewLogicTests(unittest.TestCase):
             [event["peer_addr"] for event in out[node_uuid]["events"]],
             ["http://127.0.0.1:8002", "http://127.0.0.1:8003"],
         )
+
+    def test_rename_board_updates_board_list(self):
+        runtime = self.runtime(8315)
+        board = runtime.logic.ensure_board()
+
+        result = runtime.logic.rename_board(board.uuid, "Planning")
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(runtime.logic.ensure_board().data["name"], "Planning")
+        self.assertEqual(runtime.logic.boards()[0].data["name"], "Planning")
+
+    def test_user_profile_is_single_shared_topic(self):
+        runtime = self.runtime(8316)
+
+        result = runtime.logic.set_user_profile("Alice", "https://example.test/a.png")
+
+        self.assertEqual(result.status, "ok")
+        profile = runtime.logic.user_profile()
+        self.assertEqual(profile.data["type"], "identity_user")
+        self.assertEqual(profile.data["name"], "shared")
+        self.assertEqual(profile.data["display_name"], "Alice")
+        self.assertEqual(profile.data["picture"], "https://example.test/a.png")
+        self.assertEqual(runtime.logic._identity_topic_uuids(), [profile.uuid])
+        self.assertEqual(
+            {child.data["field"]: child.data["value"] for child in profile.children},
+            {
+                "name": "Alice",
+                "picture": "https://example.test/a.png",
+            },
+        )
+
+    def test_invite_shares_only_identity_topic(self):
+        left = self.runtime(8322)
+        right = self.runtime(8323)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        left.logic.ensure_board()
+        left.logic.set_user_profile("Alice", "")
+
+        invite = left.logic.invite(left, right.address)
+
+        self.assertEqual(invite["status"], "ok")
+        topics = invite["topic_uuids"]
+        topic_data = [left.session.protocol.index[uuid].data for uuid in topics]
+        self.assertEqual(len(topic_data), 1)
+        self.assertTrue(any(data.get("role") == "shared_identity" for data in topic_data))
+
+    def test_share_board_adds_selected_board_topic(self):
+        left = self.runtime(8326)
+        right = self.runtime(8327)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        left.logic.invite(left, right.address)
+
+        share = left.logic.share_board(left, right.address, board.uuid)
+
+        self.assertEqual(share["status"], "ok")
+        self.assertIn(board.uuid, share["topic_uuids"])
+        self.assertIn(board.uuid, right.session.protocol.index)
+
+    def test_kanban_rejects_non_board_or_identity_invitation(self):
+        left = self.runtime(8324)
+        right = self.runtime(8325)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        other = left.session.create_child(
+            left.session.protocol.root.uuid,
+            {"type": "folder", "name": "Not S-Kanban"},
+            {},
+        ).value
+
+        result = right.logic.join_discussion(right, left.address, other.uuid)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("board topics", result["reason"])
+
+    def test_first_participant_is_owner(self):
+        runtime = self.runtime(8317)
+        runtime.logic.set_user_profile("Alice", "")
+        board = runtime.logic.ensure_board()
+        column = runtime.logic.columns(board)[0]
+
+        card = runtime.logic.create_card(
+            column.uuid,
+            "Mine",
+            "",
+            [runtime.address],
+        ).value
+
+        self.assertEqual(card.data["participants"], [runtime.address])
+        self.assertEqual(runtime.logic.users()[0]["name"], "Alice")
+
+    def test_card_participants_are_ordered(self):
+        runtime = self.runtime(8318)
+        board = runtime.logic.ensure_board()
+        column = runtime.logic.columns(board)[0]
+
+        card = runtime.logic.create_card(
+            column.uuid,
+            "With people",
+            "",
+            ["owner", "participant"],
+        ).value
+        update = runtime.logic.update_card(
+            card.uuid,
+            "With people",
+            "",
+            ["owner-2", "participant-2"],
+        )
+
+        self.assertEqual(update.status, "ok")
+        self.assertEqual(card.data["participants"], ["owner-2", "participant-2"])
+
+    def test_auto_adopt_updates_board_not_currently_selected(self):
+        left = self.runtime(8319)
+        right = self.runtime(8320)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board1 = left.logic.ensure_board()
+        board2 = left.logic.create_board("Board 2").value
+        left.logic.select_board(board1.uuid)
+        right.logic.ensure_board()
+        left.logic.invite(left, right.address)
+        left.logic.share_board(left, right.address, board1.uuid)
+        left.logic.share_board(left, right.address, board2)
+        right.logic.select_board(board2)
+        right.logic.set_auto_adopt(False)
+        right.logic.select_board(board1.uuid)
+        self.assertTrue(right.logic.auto_adopt_enabled())
+        right.logic.select_board(board2)
+
+        column = left.logic.columns(board1)[0]
+        card = left.logic.create_card(column.uuid, "Board 1 card", "", []).value
+        left.adapter.execute_effects(left.session._sync_effects(board1.uuid))
+        right.logic.board_payload()
+
+        self.assertIn(card.uuid, right.session.protocol.index)
+        self.assertEqual(right.logic.ensure_board().uuid, board2)
+
+    def test_selected_board_is_not_overridden_by_active_topic(self):
+        runtime = self.runtime(8321)
+        shared = runtime.logic.ensure_board()
+        local = runtime.logic.create_board("Local Board").value
+        runtime.session.start_discussion(shared.uuid)
+
+        result = runtime.logic.select_board(local)
+        payload = runtime.logic.board_payload()
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(payload["board"]["uuid"], local)
 
     @staticmethod
     def runtime(port: int):

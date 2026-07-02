@@ -108,7 +108,7 @@ class ServerIntegrationTests(unittest.TestCase):
                         "column_uuid": column_uuid,
                         "name": "Synced Card",
                         "description": "",
-                        "owners": [],
+                        "participants": [],
                     },
                 )
 
@@ -119,6 +119,16 @@ class ServerIntegrationTests(unittest.TestCase):
                     timeout=20,
                 )
                 self.assertEqual(invite["status"], "ok")
+                share = request_json(
+                    "POST",
+                    f"http://127.0.0.1:{port_a}/api/kanban/boards/share",
+                    {
+                        "address": f"http://127.0.0.1:{port_b}",
+                        "board_uuid": board_a["uuid"],
+                    },
+                    timeout=20,
+                )
+                self.assertEqual(share["status"], "ok")
 
                 deadline = time.monotonic() + 10
                 final_a = final_b = None
@@ -207,7 +217,7 @@ class ServerIntegrationTests(unittest.TestCase):
                         "column_uuid": column_uuid,
                         "name": "Local Card",
                         "description": "",
-                        "owners": [],
+                        "participants": [],
                     },
                 )
 
@@ -282,6 +292,16 @@ class ServerIntegrationTests(unittest.TestCase):
                 board_a = request_json(
                     "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
                 )["board"]
+                share = request_json(
+                    "POST",
+                    f"http://127.0.0.1:{port_a}/api/kanban/boards/share",
+                    {
+                        "address": f"http://127.0.0.1:{port_b}",
+                        "board_uuid": board_a["uuid"],
+                    },
+                    timeout=20,
+                )
+                self.assertEqual(share["status"], "ok")
                 source_uuid = board_a["children"][0]["uuid"]
                 target_uuid = board_a["children"][1]["uuid"]
                 create = request_json(
@@ -291,7 +311,7 @@ class ServerIntegrationTests(unittest.TestCase):
                         "column_uuid": source_uuid,
                         "name": "Moved Card",
                         "description": "",
-                        "owners": [],
+                        "participants": [],
                     },
                 )
                 card_uuid = create["value"]["uuid"]
