@@ -1,778 +1,1090 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Kanban Board</title>
-  <link rel="stylesheet" href="/styles.css">
-</head>
-<body>
-  <header class="topbar">
-    <div class="brand"><span class="brand-mark"></span><strong>S-Kanban</strong><span class="brand-subtitle">Perspectives</span></div>
-    <div class="top-actions">
-      <select id="boardSelect"></select>
-      <button id="newBoardBtn">New</button>
-      <button id="copyBoardBtn">Copy</button>
-      <button id="deleteBoardBtn">Delete</button>
-      <button id="shareBoardBtn">Share</button>
-      <button id="profileBtn">Profile</button>
-      <label class="toggle"><input id="autoAdopt" type="checkbox"> Auto-adopt</label>
-      <button id="inviteBtn">Invite</button>
-      <button id="leaveBtn">Leave</button>
-      <button id="networkBtn">local</button>
-    </div>
-  </header>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kanban Board</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"></span><strong>S-Kanban</strong
+        ><span class="brand-subtitle">Perspectives</span>
+      </div>
+      <div class="top-actions">
+        <select id="boardSelect"></select>
+        <button id="newBoardBtn">New</button>
+        <button id="copyBoardBtn">Copy</button>
+        <button id="deleteBoardBtn">Delete</button>
+        <button id="shareBoardBtn">Share</button>
+        <button id="unshareBoardBtn">Unshare</button>
+        <button id="profileBtn">Profile</button>
+        <label class="toggle"><input id="autoAdopt" type="checkbox" /> Auto-adopt</label>
+        <button id="networkBtn">local</button>
+      </div>
+    </header>
 
-  <main>
-    <div class="board-title">
-      <input id="boardName">
-      <span id="statusText"></span>
-    </div>
-    <section id="board" class="board"></section>
-  </main>
+    <main>
+      <div class="board-title">
+        <input id="boardName" />
+        <span id="statusText"></span>
+      </div>
+      <section id="board" class="board"></section>
+    </main>
 
-  <dialog id="cardModal">
-    <form method="dialog" id="cardForm">
-      <h2 id="cardModalTitle">Card</h2>
-      <label>Name<input id="cardName"></label>
-      <label>Description<textarea id="cardDescription" rows="5"></textarea></label>
-      <label>Participants<input id="cardParticipants" list="participantOptions" placeholder="Owner, participant, participant"></label>
-      <div id="participantPicker" class="user-picker"></div>
-      <datalist id="participantOptions"></datalist>
-      <menu>
-        <button id="deleteCardBtn" type="button" class="danger">Delete</button>
-        <span></span>
-        <button type="button" id="cancelCardBtn">Cancel</button>
-        <button type="submit" class="primary">Save</button>
-      </menu>
-    </form>
-  </dialog>
+    <dialog id="cardModal">
+      <form method="dialog" id="cardForm">
+        <h2 id="cardModalTitle">Card</h2>
+        <label>Name<input id="cardName" /></label>
+        <label>Description<textarea id="cardDescription" rows="5"></textarea></label>
+        <label
+          >Participants<input
+            id="cardParticipants"
+            list="participantOptions"
+            placeholder="Owner, participant, participant"
+        /></label>
+        <div id="participantPicker" class="user-picker"></div>
+        <datalist id="participantOptions"></datalist>
+        <menu>
+          <button id="deleteCardBtn" type="button" class="danger">Delete</button>
+          <span></span>
+          <button type="button" id="cancelCardBtn">Cancel</button>
+          <button type="submit" class="primary">Save</button>
+        </menu>
+      </form>
+    </dialog>
 
-  <dialog id="simpleModal">
-    <form method="dialog" id="simpleForm">
-      <h2 id="simpleTitle">Action</h2>
-      <div id="simpleFields"></div>
-      <menu>
-        <button type="button" id="cancelSimpleBtn">Cancel</button>
-        <button type="submit" class="primary">Apply</button>
-      </menu>
-    </form>
-  </dialog>
+    <dialog id="simpleModal">
+      <form method="dialog" id="simpleForm">
+        <h2 id="simpleTitle">Action</h2>
+        <div id="simpleFields"></div>
+        <menu>
+          <button type="button" id="cancelSimpleBtn">Cancel</button>
+          <button type="submit" class="primary">Apply</button>
+        </menu>
+      </form>
+    </dialog>
 
-  <script>
-    let state = null;
-    let draggedCard = null;
-    let draggedColumn = null;
-    let dragActive = false;
-    let modalCard = null;
-    let modalColumn = null;
-    let statusResetAt = 0;
+    <script>
+      let state = null;
+      let draggedCard = null;
+      let draggedColumn = null;
+      let dragActive = false;
+      let modalCard = null;
+      let modalColumn = null;
+      let modalParticipants = [];
+      let statusResetAt = 0;
 
-    const el = (id) => document.getElementById(id);
+      const el = (id) => document.getElementById(id);
 
-    async function api(path, body) {
-      const response = await fetch(path, {
-        method: body === undefined ? "GET" : "POST",
-        headers: body === undefined ? {} : {"Content-Type": "application/json"},
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
-      const payload = await response.json();
-      if (!response.ok || payload.status === "error") {
-        throw new Error(payload.reason || "Request failed");
-      }
-      return payload;
-    }
-
-    async function loadBoard() {
-      if (dragActive) return;
-      try {
-        state = await api("/api/kanban/board");
-        el("boardName").value = state.board.data.name || "Kanban Board";
-        el("autoAdopt").checked = Boolean(state.auto_adopt);
-        renderBoardSelector();
-        renderNetwork();
-        renderBoard();
-      } catch (error) {
-        showStatus(error.message, true);
-      }
-    }
-
-    function renderNetwork() {
-      const peers = (state.network.members || []).filter((item) => item !== state.address);
-      const held = peers.filter((addr) => peerStatus(addr).state === "on_hold");
-      const networkBtn = el("networkBtn");
-      networkBtn.replaceChildren();
-      networkBtn.className = peers.length ? "peer-cluster" : "peer-cluster local";
-      if (!peers.length) {
-        networkBtn.textContent = "local";
-      } else {
-        for (const addr of peers.slice(0, 4)) {
-          const user = userForParticipant(addr);
-          const avatar = document.createElement("span");
-          avatar.className = "header-avatar";
-          if (peerStatus(addr).state === "on_hold") avatar.classList.add("on-hold");
-          avatar.textContent = initials(user.name || peerLabel(addr));
-          avatar.title = peerLabel(addr);
-          networkBtn.append(avatar);
+      async function api(path, body) {
+        const response = await fetch(path, {
+          method: body === undefined ? "GET" : "POST",
+          headers: body === undefined ? {} : { "Content-Type": "application/json" },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.status === "error") {
+          throw new Error(payload.reason || "Request failed");
         }
-        if (peers.length > 4) {
-          const more = document.createElement("span");
-          more.className = "header-avatar more";
-          more.textContent = `+${peers.length - 4}`;
-          networkBtn.append(more);
-        }
+        return payload;
       }
-      el("networkBtn").title = peers.map((addr) => {
-        const status = peerStatus(addr);
-        const suffix = status.state === "on_hold"
-          ? ` (on hold${status.last_error ? `: ${status.last_error}` : ""})`
-          : "";
-        return `${peerLabel(addr)}${suffix}`;
-      }).join("\\n");
-      if (Date.now() > statusResetAt) {
-        el("statusText").textContent = state.address;
-        el("statusText").className = "idle";
-      }
-    }
 
-    function openNetworkPanel() {
-      el("simpleTitle").textContent = "Peers";
-      const fields = el("simpleFields");
-      fields.replaceChildren();
-      const peers = (state.network.members || []).filter((item) => item !== state.address);
-      if (!peers.length) {
-        const empty = document.createElement("p");
-        empty.className = "confirm-text";
-        empty.textContent = "No connected peers.";
-        fields.append(empty);
-      }
-      for (const addr of peers) {
-        const row = document.createElement("div");
-        row.className = "peer-row";
-        const name = document.createElement("strong");
-        name.textContent = peerLabel(addr);
-        const status = document.createElement("span");
-        const info = peerStatus(addr);
-        status.textContent = info.state === "on_hold" ? "on hold" : "online";
-        status.className = info.state === "on_hold" ? "peer-hold" : "peer-online";
-        const topics = document.createElement("span");
-        const topicUuids = state.network?.peers?.[addr]?.topic_uuids || [];
-        topics.textContent = topicUuids.length
-          ? topicUuids.map((uuid) => uuid.slice(0, 8)).join(", ")
-          : "no topics";
-        row.append(name, status, topics);
-        fields.append(row);
-      }
-      el("simpleForm").onsubmit = (event) => {
-        event.preventDefault();
-        el("simpleModal").close();
-      };
-      el("simpleModal").showModal();
-    }
-
-    function renderBoardSelector() {
-      const select = el("boardSelect");
-      select.replaceChildren();
-      for (const board of state.boards || []) {
-        const option = document.createElement("option");
-        option.value = board.uuid;
-        option.textContent = board.data.name || "Kanban Board";
-        option.selected = board.uuid === state.board.uuid;
-        select.append(option);
-      }
-      renderParticipantOptions();
-    }
-
-    function renderParticipantOptions() {
-      const options = el("participantOptions");
-      options.replaceChildren();
-      for (const user of state.users || []) {
-        const option = document.createElement("option");
-        option.value = user.name;
-        option.label = user.address;
-        options.append(option);
-      }
-    }
-
-    function renderUserPicker(containerId, inputId) {
-      const container = el(containerId);
-      container.replaceChildren();
-      const selected = normalizeParticipantsInput(el(inputId).value);
-      for (const user of state.users || []) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "user-choice";
-        if (selected.includes(user.address)) button.classList.add("selected");
-        const avatar = document.createElement("span");
-        avatar.className = "participant-avatar";
-        if (user.picture) {
-          avatar.style.backgroundImage = `url("${cssUrl(user.picture)}")`;
+      function renderNetwork() {
+        const peers = (state.network.members || []).filter((item) => item !== state.address);
+        const held = peers.filter((addr) => peerStatus(addr).state === "offline");
+        const networkBtn = el("networkBtn");
+        networkBtn.replaceChildren();
+        networkBtn.className = peers.length ? "peer-cluster" : "peer-cluster local";
+        if (!peers.length) {
+          networkBtn.textContent = "local";
         } else {
-          avatar.textContent = initials(user.name);
+          for (const addr of peers.slice(0, 4)) {
+            const user = userForParticipant(addr);
+            const avatar = document.createElement("span");
+            avatar.className = "header-avatar";
+            if (peerStatus(addr).state === "offline") avatar.classList.add("on-hold");
+            avatar.textContent = initials(user.name || peerLabel(addr));
+            avatar.title = peerLabel(addr);
+            networkBtn.append(avatar);
+          }
+          if (peers.length > 4) {
+            const more = document.createElement("span");
+            more.className = "header-avatar more";
+            more.textContent = `+${peers.length - 4}`;
+            networkBtn.append(more);
+          }
         }
-        const name = document.createElement("span");
-        name.textContent = user.name;
-        button.append(avatar, name);
-        button.onclick = () => {
-          const index = selected.indexOf(user.address);
-          if (index >= 0) selected.splice(index, 1);
-          else selected.push(user.address);
-          el(inputId).value = [...selected]
-            .map((address) => userForParticipant(address).name)
-            .join(", ");
-          renderUserPicker(containerId, inputId);
-        };
-        container.append(button);
-      }
-    }
-
-    function renderBoard() {
-      const board = el("board");
-      board.replaceChildren();
-      columns(state.board).forEach((column) => board.append(renderColumn(column)));
-      ghostColumns().forEach((column) => board.append(renderColumn(column, true)));
-      const add = document.createElement("button");
-      add.className = "add-column";
-      add.textContent = "Add another column";
-      add.onclick = () => openSimple("Add Column", [{name: "name", label: "Name", value: "New column"}],
-        async (form) => api("/api/kanban/columns/create", {name: form.get("name")}));
-      board.append(add);
-    }
-
-    function renderColumn(column, ghost = false) {
-      const article = document.createElement("article");
-      article.className = "column";
-      if (ghost) article.classList.add("ghost");
-      article.draggable = !ghost;
-      article.dataset.uuid = column.uuid;
-      applyTransitionClass(article, column.uuid);
-
-      const head = document.createElement("div");
-      head.className = "column-head";
-      const name = document.createElement("input");
-      name.value = column.data.name || "Column";
-      name.disabled = ghost;
-      name.onchange = () => run(() => api("/api/kanban/columns/rename", {
-        column_uuid: column.uuid,
-        name: name.value,
-      }), "Column renamed");
-      const del = icon("x", () => confirmAction(
-        "Delete column?",
-        "This deletes the column and all cards inside it.",
-        () => run(() => api("/api/kanban/columns/delete", {
-          column_uuid: column.uuid,
-        }), "Column deleted"),
-      ));
-      if (ghost) del.style.display = "none";
-      head.append(name, del);
-      const tools = document.createElement("div");
-      tools.className = "adopt-tools";
-      if (!state.auto_adopt && hasActionableTransition(column.uuid)) {
-        tools.append(adoptButton(column.uuid));
-      }
-      head.append(tools);
-      article.append(head);
-
-      const list = document.createElement("div");
-      list.className = "card-list";
-      list.dataset.columnUuid = column.uuid;
-      if (!ghost) {
-        list.ondragover = onCardDragOver;
-        list.ondrop = (event) => dropCard(event, column.uuid);
-      }
-      cards(column).forEach((card) => list.append(renderCard(card)));
-      if (!ghost) {
-        ghostCards(column.uuid).forEach((card) => list.append(renderCard(card, true)));
-      }
-      article.append(list);
-
-      const add = document.createElement("button");
-      add.className = "add-card";
-      add.textContent = "Add a card";
-      add.onclick = () => openCard(null, column.uuid);
-      if (!ghost) article.append(add);
-
-      if (!ghost) {
-        article.ondragstart = (event) => {
-          if (event.target.closest(".card")) return;
-          draggedColumn = column.uuid;
-          dragActive = true;
-          article.classList.add("dragging");
-        };
-        article.ondragend = () => {
-          article.classList.remove("dragging");
-          draggedColumn = null;
-          dragActive = false;
-        };
-        article.ondragover = (event) => event.preventDefault();
-        article.ondrop = (event) => dropColumn(event, column.uuid);
-      }
-      return article;
-    }
-
-    function renderCard(card, ghost = false) {
-      const node = document.createElement("div");
-      node.className = "card";
-      if (ghost) node.classList.add("ghost");
-      applyTransitionClass(node, card.uuid);
-      node.draggable = !ghost;
-      node.dataset.uuid = card.uuid;
-      node.replaceChildren();
-      const title = document.createElement("div");
-      title.className = "card-title";
-      title.textContent = card.data.name || "Card";
-      node.append(title);
-      if (card.data.description) {
-        const desc = document.createElement("div");
-        desc.className = "card-desc";
-        desc.textContent = card.data.description;
-        node.append(desc);
-      }
-      const participantItems = Array.isArray(card.data.participants) ? card.data.participants : [];
-      if (participantItems.length) node.append(renderParticipants(participantItems));
-      if (!state.auto_adopt && hasActionableTransition(card.uuid)) {
-        node.append(adoptButton(card.uuid));
-      }
-      node.onclick = (event) => {
-        if (ghost) return;
-        if (event.target.closest("button")) return;
-        openCard(card, card.parent_uuid);
-      };
-      if (!ghost) {
-        node.ondragstart = (event) => {
-          draggedCard = card.uuid;
-          dragActive = true;
-          node.classList.add("dragging");
-          event.stopPropagation();
-        };
-        node.ondragend = () => {
-          draggedCard = null;
-          dragActive = false;
-          node.classList.remove("dragging");
-        };
-      }
-      return node;
-    }
-
-    function renderParticipants(participants) {
-      const wrap = document.createElement("div");
-      wrap.className = "participants";
-      wrap.title = "Participants; first is owner";
-      participants.forEach((participant, index) => {
-        const user = userForParticipant(participant);
-        const avatar = document.createElement("span");
-        avatar.className = "participant-avatar";
-        if (index === 0) avatar.classList.add("owner");
-        avatar.title = index === 0 ? `${user.name} (owner)` : user.name;
-        if (user.picture) {
-          avatar.style.backgroundImage = `url("${cssUrl(user.picture)}")`;
-          avatar.textContent = "";
-        } else {
-          avatar.textContent = initials(user.name);
+        el("networkBtn").title = peers
+          .map((addr) => {
+            const status = peerStatus(addr);
+            const suffix =
+              status.state === "offline"
+                ? ` (on hold${status.last_error ? `: ${status.last_error}` : ""})`
+                : "";
+            return `${peerLabel(addr)}${suffix}`;
+          })
+          .join("\\n");
+        if (Date.now() > statusResetAt) {
+          el("statusText").textContent = state.address;
+          el("statusText").className = "idle";
         }
-        if (user.address === state.address) avatar.classList.add("me");
-        wrap.append(avatar);
-        if (index === 0) {
-          const owner = document.createElement("span");
-          owner.className = "owner-label";
-          owner.textContent = user.name;
-          wrap.append(owner);
+      }
+
+      function openNetworkPanel() {
+        el("simpleTitle").textContent = "Peers";
+        const fields = el("simpleFields");
+        fields.replaceChildren();
+        const peers = (state.network.members || []).filter((item) => item !== state.address);
+        if (!peers.length) {
+          const empty = document.createElement("p");
+          empty.className = "confirm-text";
+          empty.textContent = "No connected peers.";
+          fields.append(empty);
         }
-      });
-      return wrap;
-    }
-
-    function adoptButton(uuid) {
-      const button = icon("Adopt", () => openAdopt(uuid));
-      button.classList.add("adopt");
-      return button;
-    }
-
-    function openAdopt(uuid) {
-      const peers = Object.entries(state.peers || {}).map(([addr, root]) => ({
-        addr,
-        missing: !(root && findNode(root, uuid)),
-      })).filter((item) => {
-        const info = transitionInfo(uuid);
-        return info && info.peer_addr === item.addr;
-      });
-      if (!peers.length) return showStatus("No peer version available", true);
-      openSimple("Adopt From Peer", [
-        {name: "peer", label: "Peer address", value: peers[0].addr},
-      ], async (form) => api("/api/kanban/adopt", {
-        source_addr: form.get("peer"),
-        node_uuid: uuid,
-        adopt_absence: peers.find((item) => item.addr === form.get("peer"))?.missing || false,
-      }));
-    }
-
-    function openCard(card, columnUuid) {
-      modalCard = card;
-      modalColumn = columnUuid;
-      el("cardModalTitle").textContent = card ? "Edit Card" : "Add Card";
-      el("cardName").value = card ? card.data.name || "" : "";
-      el("cardDescription").value = card ? card.data.description || "" : "";
-      el("cardParticipants").value = card && Array.isArray(card.data.participants)
-        ? card.data.participants.map((participant) => userForParticipant(participant).name).join(", ")
-        : "";
-      renderUserPicker("participantPicker", "cardParticipants");
-      el("deleteCardBtn").style.display = card ? "inline-block" : "none";
-      el("cardModal").showModal();
-    }
-
-    el("cardForm").onsubmit = async (event) => {
-      event.preventDefault();
-      const payload = {
-        name: el("cardName").value,
-        description: el("cardDescription").value,
-        participants: normalizeParticipantsInput(el("cardParticipants").value),
-      };
-      if (modalCard) {
-        payload.card_uuid = modalCard.uuid;
-        await run(() => api("/api/kanban/cards/update", payload), "Card saved");
-      } else {
-        payload.column_uuid = modalColumn;
-        await run(() => api("/api/kanban/cards/create", payload), "Card added");
-      }
-      el("cardModal").close();
-    };
-
-    el("deleteCardBtn").onclick = async () => {
-      if (!modalCard) return;
-      await confirmAction(
-        "Delete card?",
-        "This removes the card from this board.",
-        async () => {
-          await run(() => api("/api/kanban/cards/delete", {card_uuid: modalCard.uuid}), "Card deleted");
-          el("cardModal").close();
-        },
-      );
-    };
-    el("cancelCardBtn").onclick = () => el("cardModal").close();
-
-    function openSimple(title, fields, onSubmit) {
-      el("simpleTitle").textContent = title;
-      el("simpleFields").replaceChildren();
-      for (const field of fields) {
-        const label = document.createElement("label");
-        label.textContent = field.label;
-        const input = document.createElement("input");
-        input.name = field.name;
-        input.value = field.value || "";
-        label.append(input);
-        el("simpleFields").append(label);
-      }
-      el("simpleForm").onsubmit = async (event) => {
-        event.preventDefault();
-        await run(() => onSubmit(new FormData(event.currentTarget)), "Done");
-        el("simpleModal").close();
-      };
-      el("simpleModal").showModal();
-    }
-    el("cancelSimpleBtn").onclick = () => el("simpleModal").close();
-
-    function confirmAction(title, message, action) {
-      el("simpleTitle").textContent = title;
-      const body = document.createElement("p");
-      body.className = "confirm-text";
-      body.textContent = message;
-      el("simpleFields").replaceChildren(body);
-      el("simpleForm").onsubmit = async (event) => {
-        event.preventDefault();
-        try {
-          await action();
+        for (const addr of peers) {
+          const row = document.createElement("div");
+          row.className = "peer-row";
+          const name = document.createElement("strong");
+          name.textContent = peerLabel(addr);
+          const status = document.createElement("span");
+          const info = peerStatus(addr);
+          status.textContent = info.state === "offline" ? "on hold" : "online";
+          status.className = info.state === "offline" ? "peer-hold" : "peer-online";
+          const topics = document.createElement("span");
+          const topicUuids = state.network?.peers?.[addr]?.topic_uuids || [];
+          topics.textContent = topicUuids.length
+            ? topicUuids.map((uuid) => uuid.slice(0, 8)).join(", ")
+            : "no topics";
+          row.append(name, status, topics);
+          fields.append(row);
+        }
+        el("simpleForm").onsubmit = (event) => {
+          event.preventDefault();
           el("simpleModal").close();
+        };
+        el("simpleModal").showModal();
+      }
+
+      function renderBoardSelector() {
+        const select = el("boardSelect");
+        select.replaceChildren();
+        for (const board of state.boards || []) {
+          const option = document.createElement("option");
+          option.value = board.uuid;
+          option.textContent = board.data.name || "Kanban Board";
+          option.selected = board.uuid === state.board.uuid;
+          select.append(option);
+        }
+        renderParticipantOptions();
+      }
+
+      function renderShareAction() {
+        const peers = boardPeerAddresses();
+        el("shareBoardBtn").title = "Share this board";
+        const unshareButton = el("unshareBoardBtn");
+        unshareButton.disabled = !peers.length;
+        unshareButton.title = peers.length
+          ? `Shared with ${peers.length} peer${peers.length === 1 ? "" : "s"}`
+          : "This board is not shared";
+      }
+
+      function renderParticipantOptions() {
+        const options = el("participantOptions");
+        options.replaceChildren();
+        for (const user of state.users || []) {
+          const option = document.createElement("option");
+          option.value = user.name;
+          option.label = user.profile_uuid || user.id || user.address;
+          options.append(option);
+        }
+      }
+
+      function renderUserPicker(containerId, inputId) {
+        const container = el(containerId);
+        container.replaceChildren();
+        for (const user of state.users || []) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "user-choice";
+          if (modalParticipants.includes(user.id)) button.classList.add("selected");
+          const avatar = document.createElement("span");
+          avatar.className = "participant-avatar";
+          if (user.picture) {
+            avatar.style.backgroundImage = `url("${cssUrl(user.picture)}")`;
+          } else {
+            avatar.textContent = initials(user.name);
+          }
+          const name = document.createElement("span");
+          name.textContent = user.name;
+          button.append(avatar, name);
+          button.onclick = () => {
+            const index = modalParticipants.indexOf(user.id);
+            if (index >= 0) modalParticipants.splice(index, 1);
+            else if (user.id) modalParticipants.push(user.id);
+            syncParticipantInput(inputId);
+            renderUserPicker(containerId, inputId);
+          };
+          container.append(button);
+        }
+      }
+
+      async function loadBoard() {
+        if (dragActive) return;
+        try {
+          state = await api("/api/kanban/board");
+
+          // Fokus-Schutz: Das Board-Namen-Feld beim Tippen nicht überschreiben
+          const boardNameInput = el("boardName");
+          if (document.activeElement !== boardNameInput) {
+            boardNameInput.value = state.board.data.name || "Kanban Board";
+          }
+
+          el("autoAdopt").checked = Boolean(state.auto_adopt);
+
+          renderBoardSelector();
+          renderNetwork();
+          renderShareAction();
+
+          // Neues Rendering via Diffing
+          renderBoard();
         } catch (error) {
           showStatus(error.message, true);
         }
-      };
-      el("simpleModal").showModal();
-    }
-
-    async function dropCard(event, columnUuid) {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!draggedCard) return;
-      const order = [...event.currentTarget.querySelectorAll(".card")].map((item) => item.dataset.uuid);
-      const cardUuid = draggedCard;
-      draggedCard = null;
-      try {
-        await run(() => api("/api/kanban/cards/move", {
-          card_uuid: cardUuid,
-          column_uuid: columnUuid,
-          index: Math.max(0, order.indexOf(cardUuid)),
-        }), "Card moved");
-      } finally {
-        dragActive = false;
-        await loadBoard();
       }
-    }
 
-    async function dropColumn(event, targetUuid) {
-      event.preventDefault();
-      if (!draggedColumn || draggedColumn === targetUuid) return;
-      const order = columns(state.board).map((item) => item.uuid);
-      const index = order.indexOf(targetUuid);
-      const columnUuid = draggedColumn;
-      draggedColumn = null;
-      try {
-        await run(() => api("/api/kanban/columns/move", {
-          column_uuid: columnUuid,
-          index,
-        }), "Column moved");
-      } finally {
-        dragActive = false;
-        await loadBoard();
+      function renderBoard() {
+        const board = el("board");
+
+        // Alle Spalten (regulär + ghost) aus dem State holen und markieren
+        const activeCols = columns(state.board).map((c) => ({ ...c, _isGhost: false }));
+        const ghostCols = ghostColumns().map((c) => ({ ...c, _isGhost: true }));
+        const allCols = [...activeCols, ...ghostCols];
+
+        // Diffing für Spalten
+        reconcileDOM(
+          board,
+          allCols,
+          (col) => `${col.uuid}:${col._isGhost ? "ghost" : "local"}`,
+          (col) => renderColumn(col, col._isGhost), // Deine bestehende Funktion erstellt das Grundgerüst
+          (colEl, col) => updateColumnDOM(colEl, col), // Patcht nur Änderungen
+        );
+
+        // "Add Column" Button anfügen/ans Ende schieben
+        let addBtn = board.querySelector(".add-column");
+        if (!addBtn) {
+          addBtn = document.createElement("button");
+          addBtn.className = "add-column";
+          addBtn.textContent = "Add another column";
+          addBtn.onclick = () =>
+            openSimple(
+              "Add Column",
+              [{ name: "name", label: "Name", value: "New column" }],
+              async (form) => api("/api/kanban/columns/create", { name: form.get("name") }),
+            );
+        }
+        board.appendChild(addBtn);
       }
-    }
 
-    function onCardDragOver(event) {
-      event.preventDefault();
-      event.stopPropagation();
-      const dragging = document.querySelector(".card.dragging");
-      if (!dragging) return;
-      const after = cardAfterPointer(event.currentTarget, event.clientY);
-      if (after) event.currentTarget.insertBefore(dragging, after);
-      else event.currentTarget.append(dragging);
-    }
+      // --- NEUE HELFER FÜR DAS DIFFING ---
 
-    function cardAfterPointer(list, y) {
-      return [...list.querySelectorAll(".card:not(.dragging)")].reduce((best, child) => {
-        const box = child.getBoundingClientRect();
-        const offset = y - box.top - box.height / 2;
-        return offset < 0 && offset > best.offset ? {offset, child} : best;
-      }, {offset: Number.NEGATIVE_INFINITY, child: null}).child;
-    }
+      function updateColumnDOM(colEl, col) {
+        // Spaltentitel-Input schützen, falls der Cursor drin ist
+        const nameInput = colEl.querySelector("input");
+        if (nameInput && document.activeElement !== nameInput) {
+          nameInput.value = col.data.name || "Column";
+        }
 
-    function columns(board) {
-      return sortNodes((board.children || []).filter((node) => node.data.type === "kanban_column"));
-    }
-    function cards(column) {
-      return sortNodes((column.children || []).filter((node) => node.data.type === "kanban_card"));
-    }
-    function ghostColumns() {
-      if (state.auto_adopt) return [];
-      const localIds = new Set(columns(state.board).map((column) => column.uuid));
-      const ghosts = new Map();
-      for (const root of Object.values(state.peers || {})) {
-        for (const column of columns(root || {children: []})) {
-          if (!localIds.has(column.uuid)) ghosts.set(column.uuid, column);
+        const cardList = colEl.querySelector(".card-list");
+        if (!cardList) return;
+
+        // Karten für diese Spalte ermitteln
+        const activeCards = cards(col).map((c) => ({ ...c, _isGhost: false }));
+        const gCards = col._isGhost
+          ? []
+          : ghostCards(col.uuid).map((c) => ({ ...c, _isGhost: true }));
+        const allCards = [...activeCards, ...gCards];
+
+        // Diffing für Karten
+        reconcileDOM(
+          cardList,
+          allCards,
+          (card) => `${card.uuid}:${card._isGhost ? "ghost" : "local"}`,
+          (card) => renderCard(card, card._isGhost), // Deine bestehende Funktion
+          (cardEl, card) => updateCardDOM(cardEl, card),
+        );
+      }
+
+      function updateCardDOM(cardEl, card) {
+        // Aktualisiert nur Text und Klassen, erhält Drag&Drop-Listener
+        const titleEl = cardEl.querySelector(".card-title");
+        if (titleEl) {
+          titleEl.textContent = card.data.name || "Card";
+        }
+
+        const descEl = cardEl.querySelector(".card-desc");
+        if (card.data.description && descEl) {
+          descEl.textContent = card.data.description || "";
+        } else if (card.data.description) {
+          const desc = document.createElement("div");
+          desc.className = "card-desc";
+          desc.textContent = card.data.description;
+          titleEl?.after(desc);
+        } else if (descEl) {
+          descEl.remove();
+        }
+
+        const participantItems = Array.isArray(card.data.participants)
+          ? card.data.participants
+          : [];
+        const participantsEl = cardEl.querySelector(".participants");
+        if (participantItems.length) {
+          const rendered = renderParticipants(participantItems);
+          if (participantsEl) participantsEl.replaceWith(rendered);
+          else {
+            const adoptEl = cardEl.querySelector(".adopt");
+            cardEl.insertBefore(rendered, adoptEl || null);
+          }
+        } else if (participantsEl) {
+          participantsEl.remove();
+        }
+
+        // P2P Konflikt-Klassen aktualisieren (nutzt deine bestehende Helper-Funktion)
+        applyTransitionClass(cardEl, card.uuid);
+        cardEl.querySelectorAll(".adopt").forEach((button) => button.remove());
+        if (!state.auto_adopt && hasActionableTransition(card.uuid)) {
+          cardEl.append(adoptButton(card.uuid));
         }
       }
-      return sortNodes([...ghosts.values()]);
-    }
-    function ghostCards(columnUuid) {
-      if (state.auto_adopt) return [];
-      const localColumn = findNode(state.board, columnUuid);
-      const localIds = new Set(cards(localColumn || {children: []}).map((card) => card.uuid));
-      const ghosts = new Map();
-      for (const root of Object.values(state.peers || {})) {
-        const peerColumn = findNode(root, columnUuid);
-        for (const card of cards(peerColumn || {children: []})) {
-          if (!localIds.has(card.uuid)) ghosts.set(card.uuid, card);
+
+      function renderColumn(column, ghost = false) {
+        const article = document.createElement("article");
+        article.className = "column";
+        if (ghost) article.classList.add("ghost");
+        article.draggable = !ghost;
+        article.dataset.uuid = column.uuid;
+        applyTransitionClass(article, column.uuid);
+
+        const head = document.createElement("div");
+        head.className = "column-head";
+        const name = document.createElement("input");
+        name.value = column.data.name || "Column";
+        name.disabled = ghost;
+        name.onchange = () =>
+          run(
+            () =>
+              api("/api/kanban/columns/rename", {
+                column_uuid: column.uuid,
+                name: name.value,
+              }),
+            "Column renamed",
+          );
+        const del = icon("x", () =>
+          confirmAction("Delete column?", "This deletes the column and all cards inside it.", () =>
+            run(
+              () =>
+                api("/api/kanban/columns/delete", {
+                  column_uuid: column.uuid,
+                }),
+              "Column deleted",
+            ),
+          ),
+        );
+        if (ghost) del.style.display = "none";
+        head.append(name, del);
+        const tools = document.createElement("div");
+        tools.className = "adopt-tools";
+        if (!state.auto_adopt && hasActionableTransition(column.uuid)) {
+          tools.append(adoptButton(column.uuid));
         }
+        head.append(tools);
+        article.append(head);
+
+        const list = document.createElement("div");
+        list.className = "card-list";
+        list.dataset.columnUuid = column.uuid;
+        if (!ghost) {
+          list.ondragover = onCardDragOver;
+          list.ondrop = (event) => dropCard(event, column.uuid);
+        }
+        cards(column).forEach((card) => list.append(renderCard(card)));
+        if (!ghost) {
+          ghostCards(column.uuid).forEach((card) => list.append(renderCard(card, true)));
+        }
+        article.append(list);
+
+        const add = document.createElement("button");
+        add.className = "add-card";
+        add.textContent = "Add a card";
+        add.onclick = () => openCard(null, column.uuid);
+        if (!ghost) article.append(add);
+
+        if (!ghost) {
+          article.ondragstart = (event) => {
+            if (event.target.closest(".card")) return;
+            draggedColumn = column.uuid;
+            dragActive = true;
+            article.classList.add("dragging");
+          };
+          article.ondragend = () => {
+            article.classList.remove("dragging");
+            draggedColumn = null;
+            dragActive = false;
+          };
+          article.ondragover = (event) => event.preventDefault();
+          article.ondrop = (event) => dropColumn(event, column.uuid);
+        }
+        return article;
       }
-      return sortNodes([...ghosts.values()]);
-    }
-    function sortNodes(nodes) {
-      return [...nodes].sort((a, b) => Number(a.data.order || 0) - Number(b.data.order || 0) || a.created_at.localeCompare(b.created_at));
-    }
-    function transitionInfo(uuid) {
-      return (state.transition_by_node || {})[uuid] || null;
-    }
-    function hasActionableTransition(uuid) {
-      const info = transitionInfo(uuid);
-      return info && info.type !== "in_agreement";
-    }
-    function applyTransitionClass(element, uuid) {
-      const info = transitionInfo(uuid);
-      if (!info || info.type === "in_agreement") return;
-      element.classList.add("diff", `event-${info.type}`);
-      element.title = transitionLabel(info);
-      element.dataset.transitionLabel = transitionLabel(info);
-      element.dataset.transitionSymbol = transitionSymbol(info.type);
-    }
-    function transitionSymbol(type) {
-      return {
-        peer_made_changes: "+",
-        local_missing_node: "+",
-        local_made_changes: "~",
-        peer_missing_node: "-",
-        divergence: "!",
-        cannot_compare: "?",
-      }[type] || "*";
-    }
-    function transitionLabel(info) {
-      const events = (info.events || [info]).filter((event) => event.type !== "in_agreement");
-      if (events.length > 1) return groupedTransitionLabel(events);
-      const peer = peerLabel(info.peer_addr);
-      const labels = {
-        in_agreement: "In agreement",
-        peer_made_changes: `Changes from ${peer}`,
-        local_made_changes: `My changes not in ${peer}`,
-        local_missing_node: `Only in ${peer}`,
-        peer_missing_node: `Missing in ${peer}`,
-        divergence: `Diverged from ${peer}`,
-        cannot_compare: `Cannot compare with ${peer}`,
-      };
-      return labels[info.type] || "Difference";
-    }
-    function groupedTransitionLabel(events) {
-      const order = [
-        "divergence",
-        "cannot_compare",
-        "peer_made_changes",
-        "local_missing_node",
-        "local_made_changes",
-        "peer_missing_node",
-      ];
-      const labels = {
-        divergence: "Diverged from",
-        cannot_compare: "Cannot compare with",
-        peer_made_changes: "Changes from",
-        local_missing_node: "Only in",
-        local_made_changes: "My changes not in",
-        peer_missing_node: "Missing in",
-      };
-      return order
-        .filter((type) => events.some((event) => event.type === type))
-        .map((type) => {
-          const peers = events
-            .filter((event) => event.type === type)
-            .map((event) => peerLabel(event.peer_addr));
-          return `${labels[type]} ${dedupe(peers).join(", ")}`;
-        })
-        .join("; ");
-    }
-    function dedupe(items) {
-      return [...new Set(items)];
-    }
-    function peerLabel(address) {
-      const identityName = peerIdentityValue(address, "name");
-      if (identityName) return identityName;
-      const text = String(address || "");
-      const match = text.match(/:(\d+)(?:\/)?$/);
-      return match ? match[1] : text.replace(/^https?:\/\//, "") || "peer";
-    }
-    function peerStatus(address) {
-      return state.network?.peer_status?.[address]
-        || state.network?.peers?.[address]?.status
-        || {state: "online", failures: 0, last_error: null};
-    }
-    function userForParticipant(participant) {
-      const users = state.users || [];
-      return users.find((user) => user.address === participant)
-        || users.find((user) => user.name === participant)
-        || {address: participant, name: participant, picture: ""};
-    }
-    function normalizeParticipantsInput(value) {
-      return String(value || "")
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean)
-        .map((item) => {
-          const user = (state.users || []).find((candidate) =>
-            candidate.name === item || candidate.address === item);
-          return user ? user.address : item;
+
+      function renderCard(card, ghost = false) {
+        const node = document.createElement("div");
+        node.className = "card";
+        if (ghost) node.classList.add("ghost");
+        applyTransitionClass(node, card.uuid);
+        node.draggable = !ghost;
+        node.dataset.uuid = card.uuid;
+        node.replaceChildren();
+        const title = document.createElement("div");
+        title.className = "card-title";
+        title.textContent = card.data.name || "Card";
+        node.append(title);
+        if (card.data.description) {
+          const desc = document.createElement("div");
+          desc.className = "card-desc";
+          desc.textContent = card.data.description;
+          node.append(desc);
+        }
+        const participantItems = Array.isArray(card.data.participants)
+          ? card.data.participants
+          : [];
+        if (participantItems.length) node.append(renderParticipants(participantItems));
+        if (!state.auto_adopt && hasActionableTransition(card.uuid)) {
+          node.append(adoptButton(card.uuid));
+        }
+        node.onclick = (event) => {
+          if (ghost) return;
+          if (event.target.closest("button")) return;
+          openCard(card, card.parent_uuid);
+        };
+        if (!ghost) {
+          node.ondragstart = (event) => {
+            draggedCard = card.uuid;
+            dragActive = true;
+            node.classList.add("dragging");
+            event.stopPropagation();
+          };
+          node.ondragend = () => {
+            draggedCard = null;
+            dragActive = false;
+            node.classList.remove("dragging");
+          };
+        }
+        return node;
+      }
+
+      function renderParticipants(participants) {
+        const wrap = document.createElement("div");
+        wrap.className = "participants";
+        wrap.title = "Participants; first is owner";
+        participants.forEach((participant, index) => {
+          const user = userForParticipant(participant);
+          const avatar = document.createElement("span");
+          avatar.className = "participant-avatar";
+          if (index === 0) avatar.classList.add("owner");
+          avatar.title = index === 0 ? `${user.name} (owner)` : user.name;
+          if (user.picture) {
+            avatar.style.backgroundImage = `url("${cssUrl(user.picture)}")`;
+            avatar.textContent = "";
+          } else {
+            avatar.textContent = initials(user.name);
+          }
+        if (user.address === state.address) avatar.classList.add("me");
+          wrap.append(avatar);
+          if (index === 0) {
+            const owner = document.createElement("span");
+            owner.className = "owner-label";
+            owner.textContent = user.name;
+            wrap.append(owner);
+          }
         });
-    }
-    function initials(name) {
-      return String(name || "?")
-        .split(/\s+/)
-        .filter(Boolean)
-        .slice(0, 2)
-        .map((part) => part[0].toUpperCase())
-        .join("") || "?";
-    }
-    function cssUrl(value) {
-      return String(value || "").replaceAll("\\", "\\\\").replaceAll('"', '\\"');
-    }
-    function peerIdentityValue(address, field) {
-      const root = (state.peers || {})[address];
-      const node = findIdentityField(root, field);
-      return node?.data?.value || node?.data?.[field] || "";
-    }
-    function findIdentityField(node, field) {
-      if (!node) return null;
-      if (node.data?.type === "identity_user") {
-        if (field === "name" && node.data?.display_name) return {data: {value: node.data.display_name}};
-        return node.data?.[field] ? node : null;
+        return wrap;
       }
-      if (node.data?.type === "identity_field" && node.data?.field === field) return node;
-      for (const child of node.children || []) {
-        const found = findIdentityField(child, field);
-        if (found) return found;
-      }
-      return null;
-    }
-    function findNode(node, uuid) {
-      if (!node) return null;
-      if (node.uuid === uuid) return node;
-      for (const child of node.children || []) {
-        const found = findNode(child, uuid);
-        if (found) return found;
-      }
-      return null;
-    }
-    function icon(text, action) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = text;
-      button.setAttribute("aria-label", text);
-      button.onclick = (event) => {
-        event.stopPropagation();
-        action();
-      };
-      return button;
-    }
-    async function run(action, ok) {
-      try {
-        await action();
-        showStatus(ok || "Done");
-        await loadBoard();
-      } catch (error) {
-        showStatus(error.message, true);
-      }
-    }
-    function showStatus(message, error = false) {
-      el("statusText").textContent = message;
-      el("statusText").className = error ? "toast error" : "toast";
-      statusResetAt = Date.now() + 3500;
-    }
+      function reconcileDOM(parent, dataItems, keyFn, createFn, updateFn) {
+        const dataKeys = dataItems.map(keyFn);
 
-    el("autoAdopt").onchange = () => run(() => api("/api/kanban/auto_adopt", {enabled: el("autoAdopt").checked}), "Auto-adopt updated");
-    el("networkBtn").onclick = openNetworkPanel;
-    el("boardSelect").onchange = () => run(() => api("/api/kanban/boards/select", {board_uuid: el("boardSelect").value}), "Board selected");
-    el("boardName").onchange = () => run(() => api("/api/kanban/boards/rename", {
-      board_uuid: state.board.uuid,
-      name: el("boardName").value,
-    }), "Board renamed");
-    el("newBoardBtn").onclick = () => openSimple("New Board", [{name: "name", label: "Name", value: "Kanban Board"}],
-      async (form) => api("/api/kanban/boards/create", {name: form.get("name")}));
-    el("copyBoardBtn").onclick = () => run(() => api("/api/kanban/boards/copy", {board_uuid: state.board.uuid}), "Board copied");
-    el("deleteBoardBtn").onclick = () => confirmAction(
-      "Delete board?",
-      "This deletes the current board and all cards inside it.",
-      () => run(() => api("/api/kanban/boards/delete", {board_uuid: state.board.uuid}), "Board deleted"),
-    );
-    el("shareBoardBtn").onclick = () => openSimple("Share Board", [
-      {name: "address", label: "Peer address", value: "http://127.0.0.1:8002"},
-    ], async (form) => api("/api/kanban/boards/share", {
-      address: form.get("address"),
-      board_uuid: state.board.uuid,
-    }));
-    el("profileBtn").onclick = () => openSimple("Profile", [
-      {name: "name", label: "Name", value: state.user_profile?.data?.display_name || state.address},
-      {name: "picture", label: "Picture URL", value: state.user_profile?.data?.picture || ""},
-    ], async (form) => api("/api/kanban/profile", {
-      name: form.get("name"),
-      picture: form.get("picture"),
-    }));
-    el("inviteBtn").onclick = () => openSimple("Invite", [{name: "address", label: "Peer address", value: "http://127.0.0.1:8002"}],
-      async (form) => api("/api/kanban/invite", {address: form.get("address")}));
-    el("leaveBtn").onclick = () => run(() => api("/api/leave", {}), "Left discussion");
-    setInterval(() => loadBoard(), 1500);
-    loadBoard();
-  </script>
-</body>
+        // 1. Ausmisten: Elemente entfernen, die im neuen State nicht mehr existieren
+        Array.from(parent.children).forEach((child) => {
+          const key = child.getAttribute("data-id");
+          if (!dataKeys.includes(key)) {
+            child.remove();
+          }
+        });
+
+        // 2. Abgleichen & Sortieren: Bestehende updaten oder neue einfügen
+        dataItems.forEach((item, index) => {
+          const key = keyFn(item);
+          let child = parent.querySelector(`[data-id="${key}"]`);
+
+          if (!child) {
+            // Element existiert noch nicht -> Neu erstellen
+            child = createFn(item);
+            child.setAttribute("data-id", key);
+            parent.insertBefore(child, parent.children[index] || null);
+          } else {
+            // Element existiert -> Position korrigieren falls nötig
+            if (parent.children[index] !== child) {
+              parent.insertBefore(child, parent.children[index] || null);
+            }
+            // Inhalt/Attribute patchen
+            updateFn(child, item);
+          }
+        });
+      }
+
+      function adoptButton(uuid) {
+        const button = icon("Adopt", () => openAdopt(uuid));
+        button.classList.add("adopt");
+        return button;
+      }
+
+      function openAdopt(uuid) {
+        const peers = Object.entries(state.peers || {})
+          .map(([addr, root]) => ({
+            addr,
+            missing: !(root && findNode(root, uuid)),
+          }))
+          .filter((item) => {
+            const info = transitionInfo(uuid);
+            return info && info.peer_addr === item.addr;
+          });
+        if (!peers.length) return showStatus("No peer version available", true);
+        openSimple(
+          "Adopt From Peer",
+          [{ name: "peer", label: "Peer address", value: peers[0].addr }],
+          async (form) =>
+            api("/api/kanban/adopt", {
+              source_addr: form.get("peer"),
+              node_uuid: uuid,
+              adopt_absence: peers.find((item) => item.addr === form.get("peer"))?.missing || false,
+            }),
+        );
+      }
+
+      function openCard(card, columnUuid) {
+        modalCard = card;
+        modalColumn = columnUuid;
+        el("cardModalTitle").textContent = card ? "Edit Card" : "Add Card";
+        el("cardName").value = card ? card.data.name || "" : "";
+        el("cardDescription").value = card ? card.data.description || "" : "";
+        modalParticipants =
+          card && Array.isArray(card.data.participants) ? [...card.data.participants] : [];
+        syncParticipantInput("cardParticipants");
+        el("cardParticipants").oninput = () => {
+          modalParticipants = normalizeParticipantsInput(el("cardParticipants").value);
+          renderUserPicker("participantPicker", "cardParticipants");
+        };
+        renderUserPicker("participantPicker", "cardParticipants");
+        el("deleteCardBtn").style.display = card ? "inline-block" : "none";
+        el("cardModal").showModal();
+      }
+
+      function syncParticipantInput(inputId) {
+        el(inputId).value = modalParticipants
+          .map((address) => userForParticipant(address).name)
+          .join(", ");
+      }
+
+      el("cardForm").onsubmit = async (event) => {
+        event.preventDefault();
+        modalParticipants = normalizeParticipantsInput(el("cardParticipants").value);
+        const payload = {
+          name: el("cardName").value,
+          description: el("cardDescription").value,
+          participants: dedupe(modalParticipants),
+        };
+        if (modalCard) {
+          payload.card_uuid = modalCard.uuid;
+          await run(() => api("/api/kanban/cards/update", payload), "Card saved");
+        } else {
+          payload.column_uuid = modalColumn;
+          await run(() => api("/api/kanban/cards/create", payload), "Card added");
+        }
+        el("cardModal").close();
+      };
+
+      el("deleteCardBtn").onclick = async () => {
+        if (!modalCard) return;
+        await confirmAction("Delete card?", "This removes the card from this board.", async () => {
+          await run(
+            () => api("/api/kanban/cards/delete", { card_uuid: modalCard.uuid }),
+            "Card deleted",
+          );
+          el("cardModal").close();
+        });
+      };
+      el("cancelCardBtn").onclick = () => el("cardModal").close();
+
+      function openSimple(title, fields, onSubmit) {
+        el("simpleTitle").textContent = title;
+        el("simpleFields").replaceChildren();
+        for (const field of fields) {
+          const label = document.createElement("label");
+          label.textContent = field.label;
+          const input = document.createElement("input");
+          input.name = field.name;
+          input.value = field.value || "";
+          label.append(input);
+          el("simpleFields").append(label);
+        }
+        el("simpleForm").onsubmit = async (event) => {
+          event.preventDefault();
+          await run(() => onSubmit(new FormData(event.currentTarget)), "Done");
+          el("simpleModal").close();
+        };
+        el("simpleModal").showModal();
+      }
+      el("cancelSimpleBtn").onclick = () => el("simpleModal").close();
+
+      function confirmAction(title, message, action) {
+        el("simpleTitle").textContent = title;
+        const body = document.createElement("p");
+        body.className = "confirm-text";
+        body.textContent = message;
+        el("simpleFields").replaceChildren(body);
+        el("simpleForm").onsubmit = async (event) => {
+          event.preventDefault();
+          try {
+            await action();
+            el("simpleModal").close();
+          } catch (error) {
+            showStatus(error.message, true);
+          }
+        };
+        el("simpleModal").showModal();
+      }
+
+      async function dropCard(event, columnUuid) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!draggedCard) return;
+        const order = [...event.currentTarget.querySelectorAll(".card")].map(
+          (item) => item.dataset.uuid,
+        );
+        const cardUuid = draggedCard;
+        draggedCard = null;
+        try {
+          await run(
+            () =>
+              api("/api/kanban/cards/move", {
+                card_uuid: cardUuid,
+                column_uuid: columnUuid,
+                index: Math.max(0, order.indexOf(cardUuid)),
+              }),
+            "Card moved",
+          );
+        } finally {
+          dragActive = false;
+          await loadBoard();
+        }
+      }
+
+      async function dropColumn(event, targetUuid) {
+        event.preventDefault();
+        if (!draggedColumn || draggedColumn === targetUuid) return;
+        const order = columns(state.board).map((item) => item.uuid);
+        const index = order.indexOf(targetUuid);
+        const columnUuid = draggedColumn;
+        draggedColumn = null;
+        try {
+          await run(
+            () =>
+              api("/api/kanban/columns/move", {
+                column_uuid: columnUuid,
+                index,
+              }),
+            "Column moved",
+          );
+        } finally {
+          dragActive = false;
+          await loadBoard();
+        }
+      }
+
+      function onCardDragOver(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        const dragging = document.querySelector(".card.dragging");
+        if (!dragging) return;
+        const after = cardAfterPointer(event.currentTarget, event.clientY);
+        if (after) event.currentTarget.insertBefore(dragging, after);
+        else event.currentTarget.append(dragging);
+      }
+
+      function cardAfterPointer(list, y) {
+        return [...list.querySelectorAll(".card:not(.dragging)")].reduce(
+          (best, child) => {
+            const box = child.getBoundingClientRect();
+            const offset = y - box.top - box.height / 2;
+            return offset < 0 && offset > best.offset ? { offset, child } : best;
+          },
+          { offset: Number.NEGATIVE_INFINITY, child: null },
+        ).child;
+      }
+
+      function columns(board) {
+        return sortNodes(
+          (board.children || []).filter((node) => node.data.type === "kanban_column"),
+        );
+      }
+      function cards(column) {
+        return sortNodes(
+          (column.children || []).filter((node) => node.data.type === "kanban_card"),
+        );
+      }
+      function ghostColumns() {
+        if (state.auto_adopt) return [];
+        const localIds = new Set(columns(state.board).map((column) => column.uuid));
+        const ghosts = new Map();
+        for (const root of boardPeerRoots()) {
+          for (const column of columns(root || { children: [] })) {
+            if (!localIds.has(column.uuid)) ghosts.set(column.uuid, column);
+          }
+        }
+        return sortNodes([...ghosts.values()]);
+      }
+      function ghostCards(columnUuid) {
+        if (state.auto_adopt) return [];
+        const localColumn = findNode(state.board, columnUuid);
+        const localIds = new Set(cards(localColumn || { children: [] }).map((card) => card.uuid));
+        const ghosts = new Map();
+        for (const root of boardPeerRoots()) {
+          const peerColumn = findNode(root, columnUuid);
+          for (const card of cards(peerColumn || { children: [] })) {
+            if (!localIds.has(card.uuid)) ghosts.set(card.uuid, card);
+          }
+        }
+        return sortNodes([...ghosts.values()]);
+      }
+      function sortNodes(nodes) {
+        return [...nodes].sort(
+          (a, b) =>
+            Number(a.data.order || 0) - Number(b.data.order || 0) ||
+            a.created_at.localeCompare(b.created_at),
+        );
+      }
+      function transitionInfo(uuid) {
+        return (state.transition_by_node || {})[uuid] || null;
+      }
+      function hasActionableTransition(uuid) {
+        const info = transitionInfo(uuid);
+        return info && info.type !== "in_agreement";
+      }
+      function applyTransitionClass(element, uuid) {
+        element.classList.remove("diff");
+        [...element.classList]
+          .filter((name) => name.startsWith("event-"))
+          .forEach((name) => element.classList.remove(name));
+        element.removeAttribute("title");
+        delete element.dataset.transitionLabel;
+        delete element.dataset.transitionSymbol;
+        const info = transitionInfo(uuid);
+        if (!info || info.type === "in_agreement") return;
+        element.classList.add("diff", `event-${info.type}`);
+        element.title = transitionLabel(info);
+        element.dataset.transitionLabel = transitionLabel(info);
+        element.dataset.transitionSymbol = transitionSymbol(info.type);
+      }
+      function transitionSymbol(type) {
+        return (
+          {
+            peer_made_changes: "+",
+            local_missing_node: "+",
+            local_made_changes: "~",
+            peer_missing_node: "-",
+            divergence: "!",
+            cannot_compare: "?",
+          }[type] || "*"
+        );
+      }
+      function transitionLabel(info) {
+        const events = (info.events || [info]).filter((event) => event.type !== "in_agreement");
+        if (events.length > 1) return groupedTransitionLabel(events);
+        const peer = peerLabel(info.peer_addr);
+        const labels = {
+          in_agreement: "In agreement",
+          peer_made_changes: `Changes from ${peer}`,
+          local_made_changes: `My changes not in ${peer}`,
+          local_missing_node: `Only in ${peer}`,
+          peer_missing_node: `Missing in ${peer}`,
+          divergence: `Diverged from ${peer}`,
+          cannot_compare: `Cannot compare with ${peer}`,
+        };
+        return labels[info.type] || "Difference";
+      }
+      function groupedTransitionLabel(events) {
+        const order = [
+          "divergence",
+          "cannot_compare",
+          "peer_made_changes",
+          "local_missing_node",
+          "local_made_changes",
+          "peer_missing_node",
+        ];
+        const labels = {
+          divergence: "Diverged from",
+          cannot_compare: "Cannot compare with",
+          peer_made_changes: "Changes from",
+          local_missing_node: "Only in",
+          local_made_changes: "My changes not in",
+          peer_missing_node: "Missing in",
+        };
+        return order
+          .filter((type) => events.some((event) => event.type === type))
+          .map((type) => {
+            const peers = events
+              .filter((event) => event.type === type)
+              .map((event) => peerLabel(event.peer_addr));
+            return `${labels[type]} ${dedupe(peers).join(", ")}`;
+          })
+          .join("; ");
+      }
+      function dedupe(items) {
+        return [...new Set(items)];
+      }
+      function peerLabel(address) {
+        const user = (state.users || []).find((item) => item.address === address);
+        if (user?.name) return user.name;
+        const identityName = peerIdentityValue(address, "name");
+        if (identityName) return identityName;
+        const text = String(address || "");
+        const match = text.match(/:(\d+)(?:\/)?$/);
+        return match ? match[1] : text.replace(/^https?:\/\//, "") || "peer";
+      }
+      function peerStatus(address) {
+        return (
+          state.network?.peer_status?.[address] ||
+          state.network?.peers?.[address]?.status || {
+            state: "online",
+            failures: 0,
+            last_error: null,
+          }
+        );
+      }
+      function boardPeerAddresses() {
+        const boardUuid = state.board?.uuid;
+        if (!boardUuid) return [];
+        return Object.entries(state.network?.peers || {})
+          .filter(([, info]) => (info.topic_uuids || []).includes(boardUuid))
+          .map(([addr]) => addr);
+      }
+      function boardPeerRoots() {
+        return boardPeerAddresses()
+          .map((addr) => state.peers?.[addr])
+          .filter(Boolean);
+      }
+      function userForParticipant(participant) {
+        const users = state.users || [];
+        return (
+          users.find((user) => user.id === participant) ||
+          users.find((user) => user.profile_uuid === participant) ||
+          users.find((user) => user.address === participant) ||
+          users.find((user) => user.name === participant) || {
+            id: participant,
+            profile_uuid: participant,
+            address: "",
+            name: "?",
+            picture: "",
+          }
+        );
+      }
+      function normalizeParticipantsInput(value) {
+        return String(value || "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean)
+          .map((item) => {
+            const user = (state.users || []).find(
+              (candidate) =>
+                candidate.name === item ||
+                candidate.id === item ||
+                candidate.profile_uuid === item ||
+                candidate.address === item,
+            );
+            return user ? user.id : item;
+          });
+      }
+      function initials(name) {
+        return (
+          String(name || "?")
+            .split(/\s+/)
+            .filter(Boolean)
+            .slice(0, 2)
+            .map((part) => part[0].toUpperCase())
+            .join("") || "?"
+        );
+      }
+      function cssUrl(value) {
+        return String(value || "")
+          .replaceAll("\\", "\\\\")
+          .replaceAll('"', '\\"');
+      }
+      function peerIdentityValue(address, field) {
+        const root = (state.peers || {})[address];
+        const profile = findIdentityProfile(root, address) || findIdentityProfile(root, null);
+        const node = findIdentityField(profile || root, field);
+        return node?.data?.value || node?.data?.[field] || "";
+      }
+      function findIdentityProfile(node, address) {
+        if (!node) return null;
+        if (
+          node.data?.type === "shared_user_profile" &&
+          (!address || node.data?.address === address)
+        ) {
+          return node;
+        }
+        for (const child of node.children || []) {
+          const found = findIdentityProfile(child, address);
+          if (found) return found;
+        }
+        return null;
+      }
+      function findIdentityField(node, field) {
+        if (!node) return null;
+        if (node.data?.type === "shared_user_profile") {
+          if (field === "name" && node.data?.display_name)
+            return { data: { value: node.data.display_name } };
+          return node.data?.[field] ? node : null;
+        }
+        for (const child of node.children || []) {
+          const found = findIdentityField(child, field);
+          if (found) return found;
+        }
+        return null;
+      }
+      function findNode(node, uuid) {
+        if (!node) return null;
+        if (node.uuid === uuid) return node;
+        for (const child of node.children || []) {
+          const found = findNode(child, uuid);
+          if (found) return found;
+        }
+        return null;
+      }
+      function icon(text, action) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = text;
+        button.setAttribute("aria-label", text);
+        button.onclick = (event) => {
+          event.stopPropagation();
+          action();
+        };
+        return button;
+      }
+      async function run(action, ok) {
+        try {
+          await action();
+          showStatus(ok || "Done");
+          await loadBoard();
+        } catch (error) {
+          showStatus(error.message, true);
+        }
+      }
+      function showStatus(message, error = false) {
+        el("statusText").textContent = message;
+        el("statusText").className = error ? "toast error" : "toast";
+        statusResetAt = Date.now() + 3500;
+      }
+
+      el("autoAdopt").onchange = () =>
+        run(
+          () => api("/api/kanban/auto_adopt", { enabled: el("autoAdopt").checked }),
+          "Auto-adopt updated",
+        );
+      el("networkBtn").onclick = openNetworkPanel;
+      el("boardSelect").onchange = () =>
+        run(
+          () => api("/api/kanban/boards/select", { board_uuid: el("boardSelect").value }),
+          "Board selected",
+        );
+      el("boardName").onchange = () =>
+        run(
+          () =>
+            api("/api/kanban/boards/rename", {
+              board_uuid: state.board.uuid,
+              name: el("boardName").value,
+            }),
+          "Board renamed",
+        );
+      el("newBoardBtn").onclick = () =>
+        openSimple(
+          "New Board",
+          [{ name: "name", label: "Name", value: "Kanban Board" }],
+          async (form) => api("/api/kanban/boards/create", { name: form.get("name") }),
+        );
+      el("copyBoardBtn").onclick = () =>
+        run(() => api("/api/kanban/boards/copy", { board_uuid: state.board.uuid }), "Board copied");
+      el("deleteBoardBtn").onclick = () =>
+        confirmAction(
+          "Delete board?",
+          "This deletes the current board and all cards inside it.",
+          () =>
+            run(
+              () => api("/api/kanban/boards/delete", { board_uuid: state.board.uuid }),
+              "Board deleted",
+            ),
+        );
+      el("shareBoardBtn").onclick = () =>
+        openSimple(
+          "Share Board",
+          [{ name: "address", label: "Peer address", value: "http://127.0.0.1:8002" }],
+          async (form) =>
+            api("/api/kanban/boards/share", {
+              address: form.get("address"),
+              board_uuid: state.board.uuid,
+            }),
+        );
+      el("unshareBoardBtn").onclick = () => {
+        const peers = boardPeerAddresses();
+        if (!peers.length) return;
+        return confirmAction(
+          "Unshare board?",
+          `Stop sharing this board with ${peers.length} peer${peers.length === 1 ? "" : "s"}.`,
+          () =>
+            run(
+              () =>
+                api("/api/kanban/boards/unshare", {
+                  board_uuid: state.board.uuid,
+                }),
+              "Board unshared",
+            ),
+        );
+      };
+      el("profileBtn").onclick = () =>
+        openSimple(
+          "Profile",
+          [
+            {
+              name: "name",
+              label: "Name",
+              value: state.user_profile?.data?.display_name || state.address,
+            },
+            {
+              name: "picture",
+              label: "Picture URL",
+              value: state.user_profile?.data?.picture || "",
+            },
+          ],
+          async (form) =>
+            api("/api/kanban/profile", {
+              name: form.get("name"),
+              picture: form.get("picture"),
+            }),
+        );
+      setInterval(() => loadBoard(), 1500);
+      loadBoard();
+    </script>
+  </body>
 </html>

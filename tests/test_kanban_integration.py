@@ -209,6 +209,21 @@ class ServerIntegrationTests(unittest.TestCase):
                 board_a = request_json(
                     "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
                 )["board"]
+                share = request_json(
+                    "POST",
+                    f"http://127.0.0.1:{port_a}/api/kanban/boards/share",
+                    {
+                        "address": f"http://127.0.0.1:{port_b}",
+                        "board_uuid": board_a["uuid"],
+                    },
+                    timeout=20,
+                )
+                self.assertEqual(share["status"], "ok")
+                request_json(
+                    "POST",
+                    f"http://127.0.0.1:{port_b}/api/kanban/auto_adopt",
+                    {"enabled": True},
+                )
                 column_uuid = board_a["children"][0]["uuid"]
                 request_json(
                     "POST",
@@ -302,6 +317,11 @@ class ServerIntegrationTests(unittest.TestCase):
                     timeout=20,
                 )
                 self.assertEqual(share["status"], "ok")
+                request_json(
+                    "POST",
+                    f"http://127.0.0.1:{port_b}/api/kanban/auto_adopt",
+                    {"enabled": True},
+                )
                 source_uuid = board_a["children"][0]["uuid"]
                 target_uuid = board_a["children"][1]["uuid"]
                 create = request_json(
