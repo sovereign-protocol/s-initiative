@@ -6,21 +6,23 @@ Contract:
     - The discussion topic is always the kanban board node.
     - Board/columns/cards are regular protocol nodes.
     - Column data: {type: "kanban_column", name, order}
-    - Card data: {type: "kanban_card", name, description, participants, order}
+    - Card data: {type: "kanban_card", name, description, participants, owner, order}
+      owner is a profile uuid that must also be present in participants, or None.
 
   API:
     GET  /api/kanban/board
-    POST /api/kanban/auto_adopt          {enabled}
+    POST /api/kanban/auto_adopt          {mode}  # one of: always, not_owner, not_member, never
     POST /api/kanban/invite              {address}
     POST /api/kanban/columns/create      {name}
     POST /api/kanban/columns/rename      {column_uuid, name}
     POST /api/kanban/columns/delete      {column_uuid}
     POST /api/kanban/columns/move        {column_uuid, index}
-    POST /api/kanban/cards/create        {column_uuid, name, description, participants}
-    POST /api/kanban/cards/update        {card_uuid, name, description, participants}
+    POST /api/kanban/cards/create        {column_uuid, name, description, participants, owner}
+    POST /api/kanban/cards/update        {card_uuid, name, description, participants, owner}
     POST /api/kanban/cards/delete        {card_uuid}
     POST /api/kanban/cards/move          {card_uuid, column_uuid, index}
     POST /api/kanban/adopt               {source_addr, node_uuid, adopt_absence}
+    POST /api/kanban/reaffirm            {node_uuid}
 """
 
 from __future__ import annotations
@@ -38,6 +40,8 @@ from starlette.routing import Route
 
 DEFAULT_COLUMNS = ["To Do", "Doing", "Done"]
 KANBAN_APP_NAME = "S-Kanban"
+ORDER_GAP_EPSILON = 1e-9
+AUTO_ADOPT_MODES = ("always", "not_owner", "not_member", "never")
 
 
 class KanbanLogic:
@@ -62,28 +66,37 @@ class KanbanLogic:
                 addr: tree.to_dict() if tree else None
                 for addr, tree in sorted(self.session.peer_perspectives.items())
             },
-            "auto_adopt": self.auto_adopt_enabled(board),
+            "auto_adopt_mode": self.auto_adopt_mode(board),
             "transition_events": events,
             "transition_by_node": self.transition_by_node(events),
         }
 
-    def auto_adopt_enabled(self, board: PRSPNode | None = None) -> bool:
+    def auto_adopt_mode(self, board: PRSPNode | None = None) -> str:
         board = board or self.ensure_board()
         values = self._metadata().get("auto_adopt_by_board", {})
         if isinstance(values, dict) and board.uuid in values:
-            return bool(values[board.uuid])
-        return bool(self._metadata().get("auto_adopt", True))
+            return self._normalize_auto_adopt_mode(values[board.uuid])
+        return self._normalize_auto_adopt_mode(self._metadata().get("auto_adopt", "always"))
 
-    def set_auto_adopt(self, enabled: bool) -> SessionResult:
+    def set_auto_adopt_mode(self, mode: str) -> SessionResult:
         board = self.ensure_board()
-        self._set_board_auto_adopt(board.uuid, bool(enabled))
-        return SessionResult("ok", value=enabled)
+        normalized = self._normalize_auto_adopt_mode(mode)
+        self._set_board_auto_adopt(board.uuid, normalized)
+        return SessionResult("ok", value=normalized)
 
-    def _set_board_auto_adopt(self, board_uuid: str, enabled: bool) -> None:
+    def _set_board_auto_adopt(self, board_uuid: str, mode: str) -> None:
         metadata = self._metadata()
         values = dict(metadata.get("auto_adopt_by_board", {}))
-        values[board_uuid] = bool(enabled)
+        values[board_uuid] = self._normalize_auto_adopt_mode(mode)
         metadata["auto_adopt_by_board"] = values
+
+    @staticmethod
+    def _normalize_auto_adopt_mode(value: Any) -> str:
+        if isinstance(value, bool):
+            return "always" if value else "never"
+        if value in AUTO_ADOPT_MODES:
+            return value
+        return "always"
 
     def ensure_board(self) -> PRSPNode:
         remembered_uuid = self._metadata().get("selected_board_uuid")
@@ -455,9 +468,15 @@ class KanbanLogic:
 
     def create_column(self, name: str) -> SessionResult:
         board = self.ensure_board()
+        existing = self.columns(board)
+        last_order = float(existing[-1].data.get("order", 0)) if existing else None
         return self.session.create_child(
             board.uuid,
-            {"type": "kanban_column", "name": name or "Column", "order": len(self.columns(board))},
+            {
+                "type": "kanban_column",
+                "name": name or "Column",
+                "order": self._order_between(last_order, None),
+            },
             {},
         )
 
@@ -477,41 +496,52 @@ class KanbanLogic:
         column = self._node(column_uuid, "kanban_column")
         if not column or column.parent_uuid != board.uuid:
             return SessionResult("error", reason="column not found")
-        columns = [item for item in self.columns(board) if item.uuid != column_uuid]
-        columns.insert(max(0, min(index, len(columns))), column)
-        return self._reorder(columns)
+        siblings = [item for item in self.columns(board) if item.uuid != column_uuid]
+        return self._place_in_order(column, siblings, index)
 
     def create_card(self, column_uuid: str, name: str,
                     description: str = "",
-                    participants: list[str] | None = None) -> SessionResult:
+                    participants: list[str] | None = None,
+                    owner: str | None = None) -> SessionResult:
         column = self._node(column_uuid, "kanban_column")
         if not column:
             return SessionResult("error", reason="column not found")
+        existing = self.cards(column)
+        last_order = float(existing[-1].data.get("order", 0)) if existing else None
+        participants = participants or []
         return self.session.create_child(
             column.uuid,
             {
                 "type": "kanban_card",
                 "name": name or "Card",
                 "description": description or "",
-                "participants": participants or [],
-                "order": len(self.cards(column)),
+                "participants": participants,
+                "owner": self._normalize_owner(owner, participants),
+                "order": self._order_between(last_order, None),
             },
             {},
         )
 
     def update_card(self, card_uuid: str, name: str,
                     description: str = "",
-                    participants: list[str] | None = None) -> SessionResult:
+                    participants: list[str] | None = None,
+                    owner: str | None = None) -> SessionResult:
         card = self._node(card_uuid, "kanban_card")
         if not card:
             return SessionResult("error", reason="card not found")
+        participants = participants or []
         data = dict(card.data)
         data.update({
             "name": name or "Card",
             "description": description or "",
-            "participants": participants or [],
+            "participants": participants,
+            "owner": self._normalize_owner(owner, participants),
         })
         return self.session.modify(card.uuid, data, card.weights)
+
+    @staticmethod
+    def _normalize_owner(owner: str | None, participants: list[str]) -> str | None:
+        return owner if owner and owner in participants else None
 
     def delete_card(self, card_uuid: str) -> SessionResult:
         card = self._node(card_uuid, "kanban_card")
@@ -531,11 +561,12 @@ class KanbanLogic:
                 return moved
             effects = list(moved.effects)
             fresh_column = self.session.protocol.index[column.uuid]
-            cards = self.cards(fresh_column)
-            reordered = self._reorder(cards)
-            if reordered.status != "ok":
-                return reordered
-            effects.extend(reordered.effects)
+            fresh_card = self.session.protocol.index[card.uuid]
+            siblings = [item for item in self.cards(fresh_column) if item.uuid != card.uuid]
+            placed = self._place_in_order(fresh_card, siblings, index)
+            if placed.status != "ok":
+                return placed
+            effects.extend(placed.effects)
             return SessionResult("ok", value=True, effects=effects)
 
         return operation()
@@ -563,8 +594,14 @@ class KanbanLogic:
 
         return operation()
 
+    def reaffirm_node(self, node_uuid: str) -> SessionResult:
+        return self.session.reaffirm(node_uuid)
+
     def adopt_incoming_changes(self, board: PRSPNode | None = None) -> bool:
         board = board or self.ensure_board()
+        mode = self.auto_adopt_mode(board)
+        if mode == "never":
+            return False
         candidates = []
         for addr, peer in sorted(self.session.peer_perspectives.items()):
             if not self._peer_discusses_node(addr, board.uuid):
@@ -612,38 +649,75 @@ class KanbanLogic:
                     peer_state_hash=top_event.get("peer_state_hash"),
                 )
                 continue
-            if top_event["type"] != "peer_made_changes":
-                for event in self.session.analyze_peer_transitions(addr, board.uuid):
-                    if event["type"] not in ("peer_made_changes", "local_missing_node"):
-                        continue
-                    if event["node_uuid"] == board.uuid:
-                        continue
-                    self.session.trace_event(
-                        "kanban.auto_adopt_node",
-                        board_uuid=board.uuid,
-                        peer_addr=addr,
-                        node_uuid=event["node_uuid"],
-                        event_type=event["type"],
-                        peer_state_hash=event.get("peer_state_hash"),
-                    )
-                    result = self.accept_peer_node(addr, event["node_uuid"])
-                    changed = changed or result.status == "ok"
+            if top_event["type"] == "peer_made_changes" and mode == "always" and not board.is_reaffirmed():
+                self.session.trace_event(
+                    "kanban.auto_adopt_replace_board",
+                    board_uuid=board.uuid,
+                    peer_addr=addr,
+                    local_state_hash=top_event.get("local_state_hash"),
+                    peer_state_hash=top_event.get("peer_state_hash"),
+                )
+                self._replace_subtree(peer_board)
+                changed = True
                 continue
-            self.session.trace_event(
-                "kanban.auto_adopt_replace_board",
-                board_uuid=board.uuid,
-                peer_addr=addr,
-                local_state_hash=top_event.get("local_state_hash"),
-                peer_state_hash=top_event.get("peer_state_hash"),
-            )
-            self._replace_subtree(peer_board)
-            changed = True
+            for event in self.session.analyze_peer_transitions(addr, board.uuid):
+                if event["type"] not in ("peer_made_changes", "local_missing_node"):
+                    continue
+                if event["node_uuid"] == board.uuid:
+                    continue
+                peer_node = self.session.get_cached_peer_subtree(addr, event["node_uuid"])
+                local_node = self.session.protocol.index.get(event["node_uuid"])
+                reference_node = local_node or peer_node
+                if not reference_node:
+                    continue
+                if local_node and local_node.is_reaffirmed():
+                    continue
+                is_card = reference_node.data.get("type") == "kanban_card"
+                if is_card and not self._auto_adopt_allows_node(mode, reference_node):
+                    continue
+                # A column (or any non-card node) that doesn't exist locally yet
+                # would have to be adopted as a whole subtree, which could pull
+                # in child cards the current mode is supposed to filter out.
+                # Only "always" mode may adopt those; other modes leave it for
+                # manual review.
+                if not is_card and event["type"] == "local_missing_node" and mode != "always":
+                    continue
+                self.session.trace_event(
+                    "kanban.auto_adopt_node",
+                    board_uuid=board.uuid,
+                    peer_addr=addr,
+                    node_uuid=event["node_uuid"],
+                    event_type=event["type"],
+                    peer_state_hash=event.get("peer_state_hash"),
+                )
+                if not is_card and event["type"] == "peer_made_changes" and peer_node:
+                    # Update the node's own fields only - never cascade into
+                    # its children, so an allowed column-rename can't smuggle
+                    # in a filtered-out card change underneath it.
+                    result = self.session.modify(event["node_uuid"], peer_node.data, peer_node.weights)
+                else:
+                    result = self.accept_peer_node(addr, event["node_uuid"])
+                changed = changed or result.status == "ok"
         self.session.trace_event(
             "kanban.auto_adopt_done",
             board_uuid=board.uuid,
             changed=changed,
         )
         return changed
+
+    def _auto_adopt_allows_node(self, mode: str, node: PRSPNode | None) -> bool:
+        if mode == "always":
+            return True
+        if mode == "never":
+            return False
+        if not node or node.data.get("type") != "kanban_card":
+            return True
+        my_id = self.user_profile().uuid
+        if mode == "not_owner":
+            return node.data.get("owner") != my_id
+        if mode == "not_member":
+            return my_id not in (node.data.get("participants") or [])
+        return True
 
     def on_peer_update(self) -> SessionResult:
         changed = self.adopt_all_incoming_changes()
@@ -659,7 +733,7 @@ class KanbanLogic:
         changed = False
         for board in self.boards():
             if (self._is_active_discussion_node(board.uuid)
-                    and self.auto_adopt_enabled(board)):
+                    and self.auto_adopt_mode(board) != "never"):
                 changed = self.adopt_incoming_changes(board) or changed
         return changed
 
@@ -676,7 +750,6 @@ class KanbanLogic:
     def transition_by_node(self, events: list[dict]) -> dict:
         priority = {
             "divergence": 6,
-            "cannot_compare": 5,
             "peer_made_changes": 4,
             "local_missing_node": 4,
             "local_made_changes": 3,
@@ -703,50 +776,46 @@ class KanbanLogic:
             out[node_uuid] = dict(event_info)
             if event["type"] != "in_agreement":
                 out[node_uuid]["events"] = [dict(event_info)]
-        direction_by_peer = {}
-        for event in events:
-            if event["type"] in ("peer_made_changes", "local_made_changes"):
-                direction_by_peer.setdefault(event.get("peer_addr"), event["type"])
-        for node_uuid, info in out.items():
-            event_items = info.get("events") or []
-            for peer_addr in {item.get("peer_addr") for item in event_items}:
-                peer_types = {
-                    item.get("type")
-                    for item in event_items
-                    if item.get("peer_addr") == peer_addr
-                }
-                if not {"local_missing_node", "peer_missing_node"} <= peer_types:
-                    continue
-                direction = direction_by_peer.get(peer_addr)
-                if not direction:
-                    continue
-                info["type"] = direction
-                info["peer_addr"] = peer_addr
-                info["events"] = [
-                    item for item in event_items
-                    if not (
-                        item.get("peer_addr") == peer_addr
-                        and item.get("type") in ("local_missing_node", "peer_missing_node")
-                    )
-                ]
-                info["events"].append({
-                    "type": direction,
-                    "peer_addr": peer_addr,
-                })
         return out
 
     def columns(self, board: PRSPNode | None = None) -> list[PRSPNode]:
         board = board or self.ensure_board()
         return sorted(
-            [child for child in board.children if child.data.get("type") == "kanban_column"],
+            [child for child in board.live_children() if child.data.get("type") == "kanban_column"],
             key=lambda node: (float(node.data.get("order", 0)), node.created_at),
         )
 
     def cards(self, column: PRSPNode) -> list[PRSPNode]:
         return sorted(
-            [child for child in column.children if child.data.get("type") == "kanban_card"],
+            [child for child in column.live_children() if child.data.get("type") == "kanban_card"],
             key=lambda node: (float(node.data.get("order", 0)), node.created_at),
         )
+
+    @staticmethod
+    def _order_between(low: float | None, high: float | None) -> float | None:
+        if low is None and high is None:
+            return 0.0
+        if low is None:
+            return high - 1.0
+        if high is None:
+            return low + 1.0
+        if high - low < ORDER_GAP_EPSILON:
+            return None
+        return (low + high) / 2.0
+
+    def _place_in_order(self, moved: PRSPNode, siblings: list[PRSPNode],
+                        index: int) -> SessionResult:
+        index = max(0, min(index, len(siblings)))
+        low = float(siblings[index - 1].data.get("order", 0)) if index > 0 else None
+        high = float(siblings[index].data.get("order", 0)) if index < len(siblings) else None
+        new_order = self._order_between(low, high)
+        if new_order is None:
+            ordered = list(siblings)
+            ordered.insert(index, moved)
+            return self._reorder(ordered)
+        data = dict(moved.data)
+        data["order"] = new_order
+        return self.session.modify(moved.uuid, data, moved.weights)
 
     def _reorder(self, nodes: list[PRSPNode]) -> SessionResult:
         effects = []
@@ -1011,7 +1080,7 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
 
     async def api_auto_adopt(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.set_auto_adopt(bool(data.get("enabled"))))
+        return await _json_result(runtime, logic.set_auto_adopt_mode(data.get("mode", "always")))
 
     async def api_create_board(request: Request):
         data = await request.json()
@@ -1099,6 +1168,7 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
             data.get("name", "Card"),
             data.get("description", ""),
             _participants(data.get("participants")),
+            data.get("owner"),
         ))
 
     async def api_update_card(request: Request):
@@ -1108,6 +1178,7 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
             data.get("name", "Card"),
             data.get("description", ""),
             _participants(data.get("participants")),
+            data.get("owner"),
         ))
 
     async def api_delete_card(request: Request):
@@ -1130,6 +1201,10 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
             bool(data.get("adopt_absence")),
         ))
 
+    async def api_reaffirm(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.reaffirm_node(data["node_uuid"]))
+
     return [
         Route("/api/kanban/board", api_board),
         Route("/api/kanban/auto_adopt", api_auto_adopt, methods=["POST"]),
@@ -1151,6 +1226,7 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
         Route("/api/kanban/cards/delete", api_delete_card, methods=["POST"]),
         Route("/api/kanban/cards/move", api_move_card, methods=["POST"]),
         Route("/api/kanban/adopt", api_adopt, methods=["POST"]),
+        Route("/api/kanban/reaffirm", api_reaffirm, methods=["POST"]),
     ]
 
 

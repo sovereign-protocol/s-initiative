@@ -9,27 +9,49 @@
   <body>
     <header class="topbar">
       <div class="brand">
-        <span class="brand-mark"></span><strong>S-Kanban</strong
-        ><span class="brand-subtitle">Perspectives</span>
+        <span class="brand-mark"></span><strong>S-Kanban</strong>
+      </div>
+      <div class="board-title">
+        <input id="boardName" />
+        <span id="autoAdoptIndicator" class="auto-adopt-square" title="Auto-adopt"></span>
+        <span id="statusText"></span>
       </div>
       <div class="top-actions">
-        <select id="boardSelect"></select>
-        <button id="newBoardBtn">New</button>
-        <button id="copyBoardBtn">Copy</button>
-        <button id="deleteBoardBtn">Delete</button>
-        <button id="shareBoardBtn">Share</button>
-        <button id="unshareBoardBtn">Unshare</button>
-        <button id="profileBtn">Profile</button>
-        <label class="toggle"><input id="autoAdopt" type="checkbox" /> Auto-adopt</label>
+        <button id="selfAvatarBtn" class="header-avatar-btn" title="Edit your profile"></button>
         <button id="networkBtn">local</button>
+        <button id="menuToggleBtn" class="icon-btn" title="Board menu" aria-label="Board menu">
+          &#9776;
+        </button>
       </div>
     </header>
 
-    <main>
-      <div class="board-title">
-        <input id="boardName" />
-        <span id="statusText"></span>
+    <div id="sidePanelOverlay" class="side-panel-overlay"></div>
+    <aside id="sidePanel" class="side-panel">
+      <div class="side-panel-header">
+        <strong>Board menu</strong>
+        <button id="sidePanelCloseBtn" class="icon-btn" title="Close" aria-label="Close">
+          &#10005;
+        </button>
       </div>
+      <div class="side-panel-section">
+        <h3>Boards</h3>
+        <div id="boardList" class="board-list"></div>
+      </div>
+      <div class="side-panel-section">
+        <h3>Settings</h3>
+        <div class="auto-adopt-control">
+          <button
+            id="autoAdoptToggleBtn"
+            type="button"
+            class="auto-adopt-square"
+            title="Click to change"
+          ></button>
+          <span id="autoAdoptModeLabel"></span>
+        </div>
+      </div>
+    </aside>
+
+    <main>
       <section id="board" class="board"></section>
     </main>
 
@@ -38,14 +60,9 @@
         <h2 id="cardModalTitle">Card</h2>
         <label>Name<input id="cardName" /></label>
         <label>Description<textarea id="cardDescription" rows="5"></textarea></label>
-        <label
-          >Participants<input
-            id="cardParticipants"
-            list="participantOptions"
-            placeholder="Owner, participant, participant"
-        /></label>
+        <label>Owner<select id="cardOwner"></select></label>
+        <label>Members</label>
         <div id="participantPicker" class="user-picker"></div>
-        <datalist id="participantOptions"></datalist>
         <menu>
           <button id="deleteCardBtn" type="button" class="danger">Delete</button>
           <span></span>
@@ -74,9 +91,64 @@
       let modalCard = null;
       let modalColumn = null;
       let modalParticipants = [];
+      let modalOwner = null;
       let statusResetAt = 0;
 
+      const AUTO_ADOPT_MODES = ["always", "not_owner", "not_member", "never"];
+      const AUTO_ADOPT_LABELS = {
+        always: "Always",
+        not_owner: "Except cards I own",
+        not_member: "Except cards I'm on",
+        never: "Never",
+      };
+      const AUTO_ADOPT_FILL = { always: 4, not_owner: 2, not_member: 1, never: 0 };
+
       const el = (id) => document.getElementById(id);
+
+      function autoAdoptAllowsNode(node) {
+        const mode = state.auto_adopt_mode;
+        if (mode === "always") return true;
+        if (mode === "never") return false;
+        if (!node || node.data.type !== "kanban_card") return true;
+        const myId = (state.users || [])[0]?.id;
+        if (mode === "not_owner") return node.data.owner !== myId;
+        if (mode === "not_member") return !(node.data.participants || []).includes(myId);
+        return true;
+      }
+
+      function isReaffirmed(node) {
+        return (
+          node.reaffirmed_hash === node.state_hash &&
+          node.reaffirmed_parent_uuid === node.parent_uuid
+        );
+      }
+
+      function hasPendingDivergence(node) {
+        const info = transitionInfo(node.uuid);
+        return !!info && info.type !== "in_agreement";
+      }
+
+      function needsManualAdopt(node) {
+        if (!hasPendingDivergence(node) || isReaffirmed(node)) return false;
+        const info = transitionInfo(node.uuid);
+        const autoResolvableType = info.type === "peer_made_changes" || info.type === "local_missing_node";
+        return !autoResolvableType || !autoAdoptAllowsNode(node);
+      }
+
+      function needsReaffirmedBadge(node) {
+        return hasPendingDivergence(node) && isReaffirmed(node);
+      }
+
+      function renderAutoAdoptSquare(container) {
+        container.replaceChildren();
+        const filled = AUTO_ADOPT_FILL[state.auto_adopt_mode] ?? 4;
+        for (let i = 0; i < 4; i++) {
+          const cell = document.createElement("span");
+          cell.className = "auto-adopt-cell";
+          if (i < filled) cell.classList.add("filled");
+          container.append(cell);
+        }
+      }
 
       async function api(path, body) {
         const response = await fetch(path, {
@@ -93,7 +165,6 @@
 
       function renderNetwork() {
         const peers = (state.network.members || []).filter((item) => item !== state.address);
-        const held = peers.filter((addr) => peerStatus(addr).state === "offline");
         const networkBtn = el("networkBtn");
         networkBtn.replaceChildren();
         networkBtn.className = peers.length ? "peer-cluster" : "peer-cluster local";
@@ -102,10 +173,15 @@
         } else {
           for (const addr of peers.slice(0, 4)) {
             const user = userForParticipant(addr);
+            const online = peerStatus(addr).state !== "offline";
             const avatar = document.createElement("span");
             avatar.className = "header-avatar";
-            if (peerStatus(addr).state === "offline") avatar.classList.add("on-hold");
-            avatar.textContent = initials(user.name || peerLabel(addr));
+            avatar.classList.add(online ? "status-online" : "status-offline");
+            if (user.picture) {
+              avatar.style.backgroundImage = `url("${cssUrl(user.picture)}")`;
+            } else {
+              avatar.textContent = initials(user.name || peerLabel(addr));
+            }
             avatar.title = peerLabel(addr);
             networkBtn.append(avatar);
           }
@@ -127,15 +203,101 @@
           })
           .join("\\n");
         if (Date.now() > statusResetAt) {
-          el("statusText").textContent = state.address;
+          el("statusText").textContent = "";
           el("statusText").className = "idle";
         }
+      }
+
+      function renderSelfAvatar() {
+        const self = (state.users || [])[0];
+        const button = el("selfAvatarBtn");
+        button.replaceChildren();
+        const avatar = document.createElement("span");
+        avatar.className = "header-avatar status-online";
+        if (self?.picture) {
+          avatar.style.backgroundImage = `url("${cssUrl(self.picture)}")`;
+        } else {
+          avatar.textContent = initials(self?.name || "?");
+        }
+        button.append(avatar);
+        button.title = self?.name ? `${self.name} (edit profile)` : "Edit your profile";
+      }
+
+      function renderAutoAdoptIndicator() {
+        const indicator = el("autoAdoptIndicator");
+        renderAutoAdoptSquare(indicator);
+        indicator.title = `Auto-adopt: ${AUTO_ADOPT_LABELS[state.auto_adopt_mode] || "Always"}`;
+      }
+
+      function renderAutoAdoptControl() {
+        const button = el("autoAdoptToggleBtn");
+        renderAutoAdoptSquare(button);
+        el("autoAdoptModeLabel").textContent = AUTO_ADOPT_LABELS[state.auto_adopt_mode] || "Always";
       }
 
       function openNetworkPanel() {
         el("simpleTitle").textContent = "Peers";
         const fields = el("simpleFields");
         fields.replaceChildren();
+        const addressRow = document.createElement("div");
+        addressRow.className = "peer-row my-address";
+        const addressLabel = document.createElement("strong");
+        addressLabel.textContent = "Your address";
+        const addressValue = document.createElement("code");
+        addressValue.textContent = state.address;
+        const copyBtn = document.createElement("button");
+        copyBtn.type = "button";
+        copyBtn.textContent = "Copy";
+        copyBtn.onclick = async () => {
+          await navigator.clipboard.writeText(state.address);
+          showStatus("Address copied");
+        };
+        addressRow.append(addressLabel, addressValue, copyBtn);
+        fields.append(addressRow);
+        const hint = document.createElement("p");
+        hint.className = "confirm-text";
+        hint.textContent = "Share this address with a peer so they can connect to you.";
+        fields.append(hint);
+
+        const shareRow = document.createElement("div");
+        shareRow.className = "network-share-row";
+        const shareInput = document.createElement("input");
+        shareInput.placeholder = "Peer address";
+        shareInput.value = "http://127.0.0.1:8002";
+        const shareBtn = document.createElement("button");
+        shareBtn.type = "button";
+        shareBtn.textContent = "Share this board";
+        shareBtn.onclick = () =>
+          run(
+            () =>
+              api("/api/kanban/boards/share", {
+                address: shareInput.value,
+                board_uuid: state.board.uuid,
+              }),
+            "Board shared",
+          );
+        shareRow.append(shareInput, shareBtn);
+        fields.append(shareRow);
+
+        const boardPeers = boardPeerAddresses();
+        if (boardPeers.length) {
+          const unshareBtn = document.createElement("button");
+          unshareBtn.type = "button";
+          unshareBtn.className = "danger";
+          unshareBtn.textContent = `Unshare this board (${boardPeers.length})`;
+          unshareBtn.onclick = () =>
+            confirmAction(
+              "Unshare board?",
+              `Stop sharing this board with ${boardPeers.length} peer${boardPeers.length === 1 ? "" : "s"}.`,
+              () =>
+                run(
+                  () => api("/api/kanban/boards/unshare", { board_uuid: state.board.uuid }),
+                  "Board unshared",
+                ),
+            );
+          fields.append(unshareBtn);
+        }
+
         const peers = (state.network.members || []).filter((item) => item !== state.address);
         if (!peers.length) {
           const empty = document.createElement("p");
@@ -152,12 +314,9 @@
           const info = peerStatus(addr);
           status.textContent = info.state === "offline" ? "on hold" : "online";
           status.className = info.state === "offline" ? "peer-hold" : "peer-online";
-          const topics = document.createElement("span");
-          const topicUuids = state.network?.peers?.[addr]?.topic_uuids || [];
-          topics.textContent = topicUuids.length
-            ? topicUuids.map((uuid) => uuid.slice(0, 8)).join(", ")
-            : "no topics";
-          row.append(name, status, topics);
+          const lastUpdate = document.createElement("span");
+          lastUpdate.textContent = formatLastSeen(info.last_seen);
+          row.append(name, status, lastUpdate);
           fields.append(row);
         }
         el("simpleForm").onsubmit = (event) => {
@@ -167,41 +326,100 @@
         el("simpleModal").showModal();
       }
 
-      function renderBoardSelector() {
-        const select = el("boardSelect");
-        select.replaceChildren();
-        for (const board of state.boards || []) {
-          const option = document.createElement("option");
-          option.value = board.uuid;
-          option.textContent = board.data.name || "Kanban Board";
-          option.selected = board.uuid === state.board.uuid;
-          select.append(option);
+      function formatLastSeen(timestamp) {
+        if (!timestamp) return "never";
+        const seconds = Math.max(0, Date.now() / 1000 - timestamp);
+        if (seconds < 60) return "just now";
+        if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+        if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+        return `${Math.floor(seconds / 86400)}d ago`;
+      }
+
+      function renderBoardList() {
+        const container = el("boardList");
+        container.replaceChildren();
+        const boards = state.boards || [];
+        for (const board of boards) {
+          const row = document.createElement("div");
+          row.className = "board-list-row";
+          if (board.uuid === state.board.uuid) row.classList.add("active");
+          const name = document.createElement("span");
+          name.className = "board-list-name";
+          name.textContent = board.data.name || "Kanban Board";
+          name.onclick = () =>
+            run(
+              () => api("/api/kanban/boards/select", { board_uuid: board.uuid }),
+              "Board selected",
+            );
+          row.append(name);
+          if (boards.length > 1) {
+            const del = document.createElement("button");
+            del.type = "button";
+            del.className = "icon-btn board-list-delete";
+            del.title = "Delete board";
+            del.textContent = "✕";
+            del.onclick = (event) => {
+              event.stopPropagation();
+              confirmAction(
+                "Delete board?",
+                `Delete "${board.data.name || "Kanban Board"}" and all cards inside it.`,
+                () =>
+                  run(
+                    () => api("/api/kanban/boards/delete", { board_uuid: board.uuid }),
+                    "Board deleted",
+                  ),
+              );
+            };
+            row.append(del);
+          }
+          container.append(row);
         }
-        renderParticipantOptions();
+        const add = document.createElement("button");
+        add.type = "button";
+        add.className = "board-list-add";
+        add.textContent = "+ Add board";
+        add.onclick = openNewBoardModal;
+        container.append(add);
       }
 
-      function renderShareAction() {
-        const peers = boardPeerAddresses();
-        el("shareBoardBtn").title = "Share this board";
-        const unshareButton = el("unshareBoardBtn");
-        unshareButton.disabled = !peers.length;
-        unshareButton.title = peers.length
-          ? `Shared with ${peers.length} peer${peers.length === 1 ? "" : "s"}`
-          : "This board is not shared";
+      function openNewBoardModal() {
+        const boards = state.boards || [];
+        openSimple(
+          "New Board",
+          [
+            { name: "name", label: "Name", value: "Kanban Board" },
+            {
+              name: "template",
+              label: "Copy from (optional)",
+              type: "select",
+              value: "",
+              options: [
+                { value: "", label: "Start empty" },
+                ...boards.map((board) => ({
+                  value: board.uuid,
+                  label: board.data.name || "Kanban Board",
+                })),
+              ],
+            },
+          ],
+          async (form) => {
+            const templateUuid = form.get("template");
+            if (templateUuid) {
+              const result = await api("/api/kanban/boards/copy", { board_uuid: templateUuid });
+              if (result.value) {
+                await api("/api/kanban/boards/rename", {
+                  board_uuid: result.value,
+                  name: form.get("name"),
+                });
+              }
+              return result;
+            }
+            return api("/api/kanban/boards/create", { name: form.get("name") });
+          },
+        );
       }
 
-      function renderParticipantOptions() {
-        const options = el("participantOptions");
-        options.replaceChildren();
-        for (const user of state.users || []) {
-          const option = document.createElement("option");
-          option.value = user.name;
-          option.label = user.profile_uuid || user.id || user.address;
-          options.append(option);
-        }
-      }
-
-      function renderUserPicker(containerId, inputId) {
+      function renderUserPicker(containerId) {
         const container = el(containerId);
         container.replaceChildren();
         for (const user of state.users || []) {
@@ -221,13 +439,34 @@
           button.append(avatar, name);
           button.onclick = () => {
             const index = modalParticipants.indexOf(user.id);
-            if (index >= 0) modalParticipants.splice(index, 1);
-            else if (user.id) modalParticipants.push(user.id);
-            syncParticipantInput(inputId);
-            renderUserPicker(containerId, inputId);
+            if (index >= 0) {
+              modalParticipants.splice(index, 1);
+              if (modalOwner === user.id) modalOwner = null;
+            } else if (user.id) {
+              modalParticipants.push(user.id);
+            }
+            renderUserPicker(containerId);
+            renderOwnerSelect();
           };
           container.append(button);
         }
+      }
+
+      function renderOwnerSelect() {
+        const select = el("cardOwner");
+        select.replaceChildren();
+        const blank = document.createElement("option");
+        blank.value = "";
+        blank.textContent = "Unassigned";
+        select.append(blank);
+        for (const id of modalParticipants) {
+          const option = document.createElement("option");
+          option.value = id;
+          option.textContent = userForParticipant(id).name;
+          select.append(option);
+        }
+        select.value = modalParticipants.includes(modalOwner) ? modalOwner : "";
+        modalOwner = select.value || null;
       }
 
       async function loadBoard() {
@@ -241,11 +480,12 @@
             boardNameInput.value = state.board.data.name || "Kanban Board";
           }
 
-          el("autoAdopt").checked = Boolean(state.auto_adopt);
+          renderAutoAdoptIndicator();
+          renderAutoAdoptControl();
 
-          renderBoardSelector();
+          renderBoardList();
           renderNetwork();
-          renderShareAction();
+          renderSelfAvatar();
 
           // Neues Rendering via Diffing
           renderBoard();
@@ -340,7 +580,7 @@
           : [];
         const participantsEl = cardEl.querySelector(".participants");
         if (participantItems.length) {
-          const rendered = renderParticipants(participantItems);
+          const rendered = renderParticipants(participantItems, card.data.owner);
           if (participantsEl) participantsEl.replaceWith(rendered);
           else {
             const adoptEl = cardEl.querySelector(".adopt");
@@ -352,9 +592,11 @@
 
         // P2P Konflikt-Klassen aktualisieren (nutzt deine bestehende Helper-Funktion)
         applyTransitionClass(cardEl, card.uuid);
-        cardEl.querySelectorAll(".adopt").forEach((button) => button.remove());
-        if (!state.auto_adopt && hasActionableTransition(card.uuid)) {
-          cardEl.append(adoptButton(card.uuid));
+        cardEl.querySelectorAll(".adopt, .reaffirm, .reaffirmed").forEach((button) => button.remove());
+        if (needsManualAdopt(card)) {
+          cardEl.append(adoptButton(card.uuid), reaffirmButton(card.uuid));
+        } else if (needsReaffirmedBadge(card)) {
+          cardEl.append(reaffirmedBadge(card.uuid));
         }
       }
 
@@ -395,8 +637,10 @@
         head.append(name, del);
         const tools = document.createElement("div");
         tools.className = "adopt-tools";
-        if (!state.auto_adopt && hasActionableTransition(column.uuid)) {
-          tools.append(adoptButton(column.uuid));
+        if (needsManualAdopt(column)) {
+          tools.append(adoptButton(column.uuid), reaffirmButton(column.uuid));
+        } else if (needsReaffirmedBadge(column)) {
+          tools.append(reaffirmedBadge(column.uuid));
         }
         head.append(tools);
         article.append(head);
@@ -459,9 +703,11 @@
         const participantItems = Array.isArray(card.data.participants)
           ? card.data.participants
           : [];
-        if (participantItems.length) node.append(renderParticipants(participantItems));
-        if (!state.auto_adopt && hasActionableTransition(card.uuid)) {
-          node.append(adoptButton(card.uuid));
+        if (participantItems.length) node.append(renderParticipants(participantItems, card.data.owner));
+        if (needsManualAdopt(card)) {
+          node.append(adoptButton(card.uuid), reaffirmButton(card.uuid));
+        } else if (needsReaffirmedBadge(card)) {
+          node.append(reaffirmedBadge(card.uuid));
         }
         node.onclick = (event) => {
           if (ghost) return;
@@ -484,30 +730,29 @@
         return node;
       }
 
-      function renderParticipants(participants) {
+      function renderParticipants(participants, ownerId) {
         const wrap = document.createElement("div");
         wrap.className = "participants";
-        wrap.title = "Participants; first is owner";
-        participants.forEach((participant, index) => {
+        wrap.title = "Participants";
+        const ordered =
+          ownerId && participants.includes(ownerId)
+            ? [ownerId, ...participants.filter((id) => id !== ownerId)]
+            : participants;
+        ordered.forEach((participant) => {
           const user = userForParticipant(participant);
+          const isOwner = participant === ownerId;
           const avatar = document.createElement("span");
           avatar.className = "participant-avatar";
-          if (index === 0) avatar.classList.add("owner");
-          avatar.title = index === 0 ? `${user.name} (owner)` : user.name;
+          if (isOwner) avatar.classList.add("owner");
+          avatar.title = isOwner ? `${user.name} (owner)` : user.name;
           if (user.picture) {
             avatar.style.backgroundImage = `url("${cssUrl(user.picture)}")`;
             avatar.textContent = "";
           } else {
             avatar.textContent = initials(user.name);
           }
-        if (user.address === state.address) avatar.classList.add("me");
+          if (user.address === state.address) avatar.classList.add("me");
           wrap.append(avatar);
-          if (index === 0) {
-            const owner = document.createElement("span");
-            owner.className = "owner-label";
-            owner.textContent = user.name;
-            wrap.append(owner);
-          }
         });
         return wrap;
       }
@@ -549,6 +794,30 @@
         return button;
       }
 
+      function reaffirmButton(uuid) {
+        const button = icon("Reaffirm", () =>
+          run(
+            () => api("/api/kanban/reaffirm", { node_uuid: uuid }),
+            "Kept your version",
+          ),
+        );
+        button.classList.add("reaffirm");
+        button.title = "Keep my version and dismiss this divergence";
+        return button;
+      }
+
+      function reaffirmedBadge(uuid) {
+        const button = icon("Reaffirmed", () =>
+          run(
+            () => api("/api/kanban/reaffirm", { node_uuid: uuid }),
+            "Reaffirm cleared",
+          ),
+        );
+        button.classList.add("reaffirmed");
+        button.title = "You kept your version - click to reopen this divergence";
+        return button;
+      }
+
       function openAdopt(uuid) {
         const peers = Object.entries(state.peers || {})
           .map(([addr, root]) => ({
@@ -578,31 +847,30 @@
         el("cardModalTitle").textContent = card ? "Edit Card" : "Add Card";
         el("cardName").value = card ? card.data.name || "" : "";
         el("cardDescription").value = card ? card.data.description || "" : "";
+        const self = (state.users || [])[0];
         modalParticipants =
-          card && Array.isArray(card.data.participants) ? [...card.data.participants] : [];
-        syncParticipantInput("cardParticipants");
-        el("cardParticipants").oninput = () => {
-          modalParticipants = normalizeParticipantsInput(el("cardParticipants").value);
-          renderUserPicker("participantPicker", "cardParticipants");
+          card && Array.isArray(card.data.participants)
+            ? [...card.data.participants]
+            : self?.id
+              ? [self.id]
+              : [];
+        modalOwner = card ? card.data.owner || null : self?.id || null;
+        renderUserPicker("participantPicker");
+        renderOwnerSelect();
+        el("cardOwner").onchange = () => {
+          modalOwner = el("cardOwner").value || null;
         };
-        renderUserPicker("participantPicker", "cardParticipants");
         el("deleteCardBtn").style.display = card ? "inline-block" : "none";
         el("cardModal").showModal();
       }
 
-      function syncParticipantInput(inputId) {
-        el(inputId).value = modalParticipants
-          .map((address) => userForParticipant(address).name)
-          .join(", ");
-      }
-
       el("cardForm").onsubmit = async (event) => {
         event.preventDefault();
-        modalParticipants = normalizeParticipantsInput(el("cardParticipants").value);
         const payload = {
           name: el("cardName").value,
           description: el("cardDescription").value,
           participants: dedupe(modalParticipants),
+          owner: modalOwner || null,
         };
         if (modalCard) {
           payload.card_uuid = modalCard.uuid;
@@ -627,15 +895,29 @@
       el("cancelCardBtn").onclick = () => el("cardModal").close();
 
       function openSimple(title, fields, onSubmit) {
+        closeSidePanel();
         el("simpleTitle").textContent = title;
         el("simpleFields").replaceChildren();
         for (const field of fields) {
           const label = document.createElement("label");
           label.textContent = field.label;
-          const input = document.createElement("input");
-          input.name = field.name;
-          input.value = field.value || "";
-          label.append(input);
+          let control;
+          if (field.type === "select") {
+            control = document.createElement("select");
+            control.name = field.name;
+            for (const option of field.options || []) {
+              const opt = document.createElement("option");
+              opt.value = option.value;
+              opt.textContent = option.label;
+              if (option.value === field.value) opt.selected = true;
+              control.append(opt);
+            }
+          } else {
+            control = document.createElement("input");
+            control.name = field.name;
+            control.value = field.value || "";
+          }
+          label.append(control);
           el("simpleFields").append(label);
         }
         el("simpleForm").onsubmit = async (event) => {
@@ -648,6 +930,7 @@
       el("cancelSimpleBtn").onclick = () => el("simpleModal").close();
 
       function confirmAction(title, message, action) {
+        closeSidePanel();
         el("simpleTitle").textContent = title;
         const body = document.createElement("p");
         body.className = "confirm-text";
@@ -744,25 +1027,27 @@
         );
       }
       function ghostColumns() {
-        if (state.auto_adopt) return [];
         const localIds = new Set(columns(state.board).map((column) => column.uuid));
         const ghosts = new Map();
         for (const root of boardPeerRoots()) {
           for (const column of columns(root || { children: [] })) {
-            if (!localIds.has(column.uuid)) ghosts.set(column.uuid, column);
+            if (!localIds.has(column.uuid) && !autoAdoptAllowsNode(column)) {
+              ghosts.set(column.uuid, column);
+            }
           }
         }
         return sortNodes([...ghosts.values()]);
       }
       function ghostCards(columnUuid) {
-        if (state.auto_adopt) return [];
         const localColumn = findNode(state.board, columnUuid);
         const localIds = new Set(cards(localColumn || { children: [] }).map((card) => card.uuid));
         const ghosts = new Map();
         for (const root of boardPeerRoots()) {
           const peerColumn = findNode(root, columnUuid);
           for (const card of cards(peerColumn || { children: [] })) {
-            if (!localIds.has(card.uuid)) ghosts.set(card.uuid, card);
+            if (!localIds.has(card.uuid) && !autoAdoptAllowsNode(card)) {
+              ghosts.set(card.uuid, card);
+            }
           }
         }
         return sortNodes([...ghosts.values()]);
@@ -776,10 +1061,6 @@
       }
       function transitionInfo(uuid) {
         return (state.transition_by_node || {})[uuid] || null;
-      }
-      function hasActionableTransition(uuid) {
-        const info = transitionInfo(uuid);
-        return info && info.type !== "in_agreement";
       }
       function applyTransitionClass(element, uuid) {
         element.classList.remove("diff");
@@ -804,7 +1085,6 @@
             local_made_changes: "~",
             peer_missing_node: "-",
             divergence: "!",
-            cannot_compare: "?",
           }[type] || "*"
         );
       }
@@ -819,14 +1099,12 @@
           local_missing_node: `Only in ${peer}`,
           peer_missing_node: `Missing in ${peer}`,
           divergence: `Diverged from ${peer}`,
-          cannot_compare: `Cannot compare with ${peer}`,
         };
         return labels[info.type] || "Difference";
       }
       function groupedTransitionLabel(events) {
         const order = [
           "divergence",
-          "cannot_compare",
           "peer_made_changes",
           "local_missing_node",
           "local_made_changes",
@@ -834,7 +1112,6 @@
         ];
         const labels = {
           divergence: "Diverged from",
-          cannot_compare: "Cannot compare with",
           peer_made_changes: "Changes from",
           local_missing_node: "Only in",
           local_made_changes: "My changes not in",
@@ -898,22 +1175,6 @@
             picture: "",
           }
         );
-      }
-      function normalizeParticipantsInput(value) {
-        return String(value || "")
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean)
-          .map((item) => {
-            const user = (state.users || []).find(
-              (candidate) =>
-                candidate.name === item ||
-                candidate.id === item ||
-                candidate.profile_uuid === item ||
-                candidate.address === item,
-            );
-            return user ? user.id : item;
-          });
       }
       function initials(name) {
         return (
@@ -998,17 +1259,31 @@
         statusResetAt = Date.now() + 3500;
       }
 
-      el("autoAdopt").onchange = () =>
-        run(
-          () => api("/api/kanban/auto_adopt", { enabled: el("autoAdopt").checked }),
+      el("autoAdoptToggleBtn").onclick = () => {
+        const current = AUTO_ADOPT_MODES.indexOf(state.auto_adopt_mode);
+        const next = AUTO_ADOPT_MODES[(current + 1) % AUTO_ADOPT_MODES.length] || "always";
+        return run(
+          () => api("/api/kanban/auto_adopt", { mode: next }),
           "Auto-adopt updated",
         );
+      };
+      function openSidePanel() {
+        el("sidePanel").classList.add("open");
+        el("sidePanelOverlay").classList.add("visible");
+      }
+      function closeSidePanel() {
+        el("sidePanel").classList.remove("open");
+        el("sidePanelOverlay").classList.remove("visible");
+      }
+      el("menuToggleBtn").onclick = () =>
+        el("sidePanel").classList.contains("open") ? closeSidePanel() : openSidePanel();
+      el("sidePanelCloseBtn").onclick = closeSidePanel;
+      el("sidePanelOverlay").onclick = closeSidePanel;
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeSidePanel();
+      });
+
       el("networkBtn").onclick = openNetworkPanel;
-      el("boardSelect").onchange = () =>
-        run(
-          () => api("/api/kanban/boards/select", { board_uuid: el("boardSelect").value }),
-          "Board selected",
-        );
       el("boardName").onchange = () =>
         run(
           () =>
@@ -1018,51 +1293,7 @@
             }),
           "Board renamed",
         );
-      el("newBoardBtn").onclick = () =>
-        openSimple(
-          "New Board",
-          [{ name: "name", label: "Name", value: "Kanban Board" }],
-          async (form) => api("/api/kanban/boards/create", { name: form.get("name") }),
-        );
-      el("copyBoardBtn").onclick = () =>
-        run(() => api("/api/kanban/boards/copy", { board_uuid: state.board.uuid }), "Board copied");
-      el("deleteBoardBtn").onclick = () =>
-        confirmAction(
-          "Delete board?",
-          "This deletes the current board and all cards inside it.",
-          () =>
-            run(
-              () => api("/api/kanban/boards/delete", { board_uuid: state.board.uuid }),
-              "Board deleted",
-            ),
-        );
-      el("shareBoardBtn").onclick = () =>
-        openSimple(
-          "Share Board",
-          [{ name: "address", label: "Peer address", value: "http://127.0.0.1:8002" }],
-          async (form) =>
-            api("/api/kanban/boards/share", {
-              address: form.get("address"),
-              board_uuid: state.board.uuid,
-            }),
-        );
-      el("unshareBoardBtn").onclick = () => {
-        const peers = boardPeerAddresses();
-        if (!peers.length) return;
-        return confirmAction(
-          "Unshare board?",
-          `Stop sharing this board with ${peers.length} peer${peers.length === 1 ? "" : "s"}.`,
-          () =>
-            run(
-              () =>
-                api("/api/kanban/boards/unshare", {
-                  board_uuid: state.board.uuid,
-                }),
-              "Board unshared",
-            ),
-        );
-      };
-      el("profileBtn").onclick = () =>
+      el("selfAvatarBtn").onclick = () =>
         openSimple(
           "Profile",
           [

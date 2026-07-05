@@ -102,6 +102,77 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(moved.data["name"], "Task 2")
         self.assertEqual(moved.data["participants"], ["B"])
 
+    def test_move_card_does_not_touch_sibling_hashes(self):
+        runtime = self.runtime(8363)
+        logic: KanbanLogic = runtime.logic
+        board = logic.ensure_board()
+        todo, doing = logic.columns(board)[:2]
+
+        first = logic.create_card(todo.uuid, "First", "", []).value
+        second = logic.create_card(todo.uuid, "Second", "", []).value
+        third = logic.create_card(todo.uuid, "Third", "", []).value
+        second_hash_before = runtime.session.protocol.index[second.uuid].state_hash
+        third_hash_before = runtime.session.protocol.index[third.uuid].state_hash
+
+        result = logic.move_card(first.uuid, doing.uuid, 0)
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(
+            runtime.session.protocol.index[second.uuid].state_hash,
+            second_hash_before,
+        )
+        self.assertEqual(
+            runtime.session.protocol.index[third.uuid].state_hash,
+            third_hash_before,
+        )
+
+    def test_move_card_lands_between_neighbors_with_fractional_order(self):
+        runtime = self.runtime(8364)
+        logic: KanbanLogic = runtime.logic
+        board = logic.ensure_board()
+        todo, doing = logic.columns(board)[:2]
+
+        first = logic.create_card(todo.uuid, "First", "", []).value
+        second = logic.create_card(todo.uuid, "Second", "", []).value
+        moving = logic.create_card(doing.uuid, "Moving", "", []).value
+
+        result = logic.move_card(moving.uuid, todo.uuid, 1)
+
+        self.assertEqual(result.status, "ok")
+        ordered = logic.cards(runtime.session.protocol.index[todo.uuid])
+        self.assertEqual(
+            [card.uuid for card in ordered],
+            [first.uuid, moving.uuid, second.uuid],
+        )
+        moved_order = runtime.session.protocol.index[moving.uuid].data["order"]
+        self.assertGreater(moved_order, float(first.data["order"]))
+        self.assertLess(moved_order, float(second.data["order"]))
+
+    def test_move_card_renumbers_when_order_gap_is_exhausted(self):
+        runtime = self.runtime(8365)
+        logic: KanbanLogic = runtime.logic
+        board = logic.ensure_board()
+        todo, doing = logic.columns(board)[:2]
+
+        first = logic.create_card(todo.uuid, "First", "", []).value
+        second = logic.create_card(todo.uuid, "Second", "", []).value
+        third = logic.create_card(doing.uuid, "Third", "", []).value
+        logic.session.modify(first.uuid, {**first.data, "order": 0.0}, first.weights)
+        logic.session.modify(second.uuid, {**second.data, "order": 1e-10}, second.weights)
+
+        result = logic.move_card(third.uuid, todo.uuid, 1)
+
+        self.assertEqual(result.status, "ok")
+        ordered = logic.cards(runtime.session.protocol.index[todo.uuid])
+        self.assertEqual(
+            [card.uuid for card in ordered],
+            [first.uuid, third.uuid, second.uuid],
+        )
+        self.assertEqual(
+            [card.data["order"] for card in ordered],
+            [0, 1, 2],
+        )
+
     def test_two_clients_auto_adopt_collaborate(self):
         left = self.runtime(8303)
         right = self.runtime(8304)
@@ -117,7 +188,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         share = left.logic.share_board(left, right.address, board.uuid)
         self.assertEqual(share["status"], "ok")
         self.assertEqual(right.logic.ensure_board().uuid, board.uuid)
-        right.logic.set_auto_adopt(True)
+        right.logic.set_auto_adopt_mode("always")
 
         column = left.logic.columns(board)[0]
         card = left.logic.create_card(column.uuid, "Shared", "", []).value
@@ -136,7 +207,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         board = left.logic.ensure_board()
         left.logic.invite(left, right.address)
         left.logic.share_board(left, right.address, board.uuid)
-        right.logic.set_auto_adopt(True)
+        right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
         card = left.logic.create_card(first.uuid, "Move me", "", []).value
         left.adapter.execute_effects(left.session._sync_effects(board.uuid))
@@ -147,6 +218,113 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.logic.board_payload()
 
         self.assertEqual(right.session.protocol.index[card.uuid].parent_uuid, second.uuid)
+
+    def test_auto_adopt_not_owner_skips_only_cards_i_own(self):
+        left = self.runtime(8369)
+        right = self.runtime(8370)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        left.logic.invite(left, right.address)
+        left.logic.share_board(left, right.address, board.uuid)
+        right.logic.set_auto_adopt_mode("always")
+        column = left.logic.columns(board)[0]
+        right_id = right.logic.user_profile().uuid
+        left_id = left.logic.user_profile().uuid
+        owned_by_me = left.logic.create_card(
+            column.uuid, "Owned by me", "", [right_id], owner=right_id,
+        ).value
+        owned_by_peer = left.logic.create_card(
+            column.uuid, "Owned by peer", "", [right_id], owner=left_id,
+        ).value
+        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        right.logic.board_payload()
+
+        right.logic.set_auto_adopt_mode("not_owner")
+        left.logic.update_card(owned_by_me.uuid, "Renamed (owned by me)", "", [right_id], owner=right_id)
+        left.logic.update_card(owned_by_peer.uuid, "Renamed (owned by peer)", "", [right_id], owner=left_id)
+        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        right.logic.board_payload()
+
+        self.assertEqual(
+            right.session.protocol.index[owned_by_me.uuid].data["name"], "Owned by me",
+        )
+        self.assertEqual(
+            right.session.protocol.index[owned_by_peer.uuid].data["name"],
+            "Renamed (owned by peer)",
+        )
+
+    def test_reaffirm_suppresses_auto_adopt_until_toggled_off(self):
+        left = self.runtime(8373)
+        right = self.runtime(8374)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        left.logic.invite(left, right.address)
+        left.logic.share_board(left, right.address, board.uuid)
+        right.logic.set_auto_adopt_mode("always")
+        column = left.logic.columns(board)[0]
+
+        card = left.logic.create_card(column.uuid, "Original", "", []).value
+        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        right.logic.board_payload()
+        self.assertEqual(right.session.protocol.index[card.uuid].data["name"], "Original")
+
+        reaffirm_result = right.logic.reaffirm_node(card.uuid)
+        self.assertEqual(reaffirm_result.status, "ok")
+
+        left.logic.update_card(card.uuid, "Changed by left", "", [])
+        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        right.logic.board_payload()
+
+        self.assertEqual(
+            right.session.protocol.index[card.uuid].data["name"], "Original",
+        )
+
+        # Toggling the reaffirm off lets auto-adopt catch up again.
+        right.logic.reaffirm_node(card.uuid)
+        right.logic.board_payload()
+
+        self.assertEqual(
+            right.session.protocol.index[card.uuid].data["name"], "Changed by left",
+        )
+
+    def test_auto_adopt_not_member_skips_any_card_im_on(self):
+        left = self.runtime(8371)
+        right = self.runtime(8372)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        left.logic.invite(left, right.address)
+        left.logic.share_board(left, right.address, board.uuid)
+        right.logic.set_auto_adopt_mode("always")
+        column = left.logic.columns(board)[0]
+        right_id = right.logic.user_profile().uuid
+        im_a_member = left.logic.create_card(
+            column.uuid, "I'm a member", "", [right_id],
+        ).value
+        not_involved = left.logic.create_card(
+            column.uuid, "Not involved", "", [],
+        ).value
+        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        right.logic.board_payload()
+
+        right.logic.set_auto_adopt_mode("not_member")
+        left.logic.update_card(im_a_member.uuid, "Renamed (member)", "", [right_id])
+        left.logic.update_card(not_involved.uuid, "Renamed (uninvolved)", "", [])
+        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        right.logic.board_payload()
+
+        self.assertEqual(
+            right.session.protocol.index[im_a_member.uuid].data["name"], "I'm a member",
+        )
+        self.assertEqual(
+            right.session.protocol.index[not_involved.uuid].data["name"],
+            "Renamed (uninvolved)",
+        )
 
     def test_three_peer_chain_auto_adopts_card_move(self):
         left = self.runtime(8356)
@@ -162,8 +340,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         board = left.logic.ensure_board()
         left.logic.share_board(left, middle.address, board.uuid)
         middle.logic.share_board(middle, right.address, board.uuid)
-        middle.logic.set_auto_adopt(True)
-        right.logic.set_auto_adopt(True)
+        middle.logic.set_auto_adopt_mode("always")
+        right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
 
         def tick():
@@ -226,7 +404,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         board = left.logic.ensure_board()
         left.logic.invite(left, right.address)
         left.logic.share_board(left, right.address, board.uuid)
-        right.logic.set_auto_adopt(False)
+        right.logic.set_auto_adopt_mode("never")
 
         column = left.logic.columns(board)[0]
         card = left.logic.create_card(column.uuid, "Needs adopt", "", []).value
@@ -255,7 +433,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertEqual(share["status"], "ok")
         self.assertEqual(right.logic.ensure_board().uuid, board.uuid)
-        self.assertFalse(right.logic.auto_adopt_enabled())
+        self.assertEqual(right.logic.auto_adopt_mode(), "never")
 
     def test_adopt_peer_absence_deletes_local_card(self):
         left = self.runtime(8344)
@@ -265,7 +443,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.adapter.http = client
         board = left.logic.ensure_board()
         left.logic.share_board(left, right.address, board.uuid)
-        right.logic.set_auto_adopt(False)
+        right.logic.set_auto_adopt_mode("never")
         right_board = right.logic.ensure_board()
         column = right.logic.columns(right_board)[0]
         card = right.logic.create_card(column.uuid, "Only local", "", []).value
@@ -292,12 +470,12 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.adapter.http = client
         board = left.logic.ensure_board()
         left.logic.share_board(left, right.address, board.uuid)
-        right.logic.set_auto_adopt(True)
+        right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
         card = left.logic.create_card(first.uuid, "Move me", "", []).value
         left.adapter.execute_effects(left.session._sync_effects(board.uuid))
         right.logic.board_payload()
-        right.logic.set_auto_adopt(False)
+        right.logic.set_auto_adopt_mode("never")
 
         left.logic.move_card(card.uuid, second.uuid, 0)
         PRSPNode.from_dict(left.session.protocol.root.to_dict())
@@ -695,6 +873,41 @@ class KanbanNewLogicTests(unittest.TestCase):
         updated = runtime.session.get_node(card.uuid)
         self.assertEqual(updated.data["participants"], ["owner-2", "participant-2"])
 
+    def test_card_owner_must_be_a_participant(self):
+        runtime = self.runtime(8366)
+        board = runtime.logic.ensure_board()
+        column = runtime.logic.columns(board)[0]
+
+        card = runtime.logic.create_card(
+            column.uuid, "Task", "", ["alice", "bob"], owner="carol",
+        ).value
+
+        self.assertIsNone(card.data["owner"])
+
+    def test_card_owner_kept_when_valid(self):
+        runtime = self.runtime(8367)
+        board = runtime.logic.ensure_board()
+        column = runtime.logic.columns(board)[0]
+
+        card = runtime.logic.create_card(
+            column.uuid, "Task", "", ["alice", "bob"], owner="alice",
+        ).value
+
+        self.assertEqual(card.data["owner"], "alice")
+
+    def test_card_owner_clears_when_removed_from_participants(self):
+        runtime = self.runtime(8368)
+        board = runtime.logic.ensure_board()
+        column = runtime.logic.columns(board)[0]
+        card = runtime.logic.create_card(
+            column.uuid, "Task", "", ["alice", "bob"], owner="alice",
+        ).value
+
+        runtime.logic.update_card(card.uuid, "Task", "", ["bob"], owner="alice")
+
+        updated = runtime.session.get_node(card.uuid)
+        self.assertIsNone(updated.data["owner"])
+
     def test_three_peer_auto_adopt_deletes_all_cards(self):
         left = self.runtime(8353)
         middle = self.runtime(8354)
@@ -735,6 +948,13 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertEqual(len(card_ids(left)), 3)
 
+        # Deletion now flows through the same auto-adopt path as any other
+        # change (it's just another hashed field), so a joined peer only
+        # picks it up automatically once its own mode allows adoption -
+        # joiners default to "never" (manual review).
+        middle.logic.set_auto_adopt_mode("always")
+        right.logic.set_auto_adopt_mode("always")
+
         for card_uuid in list(card_ids(left)):
             result = left.logic.delete_card(card_uuid)
             left.adapter.execute_effects(result.effects)
@@ -758,9 +978,9 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.logic.share_board(left, right.address, board1.uuid)
         left.logic.share_board(left, right.address, board2)
         right.logic.select_board(board2)
-        right.logic.set_auto_adopt(False)
+        right.logic.set_auto_adopt_mode("never")
         right.logic.select_board(board1.uuid)
-        right.logic.set_auto_adopt(True)
+        right.logic.set_auto_adopt_mode("always")
         right.logic.select_board(board2)
 
         column = left.logic.columns(board1)[0]
@@ -802,10 +1022,10 @@ class KanbanNewLogicTests(unittest.TestCase):
         board = runtime.logic.ensure_board()
         root_before = runtime.session.protocol.root.state_hash
 
-        result = runtime.logic.set_auto_adopt(False)
+        result = runtime.logic.set_auto_adopt_mode("never")
 
         self.assertEqual(result.status, "ok")
-        self.assertFalse(runtime.logic.auto_adopt_enabled(board))
+        self.assertEqual(runtime.logic.auto_adopt_mode(board), "never")
         self.assertEqual(runtime.session.protocol.root.state_hash, root_before)
 
     @staticmethod
