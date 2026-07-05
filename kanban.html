@@ -78,7 +78,7 @@
         <div id="simpleFields"></div>
         <menu>
           <button type="button" id="cancelSimpleBtn">Cancel</button>
-          <button type="submit" class="primary">Apply</button>
+          <button type="submit" id="submitSimpleBtn" class="primary">Apply</button>
         </menu>
       </form>
     </dialog>
@@ -235,90 +235,145 @@
         el("autoAdoptModeLabel").textContent = AUTO_ADOPT_LABELS[state.auto_adopt_mode] || "Always";
       }
 
+      function encodeConnectToken(address, topicUuids) {
+        return btoa(JSON.stringify({ address, topic_uuids: topicUuids }));
+      }
+
+      function decodeConnectToken(token) {
+        const payload = JSON.parse(atob(token.trim()));
+        if (!payload.address || !Array.isArray(payload.topic_uuids) || !payload.topic_uuids.length) {
+          throw new Error("Invalid token");
+        }
+        return payload;
+      }
+
+      function avatarElement(user, online) {
+        const avatar = document.createElement("span");
+        avatar.className = "header-avatar";
+        avatar.classList.add(online ? "status-online" : "status-offline");
+        if (user.picture) {
+          avatar.style.backgroundImage = `url("${cssUrl(user.picture)}")`;
+        } else {
+          avatar.textContent = initials(user.name);
+        }
+        return avatar;
+      }
+
       function openNetworkPanel() {
+        setModalFooterMode("done");
         el("simpleTitle").textContent = "Peers";
         const fields = el("simpleFields");
         fields.replaceChildren();
-        const addressRow = document.createElement("div");
-        addressRow.className = "peer-row my-address";
-        const addressLabel = document.createElement("strong");
-        addressLabel.textContent = "Your address";
-        const addressValue = document.createElement("code");
-        addressValue.textContent = state.address;
-        const copyBtn = document.createElement("button");
-        copyBtn.type = "button";
-        copyBtn.textContent = "Copy";
-        copyBtn.onclick = async () => {
-          await navigator.clipboard.writeText(state.address);
-          showStatus("Address copied");
-        };
-        addressRow.append(addressLabel, addressValue, copyBtn);
-        fields.append(addressRow);
-        const hint = document.createElement("p");
-        hint.className = "confirm-text";
-        hint.textContent = "Share this address with a peer so they can connect to you.";
-        fields.append(hint);
 
-        const shareRow = document.createElement("div");
-        shareRow.className = "network-share-row";
-        const shareInput = document.createElement("input");
-        shareInput.placeholder = "Peer address";
-        shareInput.value = "http://127.0.0.1:8002";
-        const shareBtn = document.createElement("button");
-        shareBtn.type = "button";
-        shareBtn.textContent = "Share this board";
-        shareBtn.onclick = () =>
-          run(
-            () =>
-              api("/api/kanban/boards/share", {
-                address: shareInput.value,
-                board_uuid: state.board.uuid,
-              }),
-            "Board shared",
-          );
-        shareRow.append(shareInput, shareBtn);
-        fields.append(shareRow);
+        // 1) Graphical overview of who's connected on this board.
+        const graph = document.createElement("div");
+        graph.className = "peer-graph";
+        const self = (state.users || [])[0] || { name: "You" };
+        const youNode = document.createElement("div");
+        youNode.className = "peer-graph-you";
+        youNode.append(avatarElement(self, true), document.createTextNode("You"));
+        graph.append(youNode);
 
         const boardPeers = boardPeerAddresses();
+        const peerList = document.createElement("div");
+        peerList.className = "peer-graph-peers";
+        if (!boardPeers.length) {
+          const empty = document.createElement("p");
+          empty.className = "confirm-text";
+          empty.textContent = "No one else is discussing this board yet.";
+          peerList.append(empty);
+        }
+        for (const addr of boardPeers) {
+          const info = peerStatus(addr);
+          const online = info.state !== "offline";
+          const row = document.createElement("div");
+          row.className = "peer-graph-peer";
+          row.append(avatarElement(userForParticipant(addr), online));
+          const details = document.createElement("div");
+          details.className = "peer-graph-peer-info";
+          const name = document.createElement("span");
+          name.className = "peer-graph-peer-name";
+          name.textContent = peerLabel(addr);
+          const meta = document.createElement("span");
+          meta.className = "peer-graph-peer-meta";
+          meta.textContent = `${online ? "online" : "on hold"} - ${formatLastSeen(info.last_seen)}`;
+          details.append(name, meta);
+          row.append(details);
+          peerList.append(row);
+        }
+        graph.append(peerList);
+        fields.append(graph);
+
+        // 2) Create a token so someone else can connect to this board.
+        const tokenHint = document.createElement("p");
+        tokenHint.className = "confirm-text";
+        tokenHint.textContent =
+          "Copy a token and send it to someone (email, chat, ...) so they can connect to this board.";
+        fields.append(tokenHint);
+        const tokenRow = document.createElement("div");
+        tokenRow.className = "network-share-row";
+        const copyTokenBtn = document.createElement("button");
+        copyTokenBtn.type = "button";
+        copyTokenBtn.textContent = "Copy token";
+        copyTokenBtn.onclick = async () => {
+          const token = encodeConnectToken(state.address, [state.board.uuid, state.user_profile.uuid]);
+          await navigator.clipboard.writeText(token);
+          showStatus("Token copied");
+        };
+        tokenRow.append(copyTokenBtn);
+        fields.append(tokenRow);
+
+        // 3) Connect to somebody else using a token they gave you.
+        const connectHint = document.createElement("p");
+        connectHint.className = "confirm-text";
+        connectHint.textContent = "Received a token from someone else? Paste it here to connect.";
+        fields.append(connectHint);
+        const connectRow = document.createElement("div");
+        connectRow.className = "network-share-row";
+        const connectInput = document.createElement("input");
+        connectInput.placeholder = "Paste a token";
+        const connectBtn = document.createElement("button");
+        connectBtn.type = "button";
+        connectBtn.textContent = "Connect";
+        connectBtn.onclick = () => {
+          let payload;
+          try {
+            payload = decodeConnectToken(connectInput.value);
+          } catch (error) {
+            showStatus("Invalid token", true);
+            return;
+          }
+          return run(
+            () =>
+              api("/api/join_discussion", {
+                address: payload.address,
+                topic_uuids: payload.topic_uuids,
+              }),
+            "Connected",
+          );
+        };
+        connectRow.append(connectInput, connectBtn);
+        fields.append(connectRow);
+
+        // 4) Stop discussing this board with everyone currently on it.
         if (boardPeers.length) {
           const unshareBtn = document.createElement("button");
           unshareBtn.type = "button";
           unshareBtn.className = "danger";
-          unshareBtn.textContent = `Unshare this board (${boardPeers.length})`;
+          unshareBtn.textContent = `Stop discussing this board (${boardPeers.length})`;
           unshareBtn.onclick = () =>
             confirmAction(
-              "Unshare board?",
-              `Stop sharing this board with ${boardPeers.length} peer${boardPeers.length === 1 ? "" : "s"}.`,
+              "Stop discussing this board?",
+              `You and ${boardPeers.length} peer${boardPeers.length === 1 ? "" : "s"} will no longer sync this board. The board itself is not deleted.`,
               () =>
                 run(
                   () => api("/api/kanban/boards/unshare", { board_uuid: state.board.uuid }),
-                  "Board unshared",
+                  "Stopped discussing this board",
                 ),
             );
           fields.append(unshareBtn);
         }
 
-        const peers = (state.network.members || []).filter((item) => item !== state.address);
-        if (!peers.length) {
-          const empty = document.createElement("p");
-          empty.className = "confirm-text";
-          empty.textContent = "No connected peers.";
-          fields.append(empty);
-        }
-        for (const addr of peers) {
-          const row = document.createElement("div");
-          row.className = "peer-row";
-          const name = document.createElement("strong");
-          name.textContent = peerLabel(addr);
-          const status = document.createElement("span");
-          const info = peerStatus(addr);
-          status.textContent = info.state === "offline" ? "on hold" : "online";
-          status.className = info.state === "offline" ? "peer-hold" : "peer-online";
-          const lastUpdate = document.createElement("span");
-          lastUpdate.textContent = formatLastSeen(info.last_seen);
-          row.append(name, status, lastUpdate);
-          fields.append(row);
-        }
         el("simpleForm").onsubmit = (event) => {
           event.preventDefault();
           el("simpleModal").close();
@@ -894,8 +949,15 @@
       };
       el("cancelCardBtn").onclick = () => el("cardModal").close();
 
+      function setModalFooterMode(mode) {
+        const done = mode === "done";
+        el("cancelSimpleBtn").style.display = done ? "none" : "";
+        el("submitSimpleBtn").textContent = done ? "Done" : "Apply";
+      }
+
       function openSimple(title, fields, onSubmit) {
         closeSidePanel();
+        setModalFooterMode("cancel-apply");
         el("simpleTitle").textContent = title;
         el("simpleFields").replaceChildren();
         for (const field of fields) {
@@ -931,6 +993,7 @@
 
       function confirmAction(title, message, action) {
         closeSidePanel();
+        setModalFooterMode("cancel-apply");
         el("simpleTitle").textContent = title;
         const body = document.createElement("p");
         body.className = "confirm-text";
