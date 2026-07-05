@@ -649,7 +649,8 @@ class KanbanLogic:
                     peer_state_hash=top_event.get("peer_state_hash"),
                 )
                 continue
-            if top_event["type"] == "peer_made_changes" and mode == "always" and not board.is_reaffirmed():
+            if (top_event["type"] == "peer_made_changes" and mode == "always"
+                    and not self._subtree_has_reaffirmed(board)):
                 self.session.trace_event(
                     "kanban.auto_adopt_replace_board",
                     board_uuid=board.uuid,
@@ -704,6 +705,14 @@ class KanbanLogic:
             changed=changed,
         )
         return changed
+
+    def _subtree_has_reaffirmed(self, node: PRSPNode) -> bool:
+        # The whole-board replace shortcut may only run when nothing under
+        # the board is reaffirmed - a wholesale replace would silently
+        # overwrite a node the user explicitly decided to keep.
+        if node.is_reaffirmed():
+            return True
+        return any(self._subtree_has_reaffirmed(child) for child in node.children)
 
     def _auto_adopt_allows_node(self, mode: str, node: PRSPNode | None) -> bool:
         if mode == "always":

@@ -117,10 +117,7 @@
       }
 
       function isReaffirmed(node) {
-        return (
-          node.reaffirmed_hash === node.state_hash &&
-          node.reaffirmed_parent_uuid === node.parent_uuid
-        );
+        return !!node.reaffirmed;
       }
 
       function hasPendingDivergence(node) {
