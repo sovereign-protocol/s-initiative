@@ -8,20 +8,26 @@
   </head>
   <body>
     <header class="topbar">
-      <div class="brand">
-        <span class="brand-mark"></span><strong>S-Kanban</strong>
+      <div class="top-actions-left">
+        <button id="menuToggleBtn" class="icon-btn" title="Board menu" aria-label="Board menu">
+          &#9776;
+        </button>
+        <div class="brand">
+          <span class="brand-mark"></span><strong>S-Kanban</strong>
+        </div>
       </div>
       <div class="board-title">
         <input id="boardName" />
-        <span id="autoAdoptIndicator" class="auto-adopt-square" title="Auto-adopt"></span>
+        <div id="boardAdoptTools" class="adopt-tools"></div>
         <span id="statusText"></span>
       </div>
       <div class="top-actions">
         <button id="selfAvatarBtn" class="header-avatar-btn" title="Edit your profile"></button>
         <button id="networkBtn">local</button>
-        <button id="menuToggleBtn" class="icon-btn" title="Board menu" aria-label="Board menu">
-          &#9776;
-        </button>
+        <div id="autoAdoptHeaderControl" class="auto-adopt-header-control">
+          <span id="autoAdoptIndicator" class="auto-adopt-square" title="Auto-adopt"></span>
+          <span id="autoAdoptHeaderLabel" class="auto-adopt-header-label"></span>
+        </div>
       </div>
     </header>
 
@@ -117,7 +123,12 @@
       }
 
       function isReaffirmed(node) {
-        return !!node.reaffirmed;
+        if (!node.reaffirmed) return false;
+        // Reaffirming never touches previous_parent_uuid, so it can never
+        // have been a decision about a move - once a move-type divergence
+        // shows up, a pre-existing reaffirm is about a *different*,
+        // already-resolved question and must not silently mask the new one.
+        return !moveDivergenceType(node.uuid);
       }
 
       function hasPendingDivergence(node) {
@@ -134,6 +145,40 @@
 
       function needsReaffirmedBadge(node) {
         return hasPendingDivergence(node) && isReaffirmed(node);
+      }
+
+      function peerCopyOf(node) {
+        const info = transitionInfo(node.uuid);
+        if (!info || !info.peer_addr) return null;
+        const peerRoot = state.peers?.[info.peer_addr];
+        return peerRoot ? findNode(peerRoot, node.uuid) : null;
+      }
+
+      function isContainerOnlyDivergence(node) {
+        // True when a container's own fields match the peer's copy exactly,
+        // and the only reason it shows as diverged is that its content_hash
+        // depends on its children (e.g. a card moved in or out) - that's
+        // already surfaced on the child itself, so a separate "Adopt" here
+        // would just be noise for the same underlying event.
+        const peerNode = peerCopyOf(node);
+        if (!peerNode) return false;
+        return (
+          JSON.stringify(node.data) === JSON.stringify(peerNode.data) &&
+          node.parent_uuid === peerNode.parent_uuid
+        );
+      }
+
+      function moveDivergenceType(uuid) {
+        // Whether uuid's divergence involves a move, and in which
+        // direction - based on the *local* node (if we have one) vs its
+        // attributed peer, so a ghost and a solid rendering of the same
+        // uuid always agree on what's actually happening, regardless of
+        // which of the two is currently on screen.
+        const localNode = findNode(state.board, uuid);
+        if (!localNode) return null;
+        const peerNode = peerCopyOf(localNode);
+        if (!peerNode || localNode.parent_uuid === peerNode.parent_uuid) return null;
+        return transitionInfo(uuid)?.type || null;
       }
 
       function renderAutoAdoptSquare(container) {
@@ -161,7 +206,7 @@
       }
 
       function renderNetwork() {
-        const peers = (state.network.members || []).filter((item) => item !== state.address);
+        const peers = boardPeerAddresses();
         const networkBtn = el("networkBtn");
         networkBtn.replaceChildren();
         networkBtn.className = peers.length ? "peer-cluster" : "peer-cluster local";
@@ -221,9 +266,15 @@
       }
 
       function renderAutoAdoptIndicator() {
+        const peers = boardPeerAddresses();
+        const control = el("autoAdoptHeaderControl");
+        control.style.display = peers.length ? "flex" : "none";
+        if (!peers.length) return;
+        const label = AUTO_ADOPT_LABELS[state.auto_adopt_mode] || "Always";
         const indicator = el("autoAdoptIndicator");
         renderAutoAdoptSquare(indicator);
-        indicator.title = `Auto-adopt: ${AUTO_ADOPT_LABELS[state.auto_adopt_mode] || "Always"}`;
+        indicator.title = `Auto-adopt: ${label}`;
+        el("autoAdoptHeaderLabel").textContent = `Auto-adopt: ${label}`;
       }
 
       function renderAutoAdoptControl() {
@@ -471,10 +522,30 @@
         );
       }
 
+      function boardUsers() {
+        const boardPeers = new Set(boardPeerAddresses());
+        return (state.users || []).filter(
+          (user) => user.address === state.address || boardPeers.has(user.address),
+        );
+      }
+
+      function pickerCandidates() {
+        // New assignments are restricted to current board members, but
+        // someone already assigned before they (or we) left the board must
+        // stay visible here too - otherwise there's no way to ever remove
+        // that stale assignment again, since they'd never appear in the list.
+        const board = boardUsers();
+        const boardIds = new Set(board.map((user) => user.id));
+        const already = modalParticipants
+          .filter((id) => !boardIds.has(id))
+          .map((id) => userForParticipant(id));
+        return [...board, ...already];
+      }
+
       function renderUserPicker(containerId) {
         const container = el(containerId);
         container.replaceChildren();
-        for (const user of state.users || []) {
+        for (const user of pickerCandidates()) {
           const button = document.createElement("button");
           button.type = "button";
           button.className = "user-choice";
@@ -534,6 +605,7 @@
 
           renderAutoAdoptIndicator();
           renderAutoAdoptControl();
+          renderBoardAdoptTools();
 
           renderBoardList();
           renderNetwork();
@@ -588,6 +660,22 @@
           nameInput.value = col.data.name || "Column";
         }
 
+        // P2P Konflikt-Klassen/Adopt-Tools aktualisieren - sonst bleibt ein
+        // Adopt-Button verschwunden (oder fehlt neu aufgetauchter Divergenz),
+        // solange die Spalte nur gepatcht statt neu gerendert wird.
+        applyTransitionClass(colEl, col.uuid, {
+          suppress: !col._isGhost && isContainerOnlyDivergence(col),
+        });
+        const tools = colEl.querySelector(".adopt-tools");
+        if (tools) {
+          tools.replaceChildren();
+          if (needsManualAdopt(col) && (col._isGhost || !isContainerOnlyDivergence(col))) {
+            tools.append(...adoptTools(col.uuid, col._isGhost));
+          } else if (needsReaffirmedBadge(col)) {
+            tools.append(reaffirmedBadge(col.uuid));
+          }
+        }
+
         const cardList = colEl.querySelector(".card-list");
         if (!cardList) return;
 
@@ -609,6 +697,16 @@
       }
 
       function updateCardDOM(cardEl, card) {
+        // onclick captures `card` by closure, so it must be rebound on every
+        // patch - otherwise it keeps pointing at whatever card data was
+        // current the last time this DOM element was freshly created,
+        // reopening the modal with stale participants/owner.
+        cardEl.onclick = (event) => {
+          if (card._isGhost) return;
+          if (event.target.closest("button")) return;
+          openCard(card, card.parent_uuid);
+        };
+
         // Aktualisiert nur Text und Klassen, erhält Drag&Drop-Listener
         const titleEl = cardEl.querySelector(".card-title");
         if (titleEl) {
@@ -645,11 +743,7 @@
         // P2P Konflikt-Klassen aktualisieren (nutzt deine bestehende Helper-Funktion)
         applyTransitionClass(cardEl, card.uuid);
         cardEl.querySelectorAll(".adopt, .reaffirm, .reaffirmed").forEach((button) => button.remove());
-        if (needsManualAdopt(card)) {
-          cardEl.append(adoptButton(card.uuid), reaffirmButton(card.uuid));
-        } else if (needsReaffirmedBadge(card)) {
-          cardEl.append(reaffirmedBadge(card.uuid));
-        }
+        cardEl.append(...cardAdoptTools(card, card._isGhost));
       }
 
       function renderColumn(column, ghost = false) {
@@ -658,7 +752,9 @@
         if (ghost) article.classList.add("ghost");
         article.draggable = !ghost;
         article.dataset.uuid = column.uuid;
-        applyTransitionClass(article, column.uuid);
+        applyTransitionClass(article, column.uuid, {
+          suppress: !ghost && isContainerOnlyDivergence(column),
+        });
 
         const head = document.createElement("div");
         head.className = "column-head";
@@ -689,8 +785,8 @@
         head.append(name, del);
         const tools = document.createElement("div");
         tools.className = "adopt-tools";
-        if (needsManualAdopt(column)) {
-          tools.append(adoptButton(column.uuid), reaffirmButton(column.uuid));
+        if (needsManualAdopt(column) && (ghost || !isContainerOnlyDivergence(column))) {
+          tools.append(...adoptTools(column.uuid, ghost));
         } else if (needsReaffirmedBadge(column)) {
           tools.append(reaffirmedBadge(column.uuid));
         }
@@ -756,11 +852,7 @@
           ? card.data.participants
           : [];
         if (participantItems.length) node.append(renderParticipants(participantItems, card.data.owner));
-        if (needsManualAdopt(card)) {
-          node.append(adoptButton(card.uuid), reaffirmButton(card.uuid));
-        } else if (needsReaffirmedBadge(card)) {
-          node.append(reaffirmedBadge(card.uuid));
-        }
+        node.append(...cardAdoptTools(card, ghost));
         node.onclick = (event) => {
           if (ghost) return;
           if (event.target.closest("button")) return;
@@ -840,14 +932,33 @@
         });
       }
 
-      function adoptButton(uuid) {
-        const button = icon("Adopt", () => openAdopt(uuid));
+      function renderBoardAdoptTools() {
+        const tools = el("boardAdoptTools");
+        tools.replaceChildren();
+        const board = state.board;
+        if (!board) return;
+        if (needsManualAdopt(board)) {
+          tools.append(adoptButton(board.uuid), reaffirmButton(board.uuid));
+        } else if (needsReaffirmedBadge(board)) {
+          tools.append(reaffirmedBadge(board.uuid));
+        }
+      }
+
+      function adoptButton(uuid, label = "Adopt") {
+        const button = icon(label, () => openAdopt(uuid));
         button.classList.add("adopt");
         return button;
       }
 
-      function reaffirmButton(uuid) {
-        const button = icon("Reaffirm", () =>
+      function adoptTools(uuid, ghost, label = "Adopt") {
+        // A ghost node has no local copy to keep, so "Reaffirm" (keep my
+        // version) is meaningless there and fails server-side - only offer
+        // Adopt for ghosts.
+        return ghost ? [adoptButton(uuid, label)] : [adoptButton(uuid, label), reaffirmButton(uuid)];
+      }
+
+      function reaffirmButton(uuid, label = "Reaffirm") {
+        const button = icon(label, () =>
           run(
             () => api("/api/kanban/reaffirm", { node_uuid: uuid }),
             "Kept your version",
@@ -856,6 +967,27 @@
         button.classList.add("reaffirm");
         button.title = "Keep my version and dismiss this divergence";
         return button;
+      }
+
+      function cardAdoptTools(card, ghost) {
+        if (!needsManualAdopt(card)) {
+          return needsReaffirmedBadge(card) ? [reaffirmedBadge(card.uuid)] : [];
+        }
+        const moveType = moveDivergenceType(card.uuid);
+        if (moveType === "peer_made_changes") {
+          // Peer moved it: the ghost at the destination is the meaningful
+          // "adopt" here; the original spot only offers to keep it put -
+          // adopting from both would just resolve the same divergence twice.
+          return ghost ? [adoptButton(card.uuid, "Adopt move")] : [reaffirmButton(card.uuid, "Reject move")];
+        }
+        if (moveType === "local_made_changes") {
+          // We moved it and a peer hasn't caught up: there's nothing to
+          // pull from them, so our own spot just reaffirms; the ghost at
+          // their lagging old position is the one place "adopting" makes
+          // sense - and doing so reverts our own move, hence "Reject move".
+          return ghost ? [adoptButton(card.uuid, "Reject move")] : [reaffirmButton(card.uuid)];
+        }
+        return adoptTools(card.uuid, ghost);
       }
 
       function reaffirmedBadge(uuid) {
@@ -871,19 +1003,34 @@
       }
 
       function openAdopt(uuid) {
+        const info = transitionInfo(uuid);
+        // A node can equally diverge from several peers at once (e.g. two
+        // peers who already agree with each other, and only differ from us)
+        // - transitionInfo's top-level peer_addr is just one of them for
+        // display purposes, but info.events lists everyone who contributed.
+        // Offer all of them, not just the first.
+        const contributingAddrs = new Set((info?.events || (info ? [info] : [])).map((e) => e.peer_addr));
         const peers = Object.entries(state.peers || {})
           .map(([addr, root]) => ({
             addr,
             missing: !(root && findNode(root, uuid)),
           }))
-          .filter((item) => {
-            const info = transitionInfo(uuid);
-            return info && info.peer_addr === item.addr;
-          });
+          .filter((item) => contributingAddrs.has(item.addr));
         if (!peers.length) return showStatus("No peer version available", true);
         openSimple(
           "Adopt From Peer",
-          [{ name: "peer", label: "Peer address", value: peers[0].addr }],
+          [
+            {
+              name: "peer",
+              label: "Peer",
+              type: "select",
+              value: peers[0].addr,
+              options: peers.map((item) => ({
+                value: item.addr,
+                label: peerLabel(item.addr),
+              })),
+            },
+          ],
           async (form) =>
             api("/api/kanban/adopt", {
               source_addr: form.get("peer"),
@@ -899,14 +1046,11 @@
         el("cardModalTitle").textContent = card ? "Edit Card" : "Add Card";
         el("cardName").value = card ? card.data.name || "" : "";
         el("cardDescription").value = card ? card.data.description || "" : "";
-        const self = (state.users || [])[0];
         modalParticipants =
           card && Array.isArray(card.data.participants)
             ? [...card.data.participants]
-            : self?.id
-              ? [self.id]
-              : [];
-        modalOwner = card ? card.data.owner || null : self?.id || null;
+            : [];
+        modalOwner = card ? card.data.owner || null : null;
         renderUserPicker("participantPicker");
         renderOwnerSelect();
         el("cardOwner").onchange = () => {
@@ -1078,12 +1222,12 @@
 
       function columns(board) {
         return sortNodes(
-          (board.children || []).filter((node) => node.data.type === "kanban_column"),
+          (board.children || []).filter((node) => node.data.type === "kanban_column" && !node.deleted),
         );
       }
       function cards(column) {
         return sortNodes(
-          (column.children || []).filter((node) => node.data.type === "kanban_card"),
+          (column.children || []).filter((node) => node.data.type === "kanban_card" && !node.deleted),
         );
       }
       function ghostColumns() {
@@ -1122,7 +1266,7 @@
       function transitionInfo(uuid) {
         return (state.transition_by_node || {})[uuid] || null;
       }
-      function applyTransitionClass(element, uuid) {
+      function applyTransitionClass(element, uuid, options = {}) {
         element.classList.remove("diff");
         [...element.classList]
           .filter((name) => name.startsWith("event-"))
@@ -1131,19 +1275,22 @@
         delete element.dataset.transitionLabel;
         delete element.dataset.transitionSymbol;
         const info = transitionInfo(uuid);
-        if (!info || info.type === "in_agreement") return;
+        if (!info || info.type === "in_agreement" || options.suppress) return;
         element.classList.add("diff", `event-${info.type}`);
         element.title = transitionLabel(info);
         element.dataset.transitionLabel = transitionLabel(info);
         element.dataset.transitionSymbol = transitionSymbol(info.type);
       }
       function transitionSymbol(type) {
+        // Plain "+"/"-" read as barely-visible specks at badge size - using
+        // wider, bolder Unicode variants (fullwidth plus, proper minus sign)
+        // keeps the same at-a-glance meaning but is actually legible.
         return (
           {
-            peer_made_changes: "+",
-            local_missing_node: "+",
-            local_made_changes: "~",
-            peer_missing_node: "-",
+            peer_made_changes: "＋", // fullwidth plus sign
+            local_missing_node: "＋",
+            local_made_changes: "≈", // almost-equal sign
+            peer_missing_node: "−", // minus sign
             divergence: "!",
           }[type] || "*"
         );
@@ -1192,7 +1339,7 @@
       }
       function peerLabel(address) {
         const user = (state.users || []).find((item) => item.address === address);
-        if (user?.name) return user.name;
+        if (user?.name && user.name !== "?") return user.name;
         const identityName = peerIdentityValue(address, "name");
         if (identityName) return identityName;
         const text = String(address || "");
@@ -1217,8 +1364,9 @@
           .map(([addr]) => addr);
       }
       function boardPeerRoots() {
+        const boardUuid = state.board?.uuid;
         return boardPeerAddresses()
-          .map((addr) => state.peers?.[addr])
+          .map((addr) => findNode(state.peers?.[addr], boardUuid))
           .filter(Boolean);
       }
       function userForParticipant(participant) {
@@ -1374,8 +1522,22 @@
               picture: form.get("picture"),
             }),
         );
+      async function selectBoardFromUrl() {
+        const params = new URLSearchParams(window.location.search);
+        const boardUuid = params.get("board");
+        if (!boardUuid) return;
+        try {
+          await api("/api/kanban/boards/select", { board_uuid: boardUuid });
+        } catch (error) {
+          showStatus(error.message, true);
+        }
+        params.delete("board");
+        const query = params.toString();
+        window.history.replaceState({}, "", window.location.pathname + (query ? `?${query}` : ""));
+      }
+
       setInterval(() => loadBoard(), 1500);
-      loadBoard();
+      selectBoardFromUrl().then(loadBoard);
     </script>
   </body>
 </html>

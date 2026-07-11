@@ -8,9 +8,12 @@ Contract:
     - Column data: {type: "kanban_column", name, order}
     - Card data: {type: "kanban_card", name, description, participants, owner, order}
       owner is a profile uuid that must also be present in participants, or None.
+    Board data additionally carries: objective (short free-text tagline,
+      default ""), used by the Board of Boards summary view.
 
   API:
     GET  /api/kanban/board
+    POST /api/kanban/boards/set_objective {board_uuid, objective}
     POST /api/kanban/auto_adopt          {mode}  # one of: always, not_owner, not_member, never
     POST /api/kanban/invite              {address}
     POST /api/kanban/columns/create      {name}
@@ -154,6 +157,14 @@ class KanbanLogic:
         data["name"] = name or "Kanban Board"
         return self.session.modify(board.uuid, data, board.weights)
 
+    def set_board_objective(self, board_uuid: str, objective: str) -> SessionResult:
+        board = self.session.protocol.index.get(board_uuid)
+        if not board or board.data.get("type") != "kanban_board":
+            return SessionResult("error", reason="board not found")
+        data = dict(board.data)
+        data["objective"] = objective or ""
+        return self.session.modify(board.uuid, data, board.weights)
+
     def copy_board(self, board_uuid: str) -> SessionResult:
         board = self.session.protocol.index.get(board_uuid)
         if not board or board.data.get("type") != "kanban_board":
@@ -189,7 +200,7 @@ class KanbanLogic:
         container = self._kanban_container()
         board = self.session.create_child(
             container.uuid,
-            {"type": "kanban_board", "name": name},
+            {"type": "kanban_board", "name": name, "objective": ""},
             {},
         ).value
         for order, name in enumerate(DEFAULT_COLUMNS):
@@ -339,7 +350,6 @@ class KanbanLogic:
                         *(tree.uuid for tree, _ in board_topics),
                         own_profile_uuid,
                     ],
-                    "known_members": sorted(self.session.members),
                     "topic_members": self.session.topic_members_by_topic(response_topic_uuids),
                 },
                 timeout=10,
@@ -349,7 +359,9 @@ class KanbanLogic:
         except Exception as exc:
             return {"status": "error", "reason": str(exc)}
 
-        topic_members = self._response_topic_members(response, response_topic_uuids)
+        topic_members = self.session.topic_members_from_map(
+            response.get("topic_members") or {}, response_topic_uuids,
+        )
         indirect_board_members: dict[str, set[str]] = {}
         board_topic_uuids = {tree.uuid for tree, _ in board_topics}
         for topic, members in topic_members.items():
@@ -369,11 +381,6 @@ class KanbanLogic:
                 ):
                     indirect_board_members.setdefault(member, set()).add(topic)
         if address != self.session.address:
-            self.session.add_peer_topics(
-                address,
-                response_topic_uuids,
-                fetch_from_peer=False,
-            )
             self._set_peer_owned_topics(address, peer_fetch_topics)
         for member, topics in sorted(indirect_board_members.items()):
             runtime.adapter.invite_to_discuss(
@@ -404,57 +411,15 @@ class KanbanLogic:
         current.update(topic_uuids)
         self.session.set_peer_fetch_topics(address, current)
 
-    @staticmethod
-    def _response_topic_members(
-            response: dict,
-            topic_uuids: list[str]) -> dict[str, set[str]]:
-        topic_members = response.get("topic_members") or {}
-        fallback_members = response.get("members", [])
-        return {
-            topic_uuid: set(topic_members.get(topic_uuid) or fallback_members)
-            for topic_uuid in topic_uuids
-        }
-
     def user_profile(self) -> PRSPNode:
-        shared = self._shared_user()
-        data = dict(shared.data)
-        changed = False
-        if data.get("type") != "shared_user_profile":
-            data["type"] = "shared_user_profile"
-            changed = True
-        if data.get("name") != "public_profile":
-            data["name"] = "public_profile"
-            changed = True
-        if not data.get("address"):
-            data["address"] = self.session.address
-            changed = True
-        if "display_name" not in data:
-            data["display_name"] = ""
-            changed = True
-        if "picture" not in data:
-            data["picture"] = ""
-            changed = True
-        if changed:
-            self.session.modify(shared.uuid, data, shared.weights)
-            return self.session.get_node(shared.uuid) or shared
-        return shared
+        return self.session.identity
 
     def set_user_profile(self, name: str, picture: str = "") -> SessionResult:
-        profile = self.user_profile()
-        data = dict(profile.data)
-        data.update({
-            "type": "shared_user_profile",
-            "address": self.session.address,
-            "name": "public_profile",
-            "display_name": name or "",
-            "picture": picture or "",
-        })
-        return self.session.modify(profile.uuid, data, profile.weights)
+        return self.session.set_identity(name, picture)
 
     def users(self) -> list[dict]:
-        board = self.ensure_board()
         users = [self._user_info(self.session.address, self.user_profile())]
-        for addr in self.session.peers_for_topic(board.uuid):
+        for addr in sorted(self.session.members - {self.session.address}):
             profile = self._find_peer_user_profile(addr)
             users.append(self._user_info(addr, profile, self._peer_profile_uuid(addr, profile)))
         seen = set()
@@ -663,8 +628,6 @@ class KanbanLogic:
                 continue
             for event in self.session.analyze_peer_transitions(addr, board.uuid):
                 if event["type"] not in ("peer_made_changes", "local_missing_node"):
-                    continue
-                if event["node_uuid"] == board.uuid:
                     continue
                 peer_node = self.session.get_cached_peer_subtree(addr, event["node_uuid"])
                 local_node = self.session.protocol.index.get(event["node_uuid"])
@@ -886,57 +849,6 @@ class KanbanLogic:
     def _apps_folder(self) -> PRSPNode:
         return self._folder(self.session.protocol.root, "apps")
 
-    def _user_folder(self) -> PRSPNode:
-        return self._folder(self.session.protocol.root, "users")
-
-    def _shared_user(self) -> PRSPNode:
-        container = self._shared_user_data_folder()
-        for child in container.children:
-            if (
-                child.data.get("type") == "shared_user_profile"
-                and child.data.get("address") == self.session.address
-            ):
-                return child
-        return self.session.create_child(
-            container.uuid,
-            {
-                "type": "shared_user_profile",
-                "name": "public_profile",
-                "address": self.session.address,
-                "display_name": "",
-                "picture": "",
-            },
-            {},
-        ).value
-
-    def _shared_user_data_folder(self) -> PRSPNode:
-        return self._folder(self.session.protocol.root, "shared_user_data")
-
-    def _identity_topic_uuids(self) -> list[str]:
-        return [self._shared_user().uuid]
-
-    def _known_identity_topic_uuids(self) -> list[str]:
-        identities = [
-            node.uuid
-            for node in self.session.protocol.index.values()
-            if (
-                node.data.get("type") == "shared_user_profile"
-            )
-        ]
-        return sorted(set(identities))
-
-    def _known_identity_addresses(self) -> list[str]:
-        addresses = []
-        for node in self.session.protocol.index.values():
-            if (
-                node.data.get("type") == "shared_user_profile"
-                and node.data.get("address")
-            ):
-                addresses.append(node.data.get("address"))
-        for tree in self.session.peer_perspectives.values():
-            addresses.extend(self._identity_addresses_in_tree(tree))
-        return sorted(set(addresses))
-
     def _user_info(self, fallback_addr: str, profile: PRSPNode | None,
                    profile_uuid: str | None = None) -> dict:
         data = profile.data if profile else {}
@@ -953,25 +865,8 @@ class KanbanLogic:
             "picture": data.get("picture") or "",
         }
 
-    def _find_user_profile(self, node: PRSPNode | None,
-                           address: str | None = None) -> PRSPNode | None:
-        if not node:
-            return None
-        if (node.data.get("type") == "shared_user_profile"
-                and (address is None or node.data.get("address") == address)):
-            return node
-        for child in node.children:
-            found = self._find_user_profile(child, address)
-            if found:
-                return found
-        return None
-
     def _find_peer_user_profile(self, address: str) -> PRSPNode | None:
-        for tree in self.session.peer_perspectives.values():
-            found = self._find_user_profile(tree, address)
-            if found:
-                return found
-        return None
+        return self.session.find_peer_identity(address)
 
     def _peer_profile_uuid(self, address: str, profile: PRSPNode | None = None) -> str:
         if profile:
@@ -984,19 +879,6 @@ class KanbanLogic:
             if not self._is_kanban_board_topic(self.session.protocol.index.get(topic_uuid)):
                 return topic_uuid
         return ""
-
-    def _identity_addresses_in_tree(self, node: PRSPNode | None) -> list[str]:
-        if not node:
-            return []
-        addresses = []
-        if (
-            node.data.get("type") == "shared_user_profile"
-            and node.data.get("address")
-        ):
-            addresses.append(node.data.get("address"))
-        for child in node.children:
-            addresses.extend(self._identity_addresses_in_tree(child))
-        return addresses
 
     def _folder(self, parent: PRSPNode, name: str,
                 node_type: str = "folder") -> PRSPNode:
@@ -1032,9 +914,7 @@ class KanbanLogic:
         return node.data.get("type") == "kanban_board"
 
     def _is_shared_user_topic(self, node: PRSPNode | None) -> bool:
-        if not node:
-            return False
-        return node.data.get("type") == "shared_user_profile"
+        return self.session.is_identity_node(node)
 
     def _is_active_discussion_node(self, node_uuid: str) -> bool:
         return any(
@@ -1104,6 +984,13 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
         return await _json_result(runtime, logic.rename_board(
             data["board_uuid"],
             data.get("name", "Kanban Board"),
+        ))
+
+    async def api_set_board_objective(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.set_board_objective(
+            data["board_uuid"],
+            data.get("objective", ""),
         ))
 
     async def api_copy_board(request: Request):
@@ -1220,6 +1107,7 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
         Route("/api/kanban/boards/create", api_create_board, methods=["POST"]),
         Route("/api/kanban/boards/select", api_select_board, methods=["POST"]),
         Route("/api/kanban/boards/rename", api_rename_board, methods=["POST"]),
+        Route("/api/kanban/boards/set_objective", api_set_board_objective, methods=["POST"]),
         Route("/api/kanban/boards/copy", api_copy_board, methods=["POST"]),
         Route("/api/kanban/boards/delete", api_delete_board, methods=["POST"]),
         Route("/api/kanban/profile", api_profile, methods=["POST"]),

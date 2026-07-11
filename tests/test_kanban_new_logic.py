@@ -559,7 +559,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(profile.data["name"], "public_profile")
         self.assertEqual(profile.data["display_name"], "Alice")
         self.assertEqual(profile.data["picture"], "https://example.test/a.png")
-        self.assertEqual(runtime.logic._identity_topic_uuids(), [profile.uuid])
+        self.assertEqual(runtime.session.identity.uuid, profile.uuid)
         self.assertEqual(profile.children, [])
 
     def test_profile_topic_is_under_shared_user_data_and_not_adopted(self):

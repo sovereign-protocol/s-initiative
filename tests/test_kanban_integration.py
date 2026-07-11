@@ -395,6 +395,102 @@ class ServerIntegrationTests(unittest.TestCase):
                     if process.stderr:
                         process.stderr.close()
 
+    def test_hub_joining_two_unrelated_boards_does_not_cross_introduce_peers(self):
+        # Reproduces a real reported bug: A and C each have their own,
+        # unrelated board. B connects to both via "Connect via token"
+        # (/api/join_discussion) as two separate actions. A and C never
+        # connect to each other and share nothing - so neither should ever
+        # learn about the other, even though B legitimately knows both.
+        port_a = free_port()
+        port_b = free_port()
+        port_c = free_port()
+        processes = []
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            configs = {}
+            for port in (port_a, port_b, port_c):
+                config = {
+                    "app_module": "kanban_logic",
+                    "ui_file": "kanban.html",
+                    "css_file": "kanban.css",
+                    "storage_file": str(tmp_path / f"kanban_{port}.json"),
+                    "debug": True,
+                }
+                config_path = tmp_path / f"config_{port}.json"
+                config_path.write_text(json.dumps(config), encoding="utf-8")
+                configs[port] = config_path
+
+            for port in (port_a, port_b, port_c):
+                processes.append(subprocess.Popen(
+                    [sys.executable, "app_server.py", f"{port}:kanban", str(configs[port])],
+                    cwd=ROOT,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                ))
+
+            try:
+                wait_for_server(port_a)
+                wait_for_server(port_b)
+                wait_for_server(port_c)
+
+                board_a = request_json(
+                    "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                )["board"]
+                board_c = request_json(
+                    "GET", f"http://127.0.0.1:{port_c}/api/kanban/board"
+                )["board"]
+
+                join_a = request_json(
+                    "POST", f"http://127.0.0.1:{port_b}/api/join_discussion",
+                    {
+                        "address": f"http://127.0.0.1:{port_a}",
+                        "topic_uuids": [board_a["uuid"]],
+                    },
+                    timeout=20,
+                )
+                self.assertEqual(join_a["status"], "ok")
+                join_c = request_json(
+                    "POST", f"http://127.0.0.1:{port_b}/api/join_discussion",
+                    {
+                        "address": f"http://127.0.0.1:{port_c}",
+                        "topic_uuids": [board_c["uuid"]],
+                    },
+                    timeout=20,
+                )
+                self.assertEqual(join_c["status"], "ok")
+
+                time.sleep(1.0)
+
+                final_a = request_json(
+                    "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                )
+                final_c = request_json(
+                    "GET", f"http://127.0.0.1:{port_c}/api/kanban/board"
+                )
+
+                self.assertEqual(
+                    sorted(final_a["network"]["members"]),
+                    [f"http://127.0.0.1:{port_a}", f"http://127.0.0.1:{port_b}"],
+                )
+                self.assertEqual(
+                    sorted(final_c["network"]["members"]),
+                    [f"http://127.0.0.1:{port_b}", f"http://127.0.0.1:{port_c}"],
+                )
+            finally:
+                for process in processes:
+                    process.terminate()
+                for process in processes:
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+                    if process.stdout:
+                        process.stdout.close()
+                    if process.stderr:
+                        process.stderr.close()
+
 
 if __name__ == "__main__":
     unittest.main()
