@@ -67,7 +67,7 @@
         <h3>My Agenda</h3>
         <div id="myAgendaList" class="agenda-list"></div>
         <form id="agendaForm" class="agenda-add-row">
-          <input id="agendaText" placeholder="Add a discussion topicâ€¦" />
+          <input id="agendaText" placeholder="Add a discussion topic…" />
           <button type="submit">+ Add</button>
         </form>
       </div>
@@ -79,7 +79,7 @@
         <h3>Current Discussion</h3>
         <div id="discussionList" class="discussion-list"></div>
       </div>
-      <div class="side-panel-section separated">
+      <div id="settingsSection" class="side-panel-section separated">
         <h3>Settings</h3>
         <div class="auto-adopt-control">
           <label for="autoAdoptSelect" class="auto-adopt-label">Auto-adopt</label>
@@ -314,8 +314,9 @@
         const label = AUTO_ADOPT_LABELS[state.auto_adopt_mode] || "Always";
         const indicator = el("autoAdoptIndicator");
         renderAutoAdoptSquare(indicator);
-        indicator.title = `Auto-adopt: ${label}`;
+        indicator.title = `Auto-adopt: ${label} - click to change`;
         el("autoAdoptHeaderLabel").textContent = `Auto-adopt: ${label}`;
+        control.title = `Auto-adopt: ${label} - click to change`;
       }
 
       function renderAutoAdoptControl() {
@@ -399,8 +400,8 @@
         fields.append(overviewHint);
         const overviewLink = document.createElement("a");
         overviewLink.className = "overview-link";
-        overviewLink.href = "/summary";
-        overviewLink.textContent = "Open overview â†’";
+        overviewLink.href = `/summary?share=${encodeURIComponent(state.board.uuid)}`;
+        overviewLink.textContent = "Manage sharing →";
         fields.append(overviewLink);
 
         el("simpleForm").onsubmit = (event) => {
@@ -697,7 +698,7 @@
         try {
           state = await api("/api/kanban/board");
 
-          // Fokus-Schutz: Das Board-Namen-Feld beim Tippen nicht Ã¼berschreiben
+          // Fokus-Schutz: Das Board-Namen-Feld beim Tippen nicht überschreiben
           const boardNameInput = el("boardName");
           if (document.activeElement !== boardNameInput) {
             boardNameInput.value = state.board.data.name || "Kanban Board";
@@ -724,21 +725,21 @@
       function renderBoard() {
         const board = el("board");
 
-        // Alle Spalten (regulÃ¤r + ghost) aus dem State holen und markieren
+        // Alle Spalten (regulär + ghost) aus dem State holen und markieren
         const activeCols = columns(state.board).map((c) => ({ ...c, _isGhost: false }));
         const ghostCols = ghostColumns().map((c) => ({ ...c, _isGhost: true }));
         const allCols = [...activeCols, ...ghostCols];
 
-        // Diffing fÃ¼r Spalten
+        // Diffing für Spalten
         reconcileDOM(
           board,
           allCols,
           (col) => `${col.uuid}:${col._isGhost ? "ghost" : "local"}`,
-          (col) => renderColumn(col, col._isGhost), // Deine bestehende Funktion erstellt das GrundgerÃ¼st
-          (colEl, col) => updateColumnDOM(colEl, col), // Patcht nur Ã„nderungen
+          (col) => renderColumn(col, col._isGhost), // Deine bestehende Funktion erstellt das Grundgerüst
+          (colEl, col) => updateColumnDOM(colEl, col), // Patcht nur Änderungen
         );
 
-        // "Add Column" Button anfÃ¼gen/ans Ende schieben
+        // "Add Column" Button anfügen/ans Ende schieben
         let addBtn = board.querySelector(".add-column");
         if (!addBtn) {
           addBtn = document.createElement("button");
@@ -754,10 +755,10 @@
         board.appendChild(addBtn);
       }
 
-      // --- NEUE HELFER FÃœR DAS DIFFING ---
+      // --- NEUE HELFER FÜR DAS DIFFING ---
 
       function updateColumnDOM(colEl, col) {
-        // Spaltentitel-Input schÃ¼tzen, falls der Cursor drin ist
+        // Spaltentitel-Input schützen, falls der Cursor drin ist
         const nameInput = colEl.querySelector("input");
         if (nameInput && document.activeElement !== nameInput) {
           nameInput.value = col.data.name || "Column";
@@ -782,14 +783,14 @@
         const cardList = colEl.querySelector(".card-list");
         if (!cardList) return;
 
-        // Karten fÃ¼r diese Spalte ermitteln
+        // Karten für diese Spalte ermitteln
         const activeCards = cards(col).map((c) => ({ ...c, _isGhost: false }));
         const gCards = col._isGhost
           ? []
           : ghostCards(col.uuid).map((c) => ({ ...c, _isGhost: true }));
         const allCards = [...activeCards, ...gCards];
 
-        // Diffing fÃ¼r Karten
+        // Diffing für Karten
         reconcileDOM(
           cardList,
           allCards,
@@ -810,7 +811,7 @@
           openCard(card, card.parent_uuid);
         };
 
-        // Aktualisiert nur Text und Klassen, erhÃ¤lt Drag&Drop-Listener
+        // Aktualisiert nur Text und Klassen, erhält Drag&Drop-Listener
         const titleEl = cardEl.querySelector(".card-title");
         if (titleEl) {
           titleEl.textContent = card.data.name || "Card";
@@ -1015,7 +1016,7 @@
           }
         });
 
-        // 2. Abgleichen & Sortieren: Bestehende updaten oder neue einfÃ¼gen
+        // 2. Abgleichen & Sortieren: Bestehende updaten oder neue einfügen
         dataItems.forEach((item, index) => {
           const key = keyFn(item);
           let child = parent.querySelector(`[data-id="${key}"]`);
@@ -1026,7 +1027,7 @@
             child.setAttribute("data-id", key);
             parent.insertBefore(child, parent.children[index] || null);
           } else {
-            // Element existiert -> Position korrigieren falls nÃ¶tig
+            // Element existiert -> Position korrigieren falls nötig
             if (parent.children[index] !== child) {
               parent.insertBefore(child, parent.children[index] || null);
             }
@@ -1049,8 +1050,15 @@
       }
 
       function adoptButton(uuid, label = "Adopt") {
-        const button = icon(label, () => openAdopt(uuid));
-        button.classList.add("adopt");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        button.setAttribute("aria-label", label);
+        button.className = "adopt";
+        button.onclick = (event) => {
+          event.stopPropagation();
+          openAdopt(uuid);
+        };
         return button;
       }
 
@@ -1497,6 +1505,10 @@
       el("menuToggleBtn").onclick = () =>
         el("sidePanel").classList.contains("open") ? closeSidePanel() : openSidePanel();
       el("sidePanelCloseBtn").onclick = closeSidePanel;
+      el("autoAdoptHeaderControl").onclick = () => {
+        openSidePanel();
+        el("settingsSection").scrollIntoView({ behavior: "smooth", block: "start" });
+      };
       el("overviewBtn").onclick = () => {
         window.location.href = "/summary";
       };

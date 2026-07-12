@@ -120,6 +120,13 @@ button:hover { background: rgba(255, 255, 255, 0.08); border-color: var(--border
   display: flex;
   align-items: center;
   gap: 6px;
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+
+.auto-adopt-header-control:hover {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .auto-adopt-header-label {
@@ -843,27 +850,10 @@ button.auto-adopt-square {
   background: #ffab00;
 }
 
-.user-picker {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
 .user-choice {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 34px;
   border: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--text);
-  border-radius: 16px;
-  padding: 2px 8px 2px 3px;
-}
-
-.user-choice.selected {
-  border-color: var(--teal);
-  background: var(--teal-soft);
 }
 
 .add-card, .add-column {
