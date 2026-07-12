@@ -9,15 +9,28 @@
   <body>
     <header class="topbar">
       <div class="top-actions-left">
-        <button id="menuToggleBtn" class="icon-btn" title="Board menu" aria-label="Board menu">
-          &#9776;
+        <button id="menuToggleBtn" class="icon-btn" title="Collaboration" aria-label="Collaboration">
+          <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">
+            <path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"></path>
+            <path d="M16 10a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z"></path>
+            <path d="M3.5 19c.6-3 2.3-5 4.5-5s3.9 2 4.5 5"></path>
+            <path d="M12.5 18c.5-2.3 1.8-3.8 3.5-3.8s3 1.5 3.5 3.8"></path>
+          </svg>
         </button>
         <div class="brand">
           <span class="brand-mark"></span><strong>S-Kanban</strong>
         </div>
       </div>
       <div class="board-title">
+        <select id="boardQuickSwitch" title="Switch board"></select>
         <input id="boardName" />
+        <button id="boardSwitchBtn" class="board-switch-btn" type="button" title="Switch board" aria-label="Switch board">
+          <span aria-hidden="true">v</span>
+        </button>
+        <button id="overviewBtn" class="icon-btn" type="button" title="Manage all boards" aria-label="Manage all boards">
+          &#9638;
+        </button>
+        <div id="boardSwitchMenu" class="board-switch-menu"></div>
         <div id="boardAdoptTools" class="adopt-tools"></div>
         <span id="statusText"></span>
       </div>
@@ -34,26 +47,34 @@
     <div id="sidePanelOverlay" class="side-panel-overlay"></div>
     <aside id="sidePanel" class="side-panel">
       <div class="side-panel-header">
-        <strong>Board menu</strong>
+        <strong>Collaboration</strong>
         <button id="sidePanelCloseBtn" class="icon-btn" title="Close" aria-label="Close">
           &#10005;
         </button>
       </div>
-      <div class="side-panel-section">
-        <h3>Boards</h3>
-        <div id="boardList" class="board-list"></div>
+      <div class="side-panel-section agenda-group">
+        <h3>My Agenda</h3>
+        <div id="myAgendaList" class="agenda-list"></div>
+        <form id="agendaForm" class="agenda-add-row">
+          <input id="agendaText" placeholder="Add a discussion topicâ€¦" />
+          <button type="submit">+ Add</button>
+        </form>
       </div>
-      <div class="side-panel-section">
+      <div class="side-panel-section agenda-group">
+        <h3>Integrated Agenda</h3>
+        <div id="mergedAgendaList" class="agenda-list"></div>
+      </div>
+      <div class="side-panel-section separated">
+        <h3>Current Discussion</h3>
+        <div id="discussionList" class="discussion-list"></div>
+      </div>
+      <div class="side-panel-section separated">
         <h3>Settings</h3>
         <div class="auto-adopt-control">
-          <button
-            id="autoAdoptToggleBtn"
-            type="button"
-            class="auto-adopt-square"
-            title="Click to change"
-          ></button>
-          <span id="autoAdoptModeLabel"></span>
+          <label for="autoAdoptSelect" class="auto-adopt-label">Auto-adopt</label>
+          <select id="autoAdoptSelect"></select>
         </div>
+        <p id="autoAdoptDescription" class="auto-adopt-description"></p>
       </div>
     </aside>
 
@@ -108,6 +129,12 @@
         never: "Never",
       };
       const AUTO_ADOPT_FILL = { always: 4, not_owner: 2, not_member: 1, never: 0 };
+      const AUTO_ADOPT_DESCRIPTIONS = {
+        always: "Peer changes are automatically adopted into every card.",
+        not_owner: "Peer changes are automatically adopted, except on cards you own.",
+        not_member: "Peer changes are automatically adopted, except on cards you're a member of.",
+        never: "Peer changes are never auto-adopted - you review and adopt each one yourself.",
+      };
 
       const el = (id) => document.getElementById(id);
 
@@ -122,13 +149,12 @@
         return true;
       }
 
-      function isReaffirmed(node) {
-        if (!node.reaffirmed) return false;
-        // Reaffirming never touches previous_parent_uuid, so it can never
-        // have been a decision about a move - once a move-type divergence
-        // shows up, a pre-existing reaffirm is about a *different*,
-        // already-resolved question and must not silently mask the new one.
-        return !moveDivergenceType(node.uuid);
+      function keepMineActive(node) {
+        // Server-computed: accounts for both the content chain-connectivity
+        // rule and the move carve-out, so the UI never has to re-derive
+        // staleness itself (see BACKLOG.md item 10 for why those can't be
+        // collapsed into one client-side check).
+        return transitionInfo(node.uuid)?.keep_mine_active === true;
       }
 
       function hasPendingDivergence(node) {
@@ -137,14 +163,14 @@
       }
 
       function needsManualAdopt(node) {
-        if (!hasPendingDivergence(node) || isReaffirmed(node)) return false;
+        if (!hasPendingDivergence(node) || keepMineActive(node)) return false;
         const info = transitionInfo(node.uuid);
         const autoResolvableType = info.type === "peer_made_changes" || info.type === "local_missing_node";
         return !autoResolvableType || !autoAdoptAllowsNode(node);
       }
 
-      function needsReaffirmedBadge(node) {
-        return hasPendingDivergence(node) && isReaffirmed(node);
+      function needsKeepMineMenu(node) {
+        return hasPendingDivergence(node) && keepMineActive(node);
       }
 
       function peerCopyOf(node) {
@@ -278,21 +304,18 @@
       }
 
       function renderAutoAdoptControl() {
-        const button = el("autoAdoptToggleBtn");
-        renderAutoAdoptSquare(button);
-        el("autoAdoptModeLabel").textContent = AUTO_ADOPT_LABELS[state.auto_adopt_mode] || "Always";
-      }
-
-      function encodeConnectToken(address, topicUuids) {
-        return btoa(JSON.stringify({ address, topic_uuids: topicUuids }));
-      }
-
-      function decodeConnectToken(token) {
-        const payload = JSON.parse(atob(token.trim()));
-        if (!payload.address || !Array.isArray(payload.topic_uuids) || !payload.topic_uuids.length) {
-          throw new Error("Invalid token");
+        const select = el("autoAdoptSelect");
+        if (!select.options.length) {
+          for (const mode of AUTO_ADOPT_MODES) {
+            const option = document.createElement("option");
+            option.value = mode;
+            option.textContent = AUTO_ADOPT_LABELS[mode];
+            select.append(option);
+          }
         }
-        return payload;
+        select.value = state.auto_adopt_mode || "always";
+        el("autoAdoptDescription").textContent =
+          AUTO_ADOPT_DESCRIPTIONS[state.auto_adopt_mode] || AUTO_ADOPT_DESCRIPTIONS.always;
       }
 
       function avatarElement(user, online) {
@@ -352,75 +375,18 @@
         graph.append(peerList);
         fields.append(graph);
 
-        // 2) Create a token so someone else can connect to this board.
-        const tokenHint = document.createElement("p");
-        tokenHint.className = "confirm-text";
-        tokenHint.textContent =
-          "Copy a token and send it to someone (email, chat, ...) so they can connect to this board.";
-        fields.append(tokenHint);
-        const tokenRow = document.createElement("div");
-        tokenRow.className = "network-share-row";
-        const copyTokenBtn = document.createElement("button");
-        copyTokenBtn.type = "button";
-        copyTokenBtn.textContent = "Copy token";
-        copyTokenBtn.onclick = async () => {
-          const token = encodeConnectToken(state.address, [state.board.uuid, state.user_profile.uuid]);
-          await navigator.clipboard.writeText(token);
-          showStatus("Token copied");
-        };
-        tokenRow.append(copyTokenBtn);
-        fields.append(tokenRow);
-
-        // 3) Connect to somebody else using a token they gave you.
-        const connectHint = document.createElement("p");
-        connectHint.className = "confirm-text";
-        connectHint.textContent = "Received a token from someone else? Paste it here to connect.";
-        fields.append(connectHint);
-        const connectRow = document.createElement("div");
-        connectRow.className = "network-share-row";
-        const connectInput = document.createElement("input");
-        connectInput.placeholder = "Paste a token";
-        const connectBtn = document.createElement("button");
-        connectBtn.type = "button";
-        connectBtn.textContent = "Connect";
-        connectBtn.onclick = () => {
-          let payload;
-          try {
-            payload = decodeConnectToken(connectInput.value);
-          } catch (error) {
-            showStatus("Invalid token", true);
-            return;
-          }
-          return run(
-            () =>
-              api("/api/join_discussion", {
-                address: payload.address,
-                topic_uuids: payload.topic_uuids,
-              }),
-            "Connected",
-          );
-        };
-        connectRow.append(connectInput, connectBtn);
-        fields.append(connectRow);
-
-        // 4) Stop discussing this board with everyone currently on it.
-        if (boardPeers.length) {
-          const unshareBtn = document.createElement("button");
-          unshareBtn.type = "button";
-          unshareBtn.className = "danger";
-          unshareBtn.textContent = `Stop discussing this board (${boardPeers.length})`;
-          unshareBtn.onclick = () =>
-            confirmAction(
-              "Stop discussing this board?",
-              `You and ${boardPeers.length} peer${boardPeers.length === 1 ? "" : "s"} will no longer sync this board. The board itself is not deleted.`,
-              () =>
-                run(
-                  () => api("/api/kanban/boards/unshare", { board_uuid: state.board.uuid }),
-                  "Stopped discussing this board",
-                ),
-            );
-          fields.append(unshareBtn);
-        }
+        // Sharing/connecting/unsharing a board now lives in the Board of
+        // Boards overview, scoped per board there - this panel is a
+        // read-only status view.
+        const overviewHint = document.createElement("p");
+        overviewHint.className = "confirm-text";
+        overviewHint.textContent = "Manage sharing and connections from the Board of Boards overview.";
+        fields.append(overviewHint);
+        const overviewLink = document.createElement("a");
+        overviewLink.className = "overview-link";
+        overviewLink.href = "/summary";
+        overviewLink.textContent = "Open overview â†’";
+        fields.append(overviewLink);
 
         el("simpleForm").onsubmit = (event) => {
           event.preventDefault();
@@ -438,88 +404,208 @@
         return `${Math.floor(seconds / 86400)}d ago`;
       }
 
-      function renderBoardList() {
-        const container = el("boardList");
-        container.replaceChildren();
+      function renderBoardQuickSwitch() {
+        const select = el("boardQuickSwitch");
+        const menu = el("boardSwitchMenu");
         const boards = state.boards || [];
+        select.replaceChildren();
+        menu.replaceChildren();
         for (const board of boards) {
-          const row = document.createElement("div");
-          row.className = "board-list-row";
-          if (board.uuid === state.board.uuid) row.classList.add("active");
-          const name = document.createElement("span");
-          name.className = "board-list-name";
-          name.textContent = board.data.name || "Kanban Board";
-          name.onclick = () =>
-            run(
-              () => api("/api/kanban/boards/select", { board_uuid: board.uuid }),
-              "Board selected",
-            );
-          row.append(name);
-          if (boards.length > 1) {
-            const del = document.createElement("button");
-            del.type = "button";
-            del.className = "icon-btn board-list-delete";
-            del.title = "Delete board";
-            del.textContent = "✕";
-            del.onclick = (event) => {
-              event.stopPropagation();
-              confirmAction(
-                "Delete board?",
-                `Delete "${board.data.name || "Kanban Board"}" and all cards inside it.`,
-                () =>
-                  run(
-                    () => api("/api/kanban/boards/delete", { board_uuid: board.uuid }),
-                    "Board deleted",
-                  ),
-              );
-            };
-            row.append(del);
-          }
-          container.append(row);
+          const opt = document.createElement("option");
+          opt.value = board.uuid;
+          opt.textContent = board.data.name || "Kanban Board";
+          select.append(opt);
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "board-switch-option";
+          button.textContent = board.data.name || "Kanban Board";
+          button.disabled = board.uuid === state.board.uuid;
+          button.onclick = () => {
+            closeBoardSwitchMenu();
+            selectBoard(board.uuid);
+          };
+          menu.append(button);
         }
-        const add = document.createElement("button");
-        add.type = "button";
-        add.className = "board-list-add";
-        add.textContent = "+ Add board";
-        add.onclick = openNewBoardModal;
-        container.append(add);
+        select.value = state.board.uuid;
       }
 
-      function openNewBoardModal() {
-        const boards = state.boards || [];
-        openSimple(
-          "New Board",
-          [
-            { name: "name", label: "Name", value: "Kanban Board" },
-            {
-              name: "template",
-              label: "Copy from (optional)",
-              type: "select",
-              value: "",
-              options: [
-                { value: "", label: "Start empty" },
-                ...boards.map((board) => ({
-                  value: board.uuid,
-                  label: board.data.name || "Kanban Board",
-                })),
-              ],
-            },
-          ],
-          async (form) => {
-            const templateUuid = form.get("template");
-            if (templateUuid) {
-              const result = await api("/api/kanban/boards/copy", { board_uuid: templateUuid });
-              if (result.value) {
-                await api("/api/kanban/boards/rename", {
-                  board_uuid: result.value,
-                  name: form.get("name"),
-                });
-              }
-              return result;
-            }
-            return api("/api/kanban/boards/create", { name: form.get("name") });
-          },
+      function openBoardSwitchMenu() {
+        el("boardSwitchMenu").classList.add("open");
+      }
+
+      function closeBoardSwitchMenu() {
+        el("boardSwitchMenu").classList.remove("open");
+      }
+
+      function toggleBoardSwitchMenu() {
+        const menu = el("boardSwitchMenu");
+        menu.classList.contains("open") ? closeBoardSwitchMenu() : openBoardSwitchMenu();
+      }
+
+      function selectBoard(boardUuid) {
+        if (!boardUuid || boardUuid === state.board.uuid) return;
+        run(
+          () => api("/api/kanban/boards/select", { board_uuid: boardUuid }),
+          "Board selected",
         );
+      }
+
+      const AGENDA_PRIORITY_LABELS = { "": "No priority", high: "High", medium: "Medium", low: "Low" };
+
+      function renderAgenda() {
+        const items = state.agenda_items || [];
+        const myId = state.user_profile?.uuid;
+        renderMyAgendaList(items.filter((item) => item.data.author === myId));
+        renderMergedAgendaList(items);
+      }
+
+      function agendaEmptyState(container) {
+        const empty = document.createElement("p");
+        empty.className = "confirm-text";
+        empty.textContent = "Nothing yet.";
+        container.append(empty);
+      }
+
+      function renderMyAgendaList(items) {
+        const container = el("myAgendaList");
+        container.replaceChildren();
+        if (!items.length) return agendaEmptyState(container);
+        for (const item of items) {
+          const row = document.createElement("div");
+          row.className = "agenda-row";
+          const select = document.createElement("select");
+          select.className = "agenda-priority-select";
+          for (const [value, label] of Object.entries(AGENDA_PRIORITY_LABELS)) {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = label;
+            select.append(option);
+          }
+          select.value = item.data.priority || "";
+          select.onchange = () =>
+            run(
+              () =>
+                api("/api/kanban/agenda/set_priority", {
+                  item_uuid: item.uuid,
+                  priority: select.value || null,
+                }),
+              "Priority updated",
+            );
+          row.append(select);
+          const text = document.createElement("span");
+          text.className = "agenda-text";
+          text.textContent = item.data.text || "";
+          row.append(text);
+          const del = document.createElement("button");
+          del.type = "button";
+          del.className = "icon-btn";
+          del.title = "Remove";
+          del.textContent = "âœ•";
+          del.onclick = () =>
+            run(() => api("/api/kanban/agenda/delete", { item_uuid: item.uuid }), "Removed");
+          row.append(del);
+          container.append(row);
+        }
+      }
+
+      function renderMergedAgendaList(items) {
+        const container = el("mergedAgendaList");
+        container.replaceChildren();
+        if (!items.length) return agendaEmptyState(container);
+        for (const item of items) {
+          const row = document.createElement("div");
+          row.className = "agenda-row";
+          if (item.data.priority) {
+            const priority = document.createElement("span");
+            priority.className = `agenda-priority agenda-priority-${item.data.priority}`;
+            priority.title = item.data.priority;
+            priority.textContent = item.data.priority[0].toUpperCase();
+            row.append(priority);
+          }
+          const text = document.createElement("span");
+          text.className = "agenda-text";
+          text.textContent = item.data.text || "";
+          row.append(text);
+          const author = document.createElement("span");
+          author.className = "agenda-author";
+          author.textContent = userForParticipant(item.data.author).name;
+          row.append(author);
+          container.append(row);
+        }
+      }
+
+      const DISCUSSION_TYPE_LABELS = {
+        divergence: "Conflict",
+        peer_made_changes: "Peer updated",
+        local_missing_node: "New from peer",
+        local_made_changes: "You updated",
+        peer_missing_node: "New from you",
+      };
+
+      function renderDiscussionList() {
+        const container = el("discussionList");
+        container.replaceChildren();
+        const entries = Object.entries(state.transition_by_node || {}).filter(([uuid, info]) => {
+          if (info.type === "in_agreement") return false;
+          // The board itself is never something to act on here - it's
+          // either cascading from a child (see below) or, for the topic
+          // root specifically, a permanent attachment artifact (each peer
+          // grafts the shared board under their own differently-uuid'd
+          // local folder - see BACKLOG.md item 11), so it can look
+          // "diverged" forever even when every real card agrees.
+          if (uuid === state.board.uuid) return false;
+          // A container (column) whose own fields match the peer and is
+          // only flagged because a child changed underneath it would just
+          // be noise here - that same event already shows up on the child
+          // itself.
+          const localNode = findNode(state.board, uuid);
+          return !(localNode && isContainerOnlyDivergence(localNode));
+        });
+        if (!entries.length) {
+          const empty = document.createElement("p");
+          empty.className = "confirm-text";
+          empty.textContent = "Nothing currently in discussion.";
+          container.append(empty);
+          return;
+        }
+        entries.sort((a, b) => (b[1].priority || 0) - (a[1].priority || 0));
+        let lastPriority = null;
+        for (const [uuid, info] of entries) {
+          if (lastPriority !== null && lastPriority !== info.priority) {
+            const divider = document.createElement("div");
+            divider.className = "discussion-divider";
+            container.append(divider);
+          }
+          // A node with no local copy yet (e.g. local_missing_node) still
+          // has a name on the peer's side - look there before giving up,
+          // so it doesn't misleadingly read as "removed".
+          const node =
+            findNode(state.board, uuid) ||
+            (info.peer_addr && findNode(state.peers?.[info.peer_addr], uuid));
+          const row = document.createElement("div");
+          row.className = "discussion-row";
+          const name = document.createElement("span");
+          name.className = "discussion-name";
+          name.textContent = node ? node.data.name || node.data.text || "Untitled" : "(unavailable)";
+          row.append(name);
+          const type = document.createElement("span");
+          type.className = "discussion-type";
+          type.textContent = DISCUSSION_TYPE_LABELS[info.type] || info.type;
+          row.append(type);
+          if (info.peer_addr) row.title = `With ${peerLabel(info.peer_addr)}`;
+          row.onclick = () => highlightCard(uuid);
+          container.append(row);
+          lastPriority = info.priority;
+        }
+      }
+
+      function highlightCard(uuid) {
+        const target = document.querySelector(`[data-uuid="${uuid}"]`);
+        if (!target) return;
+        closeSidePanel();
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.add("highlight-flash");
+        setTimeout(() => target.classList.remove("highlight-flash"), 1500);
       }
 
       function boardUsers() {
@@ -597,7 +683,7 @@
         try {
           state = await api("/api/kanban/board");
 
-          // Fokus-Schutz: Das Board-Namen-Feld beim Tippen nicht überschreiben
+          // Fokus-Schutz: Das Board-Namen-Feld beim Tippen nicht Ã¼berschreiben
           const boardNameInput = el("boardName");
           if (document.activeElement !== boardNameInput) {
             boardNameInput.value = state.board.data.name || "Kanban Board";
@@ -607,9 +693,11 @@
           renderAutoAdoptControl();
           renderBoardAdoptTools();
 
-          renderBoardList();
+          renderBoardQuickSwitch();
           renderNetwork();
           renderSelfAvatar();
+          renderAgenda();
+          renderDiscussionList();
 
           // Neues Rendering via Diffing
           renderBoard();
@@ -621,21 +709,21 @@
       function renderBoard() {
         const board = el("board");
 
-        // Alle Spalten (regulär + ghost) aus dem State holen und markieren
+        // Alle Spalten (regulÃ¤r + ghost) aus dem State holen und markieren
         const activeCols = columns(state.board).map((c) => ({ ...c, _isGhost: false }));
         const ghostCols = ghostColumns().map((c) => ({ ...c, _isGhost: true }));
         const allCols = [...activeCols, ...ghostCols];
 
-        // Diffing für Spalten
+        // Diffing fÃ¼r Spalten
         reconcileDOM(
           board,
           allCols,
           (col) => `${col.uuid}:${col._isGhost ? "ghost" : "local"}`,
-          (col) => renderColumn(col, col._isGhost), // Deine bestehende Funktion erstellt das Grundgerüst
-          (colEl, col) => updateColumnDOM(colEl, col), // Patcht nur Änderungen
+          (col) => renderColumn(col, col._isGhost), // Deine bestehende Funktion erstellt das GrundgerÃ¼st
+          (colEl, col) => updateColumnDOM(colEl, col), // Patcht nur Ã„nderungen
         );
 
-        // "Add Column" Button anfügen/ans Ende schieben
+        // "Add Column" Button anfÃ¼gen/ans Ende schieben
         let addBtn = board.querySelector(".add-column");
         if (!addBtn) {
           addBtn = document.createElement("button");
@@ -651,10 +739,10 @@
         board.appendChild(addBtn);
       }
 
-      // --- NEUE HELFER FÜR DAS DIFFING ---
+      // --- NEUE HELFER FÃœR DAS DIFFING ---
 
       function updateColumnDOM(colEl, col) {
-        // Spaltentitel-Input schützen, falls der Cursor drin ist
+        // Spaltentitel-Input schÃ¼tzen, falls der Cursor drin ist
         const nameInput = colEl.querySelector("input");
         if (nameInput && document.activeElement !== nameInput) {
           nameInput.value = col.data.name || "Column";
@@ -670,23 +758,23 @@
         if (tools) {
           tools.replaceChildren();
           if (needsManualAdopt(col) && (col._isGhost || !isContainerOnlyDivergence(col))) {
-            tools.append(...adoptTools(col.uuid, col._isGhost));
-          } else if (needsReaffirmedBadge(col)) {
-            tools.append(reaffirmedBadge(col.uuid));
+            tools.append(...adoptTools(col, col._isGhost));
+          } else if (needsKeepMineMenu(col)) {
+            tools.append(keepMineMenu(col));
           }
         }
 
         const cardList = colEl.querySelector(".card-list");
         if (!cardList) return;
 
-        // Karten für diese Spalte ermitteln
+        // Karten fÃ¼r diese Spalte ermitteln
         const activeCards = cards(col).map((c) => ({ ...c, _isGhost: false }));
         const gCards = col._isGhost
           ? []
           : ghostCards(col.uuid).map((c) => ({ ...c, _isGhost: true }));
         const allCards = [...activeCards, ...gCards];
 
-        // Diffing für Karten
+        // Diffing fÃ¼r Karten
         reconcileDOM(
           cardList,
           allCards,
@@ -707,7 +795,7 @@
           openCard(card, card.parent_uuid);
         };
 
-        // Aktualisiert nur Text und Klassen, erhält Drag&Drop-Listener
+        // Aktualisiert nur Text und Klassen, erhÃ¤lt Drag&Drop-Listener
         const titleEl = cardEl.querySelector(".card-title");
         if (titleEl) {
           titleEl.textContent = card.data.name || "Card";
@@ -742,7 +830,7 @@
 
         // P2P Konflikt-Klassen aktualisieren (nutzt deine bestehende Helper-Funktion)
         applyTransitionClass(cardEl, card.uuid);
-        cardEl.querySelectorAll(".adopt, .reaffirm, .reaffirmed").forEach((button) => button.remove());
+        cardEl.querySelectorAll(".adopt, .keep-mine-menu").forEach((button) => button.remove());
         cardEl.append(...cardAdoptTools(card, card._isGhost));
       }
 
@@ -786,9 +874,9 @@
         const tools = document.createElement("div");
         tools.className = "adopt-tools";
         if (needsManualAdopt(column) && (ghost || !isContainerOnlyDivergence(column))) {
-          tools.append(...adoptTools(column.uuid, ghost));
-        } else if (needsReaffirmedBadge(column)) {
-          tools.append(reaffirmedBadge(column.uuid));
+          tools.append(...adoptTools(column, ghost));
+        } else if (needsKeepMineMenu(column)) {
+          tools.append(keepMineMenu(column));
         }
         head.append(tools);
         article.append(head);
@@ -911,7 +999,7 @@
           }
         });
 
-        // 2. Abgleichen & Sortieren: Bestehende updaten oder neue einfügen
+        // 2. Abgleichen & Sortieren: Bestehende updaten oder neue einfÃ¼gen
         dataItems.forEach((item, index) => {
           const key = keyFn(item);
           let child = parent.querySelector(`[data-id="${key}"]`);
@@ -922,7 +1010,7 @@
             child.setAttribute("data-id", key);
             parent.insertBefore(child, parent.children[index] || null);
           } else {
-            // Element existiert -> Position korrigieren falls nötig
+            // Element existiert -> Position korrigieren falls nÃ¶tig
             if (parent.children[index] !== child) {
               parent.insertBefore(child, parent.children[index] || null);
             }
@@ -938,9 +1026,9 @@
         const board = state.board;
         if (!board) return;
         if (needsManualAdopt(board)) {
-          tools.append(adoptButton(board.uuid), reaffirmButton(board.uuid));
-        } else if (needsReaffirmedBadge(board)) {
-          tools.append(reaffirmedBadge(board.uuid));
+          tools.append(adoptButton(board.uuid), keepMineMenu(board));
+        } else if (needsKeepMineMenu(board)) {
+          tools.append(keepMineMenu(board));
         }
       }
 
@@ -950,56 +1038,58 @@
         return button;
       }
 
-      function adoptTools(uuid, ghost, label = "Adopt") {
-        // A ghost node has no local copy to keep, so "Reaffirm" (keep my
-        // version) is meaningless there and fails server-side - only offer
-        // Adopt for ghosts.
-        return ghost ? [adoptButton(uuid, label)] : [adoptButton(uuid, label), reaffirmButton(uuid)];
+      function adoptTools(node, ghost, label = "Adopt") {
+        // A ghost node has no local copy to keep, so the keep-mine menu
+        // (keep my version) is meaningless there and fails server-side -
+        // only offer Adopt for ghosts.
+        return ghost ? [adoptButton(node.uuid, label)] : [adoptButton(node.uuid, label), keepMineMenu(node)];
       }
 
-      function reaffirmButton(uuid, label = "Reaffirm") {
-        const button = icon(label, () =>
+      const PERSPECTIVE_MENU_OPTIONS = [
+        { value: "none", label: "..." },
+        { value: "kept_mine", label: "Keep mine" },
+        { value: "pushed_back", label: "Push back" },
+      ];
+
+      function keepMineMenu(node) {
+        const select = document.createElement("select");
+        select.className = "keep-mine-menu";
+        select.title = "Keep mine keeps my version quietly - Push back also lets peers know";
+        for (const option of PERSPECTIVE_MENU_OPTIONS) {
+          const opt = document.createElement("option");
+          opt.value = option.value;
+          opt.textContent = option.label;
+          select.append(opt);
+        }
+        select.value = node.perspective_state || "none";
+        select.dataset.state = select.value;
+        select.onchange = () =>
           run(
-            () => api("/api/kanban/reaffirm", { node_uuid: uuid }),
-            "Kept your version",
-          ),
-        );
-        button.classList.add("reaffirm");
-        button.title = "Keep my version and dismiss this divergence";
-        return button;
+            () => api("/api/kanban/perspective", { node_uuid: node.uuid, state: select.value }),
+            "Updated",
+          );
+        return select;
       }
 
       function cardAdoptTools(card, ghost) {
         if (!needsManualAdopt(card)) {
-          return needsReaffirmedBadge(card) ? [reaffirmedBadge(card.uuid)] : [];
+          return needsKeepMineMenu(card) ? [keepMineMenu(card)] : [];
         }
         const moveType = moveDivergenceType(card.uuid);
         if (moveType === "peer_made_changes") {
           // Peer moved it: the ghost at the destination is the meaningful
           // "adopt" here; the original spot only offers to keep it put -
           // adopting from both would just resolve the same divergence twice.
-          return ghost ? [adoptButton(card.uuid, "Adopt move")] : [reaffirmButton(card.uuid, "Reject move")];
+          return ghost ? [adoptButton(card.uuid, "Adopt move")] : [keepMineMenu(card)];
         }
         if (moveType === "local_made_changes") {
           // We moved it and a peer hasn't caught up: there's nothing to
-          // pull from them, so our own spot just reaffirms; the ghost at
-          // their lagging old position is the one place "adopting" makes
-          // sense - and doing so reverts our own move, hence "Reject move".
-          return ghost ? [adoptButton(card.uuid, "Reject move")] : [reaffirmButton(card.uuid)];
+          // pull from them, so our own spot just offers the keep-mine menu;
+          // the ghost at their lagging old position is the one place
+          // "adopting" makes sense - and doing so reverts our own move.
+          return ghost ? [adoptButton(card.uuid, "Reject move")] : [keepMineMenu(card)];
         }
-        return adoptTools(card.uuid, ghost);
-      }
-
-      function reaffirmedBadge(uuid) {
-        const button = icon("Reaffirmed", () =>
-          run(
-            () => api("/api/kanban/reaffirm", { node_uuid: uuid }),
-            "Reaffirm cleared",
-          ),
-        );
-        button.classList.add("reaffirmed");
-        button.title = "You kept your version - click to reopen this divergence";
-        return button;
+        return adoptTools(card, ghost);
       }
 
       function openAdopt(uuid) {
@@ -1287,10 +1377,10 @@
         // keeps the same at-a-glance meaning but is actually legible.
         return (
           {
-            peer_made_changes: "＋", // fullwidth plus sign
-            local_missing_node: "＋",
-            local_made_changes: "≈", // almost-equal sign
-            peer_missing_node: "−", // minus sign
+            peer_made_changes: "ï¼‹", // fullwidth plus sign
+            local_missing_node: "ï¼‹",
+            local_made_changes: "â‰ˆ", // almost-equal sign
+            peer_missing_node: "âˆ’", // minus sign
             divergence: "!",
           }[type] || "*"
         );
@@ -1467,28 +1557,46 @@
         statusResetAt = Date.now() + 3500;
       }
 
-      el("autoAdoptToggleBtn").onclick = () => {
-        const current = AUTO_ADOPT_MODES.indexOf(state.auto_adopt_mode);
-        const next = AUTO_ADOPT_MODES[(current + 1) % AUTO_ADOPT_MODES.length] || "always";
-        return run(
-          () => api("/api/kanban/auto_adopt", { mode: next }),
+      el("autoAdoptSelect").onchange = (event) =>
+        run(
+          () => api("/api/kanban/auto_adopt", { mode: event.target.value }),
           "Auto-adopt updated",
         );
-      };
       function openSidePanel() {
+        document.body.classList.add("side-panel-open");
         el("sidePanel").classList.add("open");
-        el("sidePanelOverlay").classList.add("visible");
       }
       function closeSidePanel() {
+        document.body.classList.remove("side-panel-open");
         el("sidePanel").classList.remove("open");
-        el("sidePanelOverlay").classList.remove("visible");
       }
       el("menuToggleBtn").onclick = () =>
         el("sidePanel").classList.contains("open") ? closeSidePanel() : openSidePanel();
       el("sidePanelCloseBtn").onclick = closeSidePanel;
-      el("sidePanelOverlay").onclick = closeSidePanel;
+      el("overviewBtn").onclick = () => {
+        window.location.href = "/summary";
+      };
+      el("boardSwitchBtn").onclick = (event) => {
+        event.stopPropagation();
+        toggleBoardSwitchMenu();
+      };
+      el("boardQuickSwitch").onchange = () => selectBoard(el("boardQuickSwitch").value);
+      el("agendaForm").addEventListener("submit", (event) => {
+        event.preventDefault();
+        const text = el("agendaText").value.trim();
+        if (!text) return;
+        el("agendaText").value = "";
+        run(() => api("/api/kanban/agenda/create", { text }), "Added");
+      });
       document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") closeSidePanel();
+        if (event.key === "Escape") {
+          closeSidePanel();
+          closeBoardSwitchMenu();
+        }
+      });
+      document.addEventListener("click", (event) => {
+        const target = event.target instanceof Element ? event.target : event.target.parentElement;
+        if (!target?.closest(".board-title")) closeBoardSwitchMenu();
       });
 
       el("networkBtn").onclick = openNetworkPanel;

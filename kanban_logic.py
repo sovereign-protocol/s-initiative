@@ -10,10 +10,19 @@ Contract:
       owner is a profile uuid that must also be present in participants, or None.
     Board data additionally carries: objective (short free-text tagline,
       default ""), used by the Board of Boards summary view.
+    Agenda item data: {type: "agenda_item", text, priority, author}
+      - a direct child of the board, same as columns. priority is one of
+      "high"/"medium"/"low", or None if not set (optional - a card doesn't
+      need one), author is a profile uuid. Purely async: created/deleted
+      like any node, synced/merged via the board's existing topic - no
+      dedicated protocol support needed.
 
   API:
     GET  /api/kanban/board
     POST /api/kanban/boards/set_objective {board_uuid, objective}
+    POST /api/kanban/agenda/create        {text, priority}  # priority optional
+    POST /api/kanban/agenda/delete        {item_uuid}
+    POST /api/kanban/agenda/set_priority  {item_uuid, priority}  # priority optional, clears if omitted
     POST /api/kanban/auto_adopt          {mode}  # one of: always, not_owner, not_member, never
     POST /api/kanban/invite              {address}
     POST /api/kanban/columns/create      {name}
@@ -25,7 +34,7 @@ Contract:
     POST /api/kanban/cards/delete        {card_uuid}
     POST /api/kanban/cards/move          {card_uuid, column_uuid, index}
     POST /api/kanban/adopt               {source_addr, node_uuid, adopt_absence}
-    POST /api/kanban/reaffirm            {node_uuid}
+    POST /api/kanban/perspective            {node_uuid, state}  # one of: none, kept_mine, pushed_back
 """
 
 from __future__ import annotations
@@ -45,6 +54,10 @@ DEFAULT_COLUMNS = ["To Do", "Doing", "Done"]
 KANBAN_APP_NAME = "S-Kanban"
 ORDER_GAP_EPSILON = 1e-9
 AUTO_ADOPT_MODES = ("always", "not_owner", "not_member", "never")
+AGENDA_PRIORITIES = ("high", "medium", "low")
+# Priority is optional (None/"" means "not set") - unset sorts below every
+# explicit priority rather than defaulting to "medium".
+AGENDA_PRIORITY_RANK = {"high": 3, "medium": 2, "low": 1}
 
 
 class KanbanLogic:
@@ -72,6 +85,7 @@ class KanbanLogic:
             "auto_adopt_mode": self.auto_adopt_mode(board),
             "transition_events": events,
             "transition_by_node": self.transition_by_node(events),
+            "agenda_items": [item.to_dict() for item in self.agenda_items(board)],
         }
 
     def auto_adopt_mode(self, board: PRSPNode | None = None) -> str:
@@ -559,8 +573,8 @@ class KanbanLogic:
 
         return operation()
 
-    def reaffirm_node(self, node_uuid: str) -> SessionResult:
-        return self.session.reaffirm(node_uuid)
+    def set_perspective_state(self, node_uuid: str, state: str) -> SessionResult:
+        return self.session.set_perspective_state(node_uuid, state)
 
     def adopt_incoming_changes(self, board: PRSPNode | None = None) -> bool:
         board = board or self.ensure_board()
@@ -615,7 +629,8 @@ class KanbanLogic:
                 )
                 continue
             if (top_event["type"] == "peer_made_changes" and mode == "always"
-                    and not self._subtree_has_reaffirmed(board)):
+                    and not self._subtree_has_kept_mine(board)
+                    and not self._subtree_has_pushed_back(peer_board)):
                 self.session.trace_event(
                     "kanban.auto_adopt_replace_board",
                     board_uuid=board.uuid,
@@ -634,7 +649,9 @@ class KanbanLogic:
                 reference_node = local_node or peer_node
                 if not reference_node:
                     continue
-                if local_node and local_node.is_reaffirmed():
+                if local_node and self.session.keep_mine_active(local_node, peer_node):
+                    continue
+                if peer_node and self.session.peer_pushed_back(peer_node):
                     continue
                 is_card = reference_node.data.get("type") == "kanban_card"
                 if is_card and not self._auto_adopt_allows_node(mode, reference_node):
@@ -669,13 +686,23 @@ class KanbanLogic:
         )
         return changed
 
-    def _subtree_has_reaffirmed(self, node: PRSPNode) -> bool:
+    def _subtree_has_kept_mine(self, node: PRSPNode) -> bool:
         # The whole-board replace shortcut may only run when nothing under
-        # the board is reaffirmed - a wholesale replace would silently
-        # overwrite a node the user explicitly decided to keep.
-        if node.is_reaffirmed():
+        # the board has a local perspective decision or pushback - a wholesale replace would
+        # silently overwrite a node the user explicitly decided to keep.
+        if node.perspective_state != "none":
             return True
-        return any(self._subtree_has_reaffirmed(child) for child in node.children)
+        return any(self._subtree_has_kept_mine(child) for child in node.children)
+
+    def _subtree_has_pushed_back(self, node: PRSPNode) -> bool:
+        # Same guard, but over the *incoming peer* subtree: the whole-board
+        # replace shortcut bypasses the per-node peer_pushed_back check
+        # entirely, so a peer's pushed_back node anywhere in what would be
+        # replaced must block the shortcut the same way a local keep-mine decision
+        # already does.
+        if node.perspective_state == "pushed_back":
+            return True
+        return any(self._subtree_has_pushed_back(child) for child in node.children)
 
     def _auto_adopt_allows_node(self, mode: str, node: PRSPNode | None) -> bool:
         if mode == "always":
@@ -736,6 +763,8 @@ class KanbanLogic:
             event_info = {
                 "type": event["type"],
                 "peer_addr": event.get("peer_addr"),
+                "keep_mine_active": event.get("keep_mine_active"),
+                "priority": priority.get(event["type"], 0),
             }
             current = out.get(node_uuid)
             if current:
@@ -762,6 +791,43 @@ class KanbanLogic:
             [child for child in column.live_children() if child.data.get("type") == "kanban_card"],
             key=lambda node: (float(node.data.get("order", 0)), node.created_at),
         )
+
+    def agenda_items(self, board: PRSPNode | None = None) -> list[PRSPNode]:
+        board = board or self.ensure_board()
+        return sorted(
+            [child for child in board.live_children() if child.data.get("type") == "agenda_item"],
+            key=lambda node: (
+                -AGENDA_PRIORITY_RANK.get(node.data.get("priority"), 0),
+                node.created_at,
+            ),
+        )
+
+    def create_agenda_item(self, text: str, priority: str | None = None) -> SessionResult:
+        board = self.ensure_board()
+        return self.session.create_child(
+            board.uuid,
+            {
+                "type": "agenda_item",
+                "text": text or "",
+                "priority": priority if priority in AGENDA_PRIORITIES else None,
+                "author": self.user_profile().uuid,
+            },
+            {},
+        )
+
+    def delete_agenda_item(self, item_uuid: str) -> SessionResult:
+        item = self._node(item_uuid, "agenda_item")
+        if not item:
+            return SessionResult("error", reason="agenda item not found")
+        return self.session.delete(item.uuid)
+
+    def set_agenda_item_priority(self, item_uuid: str, priority: str | None) -> SessionResult:
+        item = self._node(item_uuid, "agenda_item")
+        if not item:
+            return SessionResult("error", reason="agenda item not found")
+        data = dict(item.data)
+        data["priority"] = priority if priority in AGENDA_PRIORITIES else None
+        return self.session.modify(item.uuid, data, item.weights)
 
     @staticmethod
     def _order_between(low: float | None, high: float | None) -> float | None:
@@ -1097,9 +1163,30 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
             bool(data.get("adopt_absence")),
         ))
 
-    async def api_reaffirm(request: Request):
+    async def api_perspective(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.reaffirm_node(data["node_uuid"]))
+        return await _json_result(runtime, logic.set_perspective_state(
+            data["node_uuid"],
+            data["state"],
+        ))
+
+    async def api_create_agenda_item(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.create_agenda_item(
+            data.get("text", ""),
+            data.get("priority"),
+        ))
+
+    async def api_delete_agenda_item(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.delete_agenda_item(data["item_uuid"]))
+
+    async def api_set_agenda_item_priority(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.set_agenda_item_priority(
+            data["item_uuid"],
+            data.get("priority"),
+        ))
 
     return [
         Route("/api/kanban/board", api_board),
@@ -1123,7 +1210,10 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
         Route("/api/kanban/cards/delete", api_delete_card, methods=["POST"]),
         Route("/api/kanban/cards/move", api_move_card, methods=["POST"]),
         Route("/api/kanban/adopt", api_adopt, methods=["POST"]),
-        Route("/api/kanban/reaffirm", api_reaffirm, methods=["POST"]),
+        Route("/api/kanban/perspective", api_perspective, methods=["POST"]),
+        Route("/api/kanban/agenda/create", api_create_agenda_item, methods=["POST"]),
+        Route("/api/kanban/agenda/delete", api_delete_agenda_item, methods=["POST"]),
+        Route("/api/kanban/agenda/set_priority", api_set_agenda_item_priority, methods=["POST"]),
     ]
 
 

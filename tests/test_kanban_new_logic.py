@@ -255,7 +255,7 @@ class KanbanNewLogicTests(unittest.TestCase):
             "Renamed (owned by peer)",
         )
 
-    def test_reaffirm_suppresses_auto_adopt_until_toggled_off(self):
+    def test_keep_mine_suppresses_auto_adopt_until_toggled_off(self):
         left = self.runtime(8373)
         right = self.runtime(8374)
         client = MemoryHttpClient({left.address: left, right.address: right})
@@ -272,8 +272,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.logic.board_payload()
         self.assertEqual(right.session.protocol.index[card.uuid].data["name"], "Original")
 
-        reaffirm_result = right.logic.reaffirm_node(card.uuid)
-        self.assertEqual(reaffirm_result.status, "ok")
+        keep_mine_result = right.logic.set_perspective_state(card.uuid, "kept_mine")
+        self.assertEqual(keep_mine_result.status, "ok")
 
         left.logic.update_card(card.uuid, "Changed by left", "", [])
         left.adapter.execute_effects(left.session._sync_effects(board.uuid))
@@ -283,12 +283,61 @@ class KanbanNewLogicTests(unittest.TestCase):
             right.session.protocol.index[card.uuid].data["name"], "Original",
         )
 
-        # Toggling the reaffirm off lets auto-adopt catch up again.
-        right.logic.reaffirm_node(card.uuid)
+        # Clearing the keep_mine lets auto-adopt catch up again.
+        right.logic.set_perspective_state(card.uuid, "none")
         right.logic.board_payload()
 
         self.assertEqual(
             right.session.protocol.index[card.uuid].data["name"], "Changed by left",
+        )
+
+    def test_pushed_back_peer_version_is_not_auto_adopted(self):
+        left = self.runtime(8375)
+        right = self.runtime(8376)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        left.logic.invite(left, right.address)
+        left.logic.share_board(left, right.address, board.uuid)
+        right.logic.set_auto_adopt_mode("always")
+        column = left.logic.columns(board)[0]
+
+        card = left.logic.create_card(column.uuid, "Original", "", []).value
+        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        right.logic.board_payload()
+        self.assertEqual(right.session.protocol.index[card.uuid].data["name"], "Original")
+
+        left.logic.update_card(card.uuid, "Changed by left", "", [])
+        left.logic.set_perspective_state(card.uuid, "pushed_back")
+        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        right.logic.board_payload()
+
+        # Right's auto-adopt (mode "always") would normally pull this
+        # straight in - left's own copy being pushed_back is a courtesy for
+        # an explicit "no", regardless of right's own state.
+        self.assertEqual(
+            right.session.protocol.index[card.uuid].data["name"], "Original",
+        )
+
+    def test_subtree_has_kept_mine_also_counts_pushed_back(self):
+        runtime = self.runtime(8377)
+        logic: KanbanLogic = runtime.logic
+        board = logic.ensure_board()
+        column = logic.columns(board)[0]
+        card = logic.create_card(column.uuid, "Task", "", []).value
+
+        self.assertFalse(
+            logic._subtree_has_kept_mine(runtime.session.protocol.index[board.uuid])
+        )
+
+        logic.set_perspective_state(card.uuid, "pushed_back")
+
+        # The whole-board-replace auto-adopt shortcut must be blocked by a
+        # pushed_back node exactly as it already is by a keep-mine one -
+        # both represent an explicit decision to keep this node.
+        self.assertTrue(
+            logic._subtree_has_kept_mine(runtime.session.protocol.index[board.uuid])
         )
 
     def test_auto_adopt_not_member_skips_any_card_im_on(self):
@@ -537,6 +586,25 @@ class KanbanNewLogicTests(unittest.TestCase):
             [event["peer_addr"] for event in out[node_uuid]["events"]],
             ["http://127.0.0.1:8002", "http://127.0.0.1:8003"],
         )
+
+    def test_transition_by_node_propagates_keep_mine_active(self):
+        # Regression: transition_by_node only used to keep type/peer_addr,
+        # silently dropping keep_mine_active - kanban.html reads it from
+        # exactly this payload, not from analyze_peer_transitions directly.
+        runtime = self.runtime(8312)
+        node_uuid = "node-1"
+
+        out = runtime.logic.transition_by_node([
+            {
+                "node_uuid": node_uuid,
+                "type": "peer_made_changes",
+                "peer_addr": "http://127.0.0.1:8002",
+                "keep_mine_active": True,
+            },
+        ])
+
+        self.assertTrue(out[node_uuid]["keep_mine_active"])
+        self.assertTrue(out[node_uuid]["events"][0]["keep_mine_active"])
 
     def test_rename_board_updates_board_list(self):
         runtime = self.runtime(8315)
@@ -1027,6 +1095,139 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(result.status, "ok")
         self.assertEqual(runtime.logic.auto_adopt_mode(board), "never")
         self.assertEqual(runtime.session.protocol.root.state_hash, root_before)
+
+    def test_create_agenda_item_defaults_to_no_priority(self):
+        # logic.ensure_board() returns a read-only snapshot (Session.protocol
+        # is a ReadOnlyProtocolView) - it goes stale the moment a mutation
+        # happens, so agenda_items() is called with no argument throughout,
+        # letting it re-resolve the board fresh each time.
+        runtime = self.runtime(8378)
+        logic: KanbanLogic = runtime.logic
+
+        result = logic.create_agenda_item("Discuss roadmap")
+
+        self.assertEqual(result.status, "ok")
+        items = logic.agenda_items()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].data["text"], "Discuss roadmap")
+        self.assertIsNone(items[0].data["priority"])
+        self.assertEqual(items[0].data["author"], logic.user_profile().uuid)
+
+    def test_create_agenda_item_rejects_unknown_priority(self):
+        runtime = self.runtime(8379)
+        logic: KanbanLogic = runtime.logic
+
+        logic.create_agenda_item("Something", priority="urgent!!")
+
+        self.assertIsNone(logic.agenda_items()[0].data["priority"])
+
+    def test_set_agenda_item_priority_updates_an_existing_item(self):
+        runtime = self.runtime(8386)
+        logic: KanbanLogic = runtime.logic
+        item = logic.create_agenda_item("Something").value
+
+        result = logic.set_agenda_item_priority(item.uuid, "high")
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(logic.agenda_items()[0].data["priority"], "high")
+
+    def test_set_agenda_item_priority_can_clear_it(self):
+        runtime = self.runtime(8387)
+        logic: KanbanLogic = runtime.logic
+        item = logic.create_agenda_item("Something", priority="high").value
+
+        logic.set_agenda_item_priority(item.uuid, None)
+
+        self.assertIsNone(logic.agenda_items()[0].data["priority"])
+
+    def test_set_agenda_item_priority_rejects_unknown_uuid(self):
+        runtime = self.runtime(8388)
+        logic: KanbanLogic = runtime.logic
+
+        result = logic.set_agenda_item_priority("does-not-exist", "high")
+
+        self.assertEqual(result.status, "error")
+
+    def test_agenda_items_unset_priority_sorts_after_low(self):
+        runtime = self.runtime(8389)
+        logic: KanbanLogic = runtime.logic
+
+        logic.create_agenda_item("No priority")
+        logic.create_agenda_item("Low item", priority="low")
+
+        items = logic.agenda_items()
+
+        self.assertEqual([item.data["text"] for item in items], ["Low item", "No priority"])
+
+    def test_agenda_items_sort_high_before_medium_before_low(self):
+        runtime = self.runtime(8380)
+        logic: KanbanLogic = runtime.logic
+
+        logic.create_agenda_item("Low item", priority="low")
+        logic.create_agenda_item("High item", priority="high")
+        logic.create_agenda_item("Medium item", priority="medium")
+
+        items = logic.agenda_items()
+
+        self.assertEqual(
+            [item.data["text"] for item in items],
+            ["High item", "Medium item", "Low item"],
+        )
+
+    def test_agenda_items_same_priority_keeps_creation_order(self):
+        runtime = self.runtime(8381)
+        logic: KanbanLogic = runtime.logic
+
+        logic.create_agenda_item("First", priority="high")
+        logic.create_agenda_item("Second", priority="high")
+
+        items = logic.agenda_items()
+
+        self.assertEqual([item.data["text"] for item in items], ["First", "Second"])
+
+    def test_delete_agenda_item_removes_it(self):
+        runtime = self.runtime(8382)
+        logic: KanbanLogic = runtime.logic
+        item = logic.create_agenda_item("Temporary").value
+
+        result = logic.delete_agenda_item(item.uuid)
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(logic.agenda_items(), [])
+
+    def test_delete_agenda_item_rejects_unknown_uuid(self):
+        runtime = self.runtime(8383)
+        logic: KanbanLogic = runtime.logic
+
+        result = logic.delete_agenda_item("does-not-exist")
+
+        self.assertEqual(result.status, "error")
+
+    def test_board_payload_includes_agenda_items(self):
+        runtime = self.runtime(8384)
+        logic: KanbanLogic = runtime.logic
+        logic.create_agenda_item("Discuss roadmap", priority="high")
+
+        payload = logic.board_payload()
+
+        self.assertEqual(len(payload["agenda_items"]), 1)
+        self.assertEqual(payload["agenda_items"][0]["data"]["text"], "Discuss roadmap")
+        self.assertEqual(payload["agenda_items"][0]["data"]["priority"], "high")
+
+    def test_transition_by_node_carries_priority_field(self):
+        # Regression guard, matching the earlier keep_mine_active gap: this
+        # field is read directly by kanban.html's discussion list, so its
+        # absence would only ever surface as a silent UI bug, not a
+        # backend error.
+        runtime = self.runtime(8385)
+        logic: KanbanLogic = runtime.logic
+
+        out = logic.transition_by_node([
+            {"node_uuid": "node-1", "type": "divergence", "peer_addr": "http://127.0.0.1:8002"},
+        ])
+
+        self.assertEqual(out["node-1"]["priority"], 6)
+        self.assertEqual(out["node-1"]["events"][0]["priority"], 6)
 
     @staticmethod
     def runtime(port: int):
