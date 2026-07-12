@@ -4,9 +4,11 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Kanban Board</title>
+    <link rel="stylesheet" href="/shared.css" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <div id="toast" class="toast"></div>
     <header class="topbar">
       <div class="top-actions-left">
         <button id="menuToggleBtn" class="icon-btn" title="Collaboration" aria-label="Collaboration">
@@ -24,15 +26,21 @@
       <div class="board-title">
         <select id="boardQuickSwitch" title="Switch board"></select>
         <input id="boardName" />
-        <button id="boardSwitchBtn" class="board-switch-btn" type="button" title="Switch board" aria-label="Switch board">
-          <span aria-hidden="true">v</span>
+        <button id="boardSwitchBtn" class="icon-btn board-switch-btn" type="button" title="Switch board" aria-label="Switch board">
+          <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">
+            <path d="M6 9l6 6 6-6"></path>
+          </svg>
         </button>
         <button id="overviewBtn" class="icon-btn" type="button" title="Manage all boards" aria-label="Manage all boards">
-          &#9638;
+          <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">
+            <rect x="3" y="3" width="7" height="7" rx="1"></rect>
+            <rect x="14" y="3" width="7" height="7" rx="1"></rect>
+            <rect x="3" y="14" width="7" height="7" rx="1"></rect>
+            <rect x="14" y="14" width="7" height="7" rx="1"></rect>
+          </svg>
         </button>
         <div id="boardSwitchMenu" class="board-switch-menu"></div>
         <div id="boardAdoptTools" class="adopt-tools"></div>
-        <span id="statusText"></span>
       </div>
       <div class="top-actions">
         <button id="selfAvatarBtn" class="header-avatar-btn" title="Edit your profile"></button>
@@ -49,7 +57,10 @@
       <div class="side-panel-header">
         <strong>Collaboration</strong>
         <button id="sidePanelCloseBtn" class="icon-btn" title="Close" aria-label="Close">
-          &#10005;
+          <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">
+            <path d="M18 6 6 18"></path>
+            <path d="M6 6l12 12"></path>
+          </svg>
         </button>
       </div>
       <div class="side-panel-section agenda-group">
@@ -92,7 +103,6 @@
         <div id="participantPicker" class="user-picker"></div>
         <menu>
           <button id="deleteCardBtn" type="button" class="danger">Delete</button>
-          <span></span>
           <button type="button" id="cancelCardBtn">Cancel</button>
           <button type="submit" class="primary">Save</button>
         </menu>
@@ -110,6 +120,16 @@
       </form>
     </dialog>
 
+    <dialog id="confirmModal">
+      <h2 id="confirmModalTitle">Action</h2>
+      <p id="confirmModalMessage" class="confirm-text"></p>
+      <menu>
+        <button type="button" id="confirmModalCancelBtn">Cancel</button>
+        <button type="button" id="confirmModalConfirmBtn" class="danger">Confirm</button>
+      </menu>
+    </dialog>
+
+    <script src="/shared.js"></script>
     <script>
       let state = null;
       let draggedCard = null;
@@ -119,7 +139,6 @@
       let modalColumn = null;
       let modalParticipants = [];
       let modalOwner = null;
-      let statusResetAt = 0;
 
       const AUTO_ADOPT_MODES = ["always", "not_owner", "not_member", "never"];
       const AUTO_ADOPT_LABELS = {
@@ -270,10 +289,6 @@
             return `${peerLabel(addr)}${suffix}`;
           })
           .join("\\n");
-        if (Date.now() > statusResetAt) {
-          el("statusText").textContent = "";
-          el("statusText").className = "idle";
-        }
       }
 
       function renderSelfAvatar() {
@@ -496,13 +511,12 @@
           text.className = "agenda-text";
           text.textContent = item.data.text || "";
           row.append(text);
-          const del = document.createElement("button");
-          del.type = "button";
-          del.className = "icon-btn";
-          del.title = "Remove";
-          del.textContent = "âœ•";
-          del.onclick = () =>
-            run(() => api("/api/kanban/agenda/delete", { item_uuid: item.uuid }), "Removed");
+          const del = iconButton(ICON_DELETE, "Remove", () =>
+            confirmAction("Remove agenda item?", "This removes it from your agenda.", () =>
+              run(() => api("/api/kanban/agenda/delete", { item_uuid: item.uuid }), "Removed"),
+            ),
+          );
+          del.classList.add("delete-icon-btn");
           row.append(del);
           container.append(row);
         }
@@ -688,6 +702,7 @@
           if (document.activeElement !== boardNameInput) {
             boardNameInput.value = state.board.data.name || "Kanban Board";
           }
+          sizeBoardNameInput();
 
           renderAutoAdoptIndicator();
           renderAutoAdoptControl();
@@ -702,7 +717,7 @@
           // Neues Rendering via Diffing
           renderBoard();
         } catch (error) {
-          showStatus(error.message, true);
+          showToast(error.message, true);
         }
       }
 
@@ -858,7 +873,7 @@
               }),
             "Column renamed",
           );
-        const del = icon("x", () =>
+        const del = iconButton(ICON_DELETE, "Delete column", () =>
           confirmAction("Delete column?", "This deletes the column and all cards inside it.", () =>
             run(
               () =>
@@ -869,6 +884,7 @@
             ),
           ),
         );
+        del.classList.add("delete-icon-btn");
         if (ghost) del.style.display = "none";
         head.append(name, del);
         const tools = document.createElement("div");
@@ -1106,7 +1122,7 @@
             missing: !(root && findNode(root, uuid)),
           }))
           .filter((item) => contributingAddrs.has(item.addr));
-        if (!peers.length) return showStatus("No peer version available", true);
+        if (!peers.length) return showToast("No peer version available", true);
         openSimple(
           "Adopt From Peer",
           [
@@ -1221,26 +1237,6 @@
         el("simpleModal").showModal();
       }
       el("cancelSimpleBtn").onclick = () => el("simpleModal").close();
-
-      function confirmAction(title, message, action) {
-        closeSidePanel();
-        setModalFooterMode("cancel-apply");
-        el("simpleTitle").textContent = title;
-        const body = document.createElement("p");
-        body.className = "confirm-text";
-        body.textContent = message;
-        el("simpleFields").replaceChildren(body);
-        el("simpleForm").onsubmit = async (event) => {
-          event.preventDefault();
-          try {
-            await action();
-            el("simpleModal").close();
-          } catch (error) {
-            showStatus(error.message, true);
-          }
-        };
-        el("simpleModal").showModal();
-      }
 
       async function dropCard(event, columnUuid) {
         event.preventDefault();
@@ -1371,62 +1367,6 @@
         element.dataset.transitionLabel = transitionLabel(info);
         element.dataset.transitionSymbol = transitionSymbol(info.type);
       }
-      function transitionSymbol(type) {
-        // Plain "+"/"-" read as barely-visible specks at badge size - using
-        // wider, bolder Unicode variants (fullwidth plus, proper minus sign)
-        // keeps the same at-a-glance meaning but is actually legible.
-        return (
-          {
-            peer_made_changes: "ï¼‹", // fullwidth plus sign
-            local_missing_node: "ï¼‹",
-            local_made_changes: "â‰ˆ", // almost-equal sign
-            peer_missing_node: "âˆ’", // minus sign
-            divergence: "!",
-          }[type] || "*"
-        );
-      }
-      function transitionLabel(info) {
-        const events = (info.events || [info]).filter((event) => event.type !== "in_agreement");
-        if (events.length > 1) return groupedTransitionLabel(events);
-        const peer = peerLabel(info.peer_addr);
-        const labels = {
-          in_agreement: "In agreement",
-          peer_made_changes: `Changes from ${peer}`,
-          local_made_changes: `My changes not in ${peer}`,
-          local_missing_node: `Only in ${peer}`,
-          peer_missing_node: `Missing in ${peer}`,
-          divergence: `Diverged from ${peer}`,
-        };
-        return labels[info.type] || "Difference";
-      }
-      function groupedTransitionLabel(events) {
-        const order = [
-          "divergence",
-          "peer_made_changes",
-          "local_missing_node",
-          "local_made_changes",
-          "peer_missing_node",
-        ];
-        const labels = {
-          divergence: "Diverged from",
-          peer_made_changes: "Changes from",
-          local_missing_node: "Only in",
-          local_made_changes: "My changes not in",
-          peer_missing_node: "Missing in",
-        };
-        return order
-          .filter((type) => events.some((event) => event.type === type))
-          .map((type) => {
-            const peers = events
-              .filter((event) => event.type === type)
-              .map((event) => peerLabel(event.peer_addr));
-            return `${labels[type]} ${dedupe(peers).join(", ")}`;
-          })
-          .join("; ");
-      }
-      function dedupe(items) {
-        return [...new Set(items)];
-      }
       function peerLabel(address) {
         const user = (state.users || []).find((item) => item.address === address);
         if (user?.name && user.name !== "?") return user.name;
@@ -1531,30 +1471,14 @@
         }
         return null;
       }
-      function icon(text, action) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.textContent = text;
-        button.setAttribute("aria-label", text);
-        button.onclick = (event) => {
-          event.stopPropagation();
-          action();
-        };
-        return button;
-      }
       async function run(action, ok) {
         try {
           await action();
-          showStatus(ok || "Done");
+          showToast(ok || "Done");
           await loadBoard();
         } catch (error) {
-          showStatus(error.message, true);
+          showToast(error.message, true);
         }
-      }
-      function showStatus(message, error = false) {
-        el("statusText").textContent = message;
-        el("statusText").className = error ? "toast error" : "toast";
-        statusResetAt = Date.now() + 3500;
       }
 
       el("autoAdoptSelect").onchange = (event) =>
@@ -1600,6 +1524,22 @@
       });
 
       el("networkBtn").onclick = openNetworkPanel;
+      function sizeBoardNameInput() {
+        const input = el("boardName");
+        const canvas = (sizeBoardNameInput._canvas ??= document.createElement("canvas"));
+        const ctx = canvas.getContext("2d");
+        const style = getComputedStyle(input);
+        ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        const textWidth = ctx.measureText(input.value || "").width;
+        const extra =
+          parseFloat(style.paddingLeft) +
+          parseFloat(style.paddingRight) +
+          parseFloat(style.borderLeftWidth) +
+          parseFloat(style.borderRightWidth) +
+          6;
+        input.style.width = `${Math.ceil(textWidth + extra)}px`;
+      }
+      el("boardName").oninput = sizeBoardNameInput;
       el("boardName").onchange = () =>
         run(
           () =>
@@ -1637,7 +1577,7 @@
         try {
           await api("/api/kanban/boards/select", { board_uuid: boardUuid });
         } catch (error) {
-          showStatus(error.message, true);
+          showToast(error.message, true);
         }
         params.delete("board");
         const query = params.toString();

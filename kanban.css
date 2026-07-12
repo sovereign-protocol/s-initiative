@@ -8,9 +8,6 @@
   --border: rgba(255, 255, 255, 0.14);
   --border-strong: rgba(255, 255, 255, 0.22);
   --shadow: 0 14px 34px rgba(0, 0, 0, 0.24);
-  --teal: #0f7a64;
-  --teal-soft: rgba(15, 122, 100, 0.22);
-  --danger: #8f2525;
   --warning: #c68200;
   --blue: #0b63b6;
   --blue-dark: #84bbff;
@@ -43,17 +40,11 @@ select {
 
 button {
   border: 1px solid var(--border);
-  border-radius: 6px;
-  min-height: 32px;
-  padding: 0 10px;
   background: transparent;
   color: var(--text);
-  cursor: pointer;
 }
 
 button:hover { background: rgba(255, 255, 255, 0.08); border-color: var(--border-strong); }
-button.primary { background: var(--teal); border-color: var(--teal); }
-button.danger { background: var(--danger); color: #fff; }
 
 .topbar {
   flex-shrink: 0;
@@ -66,23 +57,6 @@ button.danger { background: var(--danger); color: #fff; }
   border-bottom: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
-}
-
-.icon-btn {
-  min-width: 32px;
-  padding: 0;
-  font-size: 16px;
-  line-height: 1;
-}
-
-.icon-svg {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .side-panel-overlay {
@@ -209,7 +183,8 @@ body.side-panel-open main {
 }
 
 .board-title input {
-  width: min(360px, 40vw);
+  width: auto;
+  max-width: min(360px, 40vw);
   min-width: 0;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -233,10 +208,12 @@ body.side-panel-open main {
   min-width: 28px;
   min-height: 28px;
   padding: 0;
-  border-color: transparent;
   color: var(--muted);
-  font-size: 13px;
-  font-weight: 800;
+}
+
+.board-switch-btn .icon-svg {
+  width: 13px;
+  height: 13px;
 }
 
 .board-switch-btn:hover {
@@ -558,32 +535,6 @@ button.auto-adopt-square {
   height: 28px;
 }
 
-#statusText {
-  color: var(--muted);
-  font-size: 13px;
-}
-
-#statusText.error { color: #ff9b9b; }
-
-#statusText.toast {
-  position: fixed;
-  left: 16px;
-  bottom: 16px;
-  z-index: 30;
-  min-width: 180px;
-  border-radius: 8px;
-  padding: 10px 14px;
-  background: rgba(0, 86, 20, 0.9);
-  color: #19e137;
-  font-size: 14px;
-  box-shadow: var(--shadow);
-}
-
-#statusText.toast.error {
-  background: rgba(98, 14, 14, 0.92);
-  color: #ff9090;
-}
-
 .board {
   flex: 1;
   display: flex;
@@ -680,12 +631,12 @@ button.auto-adopt-square {
   outline: 2px solid var(--teal);
 }
 
-.column-head button, .card button, .add-card, .add-column {
+.card button, .add-card, .add-column {
   color: var(--muted);
   background: transparent;
 }
 
-.column-head button:hover, .card button:hover, .add-card:hover, .add-column:hover {
+.card button:hover, .add-card:hover, .add-column:hover {
   background: rgba(255, 255, 255, 0.08);
   color: var(--text);
 }
@@ -828,11 +779,6 @@ button.auto-adopt-square {
 }
 
 
-.confirm-text {
-  margin: 8px 0 0;
-  color: var(--muted);
-}
-
 .peer-cluster {
   display: flex;
   align-items: center;
@@ -939,19 +885,13 @@ button.auto-adopt-square {
 dialog {
   width: min(560px, calc(100vw - 28px));
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0;
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42);
 }
-
-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
 
 form {
   display: grid;
   gap: 12px;
-  padding: 18px;
 }
 
 form h2 { margin: 0; font-size: 18px; }
@@ -973,20 +913,14 @@ label input, label select, textarea {
   font-weight: 400;
 }
 
-menu {
-  display: grid;
-  grid-template-columns: auto 1fr auto auto;
-  gap: 8px;
-  margin: 4px 0 0;
-  padding: 0;
+textarea {
+  resize: vertical;
 }
 
 menu button {
   color: var(--text);
   background: rgba(255, 255, 255, 0.06);
 }
-
-menu button.primary { color: #fff; }
 
 @media (max-width: 760px) {
   .topbar { align-items: stretch; height: auto; flex-direction: column; }
