@@ -163,6 +163,18 @@ class KanbanLogic:
         self._remember_board(board.uuid, explicit=True)
         return SessionResult("ok", value=board.uuid)
 
+    def accept_relay_board(self, subtree: PRSPNode) -> SessionResult:
+        # Grafts a board first discovered via the relay (not a live P2P
+        # join) into our own board list - same graft call and same
+        # "manual review until the user opts in" default the live-join
+        # accept path already uses, just triggered by a connect token
+        # instead of a real-time /p2p/join handshake.
+        accepted = self.session.accept_topic_invitation(subtree, self._kanban_container().uuid)
+        if accepted.status == "ok":
+            self._set_board_auto_adopt(accepted.value, False)
+            self._remember_board(accepted.value)
+        return accepted
+
     def rename_board(self, board_uuid: str, name: str) -> SessionResult:
         board = self.session.protocol.index.get(board_uuid)
         if not board or board.data.get("type") != "kanban_board":
@@ -584,20 +596,39 @@ class KanbanLogic:
         candidates = []
         for addr, peer in sorted(self.session.peer_perspectives.items()):
             if not self._peer_discusses_node(addr, board.uuid):
+                self.session.trace_event("kanban.adopt_skip", reason="does_not_discuss", peer_addr=addr, board_uuid=board.uuid)
                 continue
             peer_board = self.session.get_cached_peer_subtree(addr, board.uuid)
             if not peer_board:
+                self.session.trace_event("kanban.adopt_skip", reason="no_cached_subtree", peer_addr=addr, board_uuid=board.uuid)
                 continue
             board = self.session.protocol.index.get(board.uuid) or board
             peer_hash = peer_board.state_hash
             local_hash = board.state_hash
             if peer_hash == local_hash:
+                self.session.trace_event("kanban.adopt_skip", reason="hashes_equal", peer_addr=addr, board_uuid=board.uuid)
                 continue
-            top_event = self._top_transition_event(addr, board.uuid)
-            if not top_event or top_event["type"] == "in_agreement":
+            # Bug fix: this used to only look at the board root's own event
+            # (analyze_peer_transitions(...)[0]), which is "in_agreement"
+            # whenever the board's own name/objective didn't change - true
+            # for virtually every real edit, since those touch a card or
+            # column, not the board itself. That silently skipped this peer
+            # entirely, so auto-adopt "always" never actually fired for
+            # ordinary card/column changes. Now checks the whole subtree.
+            peer_events = self.session.analyze_peer_transitions(addr, board.uuid)
+            self.session.trace_event(
+                "kanban.adopt_peer_events",
+                peer_addr=addr,
+                board_uuid=board.uuid,
+                events=[{"type": e["type"], "node_uuid": e.get("node_uuid")} for e in peer_events],
+            )
+            if not any(event["type"] != "in_agreement" for event in peer_events):
+                self.session.trace_event("kanban.adopt_skip", reason="all_in_agreement", peer_addr=addr, board_uuid=board.uuid)
                 continue
+            top_event = peer_events[0] if peer_events else None
             candidates.append((addr, peer_board, top_event))
         if not candidates:
+            self.session.trace_event("kanban.adopt_no_candidates", board_uuid=board.uuid)
             return False
 
         changed = False
@@ -617,18 +648,17 @@ class KanbanLogic:
                 peer_state_hash=top_event.get("peer_state_hash") if top_event else None,
                 causal_distance=top_event.get("causal_distance") if top_event else None,
             )
-            if not top_event or top_event["type"] == "in_agreement":
-                continue
-            if top_event["type"] == "local_made_changes":
-                self.session.trace_event(
-                    "kanban.auto_adopt_skip_peer",
-                    board_uuid=board.uuid,
-                    peer_addr=addr,
-                    reason="peer_is_older",
-                    peer_state_hash=top_event.get("peer_state_hash"),
-                )
-                continue
-            if (top_event["type"] == "peer_made_changes" and mode == "always"
+            # The root's own event only ever decides the wholesale-replace
+            # shortcut below - it must NOT gate whether the per-node loop
+            # further down runs at all. A root of "in_agreement" or
+            # "local_made_changes" just means the board's own name/objective
+            # didn't change (or we're ahead there) - a child card/column can
+            # still independently have real peer_made_changes/
+            # local_missing_node events that the per-node loop's own guards
+            # already know how to evaluate safely. Bailing out here (as this
+            # used to) is what silently broke auto-adopt for the overwhelmingly
+            # common case of "only a card changed."
+            if (top_event and top_event["type"] == "peer_made_changes" and mode == "always"
                     and not self._subtree_has_kept_mine(board)
                     and not self._subtree_has_pushed_back(peer_board)):
                 self.session.trace_event(
@@ -731,8 +761,15 @@ class KanbanLogic:
     def adopt_all_incoming_changes(self) -> bool:
         changed = False
         for board in self.boards():
-            if (self._is_active_discussion_node(board.uuid)
-                    and self.auto_adopt_mode(board) != "never"):
+            active = self._is_active_discussion_node(board.uuid)
+            mode = self.auto_adopt_mode(board)
+            self.session.trace_event(
+                "kanban.adopt_all_incoming_changes_check",
+                board_uuid=board.uuid,
+                active=active,
+                mode=mode,
+            )
+            if active and mode != "never":
                 changed = self.adopt_incoming_changes(board) or changed
         return changed
 
@@ -877,10 +914,6 @@ class KanbanLogic:
             incoming_state_hash=peer_board.state_hash,
         )
         self.session.replace_subtree(peer_board)
-
-    def _top_transition_event(self, peer_addr: str, board_uuid: str) -> dict | None:
-        events = self.session.analyze_peer_transitions(peer_addr, board_uuid)
-        return events[0] if events else None
 
     def _node(self, uuid: str, node_type: str) -> PRSPNode | None:
         node = self.session.protocol.index.get(uuid)

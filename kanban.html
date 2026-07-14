@@ -807,7 +807,7 @@
         // reopening the modal with stale participants/owner.
         cardEl.onclick = (event) => {
           if (card._isGhost) return;
-          if (event.target.closest("button")) return;
+          if (isInteractiveCardTarget(event)) return;
           openCard(card, card.parent_uuid);
         };
 
@@ -960,7 +960,7 @@
         node.append(...cardAdoptTools(card, ghost));
         node.onclick = (event) => {
           if (ghost) return;
-          if (event.target.closest("button")) return;
+          if (isInteractiveCardTarget(event)) return;
           openCard(card, card.parent_uuid);
         };
         if (!ghost) {
@@ -977,6 +977,11 @@
           };
         }
         return node;
+      }
+
+      function isInteractiveCardTarget(event) {
+        const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+        return Boolean(target?.closest("button, select, input, textarea, a, label"));
       }
 
       function renderParticipants(participants, ownerId) {
@@ -1087,6 +1092,7 @@
         }
         select.value = node.perspective_state || "none";
         select.dataset.state = select.value;
+        select.onclick = (event) => event.stopPropagation();
         select.onchange = () =>
           run(
             () => api("/api/kanban/perspective", { node_uuid: node.uuid, state: select.value }),

@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -218,6 +219,62 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.logic.board_payload()
 
         self.assertEqual(right.session.protocol.index[card.uuid].parent_uuid, second.uuid)
+
+    def test_auto_adopt_does_not_rollback_opposing_local_move(self):
+        left = self.runtime(8325)
+        right = self.runtime(8326)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        left.logic.invite(left, right.address)
+        left.logic.share_board(left, right.address, board.uuid)
+        right.logic.set_auto_adopt_mode("always")
+        first, second = left.logic.columns(board)[:2]
+        card = left.logic.create_card(second.uuid, "Opposing move", "", []).value
+        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        right.logic.board_payload()
+        left.logic.move_card(card.uuid, first.uuid, 0)
+        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        right.logic.board_payload()
+        self.assertEqual(right.session.protocol.index[card.uuid].parent_uuid, first.uuid)
+
+        right.logic.move_card(card.uuid, second.uuid, 0)
+        right.logic.board_payload()
+
+        self.assertEqual(right.session.protocol.index[card.uuid].parent_uuid, second.uuid)
+
+    def test_auto_adopt_accepts_newer_move_back_after_agreement(self):
+        left = self.runtime(8327)
+        right = self.runtime(8328)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        left.logic.invite(left, right.address)
+        left.logic.share_board(left, right.address, board.uuid)
+        left.logic.set_auto_adopt_mode("always")
+        right.logic.set_auto_adopt_mode("always")
+        first, second = left.logic.columns(board)[:2]
+        card = left.logic.create_card(second.uuid, "Move back", "", []).value
+        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        right.logic.board_payload()
+        left.logic.move_card(card.uuid, first.uuid, 0)
+        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        right.logic.board_payload()
+        self.assertEqual(right.session.protocol.index[card.uuid].parent_uuid, first.uuid)
+
+        time.sleep(0.002)
+        right.logic.move_card(card.uuid, second.uuid, 0)
+        payload = right.session.get_subtree(board.uuid)
+        left.session.apply_peer_subtree(
+            right.address,
+            PRSPNode.from_dict(payload["subtree"]),
+            payload["parent_uuid"],
+        )
+        left.logic.board_payload()
+
+        self.assertEqual(left.session.protocol.index[card.uuid].parent_uuid, second.uuid)
 
     def test_auto_adopt_not_owner_skips_only_cards_i_own(self):
         left = self.runtime(8369)
