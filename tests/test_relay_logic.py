@@ -33,6 +33,7 @@ class FakeSftpFile:
     def __exit__(self, *exc_info):
         if self.write_mode:
             self.client.files[self.path] = bytes(self.buffer)
+            self.client._touch(self.path)
         return False
 
 
@@ -44,13 +45,22 @@ class FakeSftpClient:
     def __init__(self, supports_posix_rename=True):
         self.files: dict[str, bytes] = {}
         self.dirs: set[str] = {"/"}
+        self.mtimes: dict[str, float] = {}
         self.supports_posix_rename = supports_posix_rename
         self.fail_next_calls = 0
+        self._clock = 0.0
 
     def _maybe_fail(self):
         if self.fail_next_calls > 0:
             self.fail_next_calls -= 1
             raise OSError("simulated transient connection failure")
+
+    def _touch(self, path):
+        # A deterministic, strictly-increasing fake clock (not real
+        # wall-clock time) - keeps mtime-ordering tests fast and exact
+        # instead of depending on real elapsed time between writes.
+        self._clock += 1.0
+        self.mtimes[path] = self._clock
 
     def open(self, path, mode):
         self._maybe_fail()
@@ -63,9 +73,9 @@ class FakeSftpClient:
     def stat(self, path):
         self._maybe_fail()
         if path in self.dirs:
-            return types.SimpleNamespace(st_mode=stat_module.S_IFDIR)
+            return types.SimpleNamespace(st_mode=stat_module.S_IFDIR, st_mtime=self.mtimes.get(path))
         if path in self.files:
-            return types.SimpleNamespace(st_mode=stat_module.S_IFREG)
+            return types.SimpleNamespace(st_mode=stat_module.S_IFREG, st_mtime=self.mtimes.get(path))
         raise FileNotFoundError(path)
 
     def mkdir(self, path):
@@ -93,6 +103,7 @@ class FakeSftpClient:
         if path not in self.files:
             raise FileNotFoundError(path)
         del self.files[path]
+        self.mtimes.pop(path, None)
 
     def rmdir(self, path):
         self._maybe_fail()
@@ -107,6 +118,7 @@ class FakeSftpClient:
         if new in self.files:
             raise OSError("destination already exists")
         self.files[new] = self.files.pop(old)
+        self.mtimes[new] = self.mtimes.pop(old, None)
 
     def posix_rename(self, old, new):
         self._maybe_fail()
@@ -115,6 +127,7 @@ class FakeSftpClient:
         if old not in self.files:
             raise FileNotFoundError(old)
         self.files[new] = self.files.pop(old)
+        self.mtimes[new] = self.mtimes.pop(old, None)
 
     def close(self):
         pass
@@ -189,6 +202,26 @@ class LocalFolderRelayStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             storage = LocalFolderRelayStorage(root)
             storage.delete_topic("no-such-topic")  # must not raise
+
+    def test_write_presence_then_read_round_trips_with_mtime(self):
+        with tempfile.TemporaryDirectory() as root:
+            storage = LocalFolderRelayStorage(root)
+
+            mtime = storage.write_presence("A", {"poll_interval_seconds": 3})
+
+            self.assertIsInstance(mtime, float)
+            content, read_mtime = storage.read_presence_with_mtime("A")
+            self.assertEqual(content["poll_interval_seconds"], 3)
+            self.assertEqual(read_mtime, mtime)
+
+    def test_read_presence_missing_identity_returns_none_none(self):
+        with tempfile.TemporaryDirectory() as root:
+            storage = LocalFolderRelayStorage(root)
+
+            content, mtime = storage.read_presence_with_mtime("nobody")
+
+            self.assertIsNone(content)
+            self.assertIsNone(mtime)
 
 
 class SftpRelayStorageTests(unittest.TestCase):
@@ -285,6 +318,35 @@ class SftpRelayStorageTests(unittest.TestCase):
 
         storage.delete_topic("no-such-topic")  # must not raise
 
+    def test_write_presence_then_read_round_trips_with_mtime(self):
+        fake = FakeSftpClient()
+        storage = _sftp_storage_with_fake(fake)
+
+        mtime = storage.write_presence("A", {"poll_interval_seconds": 3})
+
+        self.assertIsInstance(mtime, float)
+        content, read_mtime = storage.read_presence_with_mtime("A")
+        self.assertEqual(content["poll_interval_seconds"], 3)
+        self.assertEqual(read_mtime, mtime)
+
+    def test_read_presence_missing_identity_returns_none_none(self):
+        fake = FakeSftpClient()
+        storage = _sftp_storage_with_fake(fake)
+
+        content, mtime = storage.read_presence_with_mtime("nobody")
+
+        self.assertIsNone(content)
+        self.assertIsNone(mtime)
+
+    def test_second_write_presence_advances_mtime(self):
+        fake = FakeSftpClient()
+        storage = _sftp_storage_with_fake(fake)
+
+        first_mtime = storage.write_presence("A", {"poll_interval_seconds": 3})
+        second_mtime = storage.write_presence("A", {"poll_interval_seconds": 3})
+
+        self.assertGreater(second_mtime, first_mtime)
+
 
 class RelayLogicTests(unittest.TestCase):
     def _relay_config(self, relay_root: str, identity: str, state_dir: str) -> dict:
@@ -293,6 +355,128 @@ class RelayLogicTests(unittest.TestCase):
             "relay_identity": identity,
             "relay_state_file": str(Path(state_dir) / f"state-{identity}.json"),
         }
+
+    # Presence/liveness - peer_liveness's actual logic (distance vs.
+    # threshold) is tested with a stubbed storage.read_presence_with_mtime
+    # returning exact, controllable mtimes, rather than real file mtimes -
+    # avoids sleep-based timing entirely, keeps the state-machine behavior
+    # (alive/stale/unknown, negative-distance handling, peer-reported
+    # interval) precise and fast.
+
+    def test_write_presence_sets_own_reference_mtime(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            self.assertIsNone(relay_a._own_presence_mtime)
+
+            relay_a.write_presence()
+
+            self.assertIsInstance(relay_a._own_presence_mtime, float)
+
+    def test_peer_liveness_unknown_before_write_presence_ever_ran(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+
+            self.assertEqual(relay_a.peer_liveness("B")["state"], "unknown")
+
+    def test_peer_liveness_unknown_for_a_peer_with_no_presence_file(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a.write_presence()
+
+            self.assertEqual(relay_a.peer_liveness("never-seen")["state"], "unknown")
+
+    def test_peer_liveness_alive_within_threshold(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a._own_presence_mtime = 100.0
+            relay_a.storage.read_presence_with_mtime = lambda peer_id: (
+                {"poll_interval_seconds": 3}, 99.0,
+            )
+
+            result = relay_a.peer_liveness("B")
+
+            self.assertEqual(result["state"], "alive")
+            self.assertEqual(result["last_seen_seconds_ago"], 1.0)
+
+    def test_peer_liveness_alive_when_peer_heartbeat_is_newer_than_ours(self):
+        # Negative distance (their last heartbeat is more recent than our
+        # own reference point) is not a failure mode - it just means
+        # they're doing fine, possibly better than we are.
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a._own_presence_mtime = 100.0
+            relay_a.storage.read_presence_with_mtime = lambda peer_id: (
+                {"poll_interval_seconds": 3}, 105.0,
+            )
+
+            result = relay_a.peer_liveness("B")
+
+            self.assertEqual(result["state"], "alive")
+            self.assertEqual(result["last_seen_seconds_ago"], -5.0)
+
+    def test_peer_liveness_stale_past_threshold(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a._own_presence_mtime = 1000.0
+            relay_a.storage.read_presence_with_mtime = lambda peer_id: (
+                {"poll_interval_seconds": 3}, 900.0,
+            )
+
+            result = relay_a.peer_liveness("B")
+
+            self.assertEqual(result["state"], "stale")
+            self.assertEqual(result["last_seen_seconds_ago"], 100.0)
+
+    def test_peer_liveness_threshold_uses_peers_own_reported_interval(self):
+        # A peer polling every 30s legitimately checks in less often than
+        # one polling every 3s - the margin has to account for the slower
+        # side's own cadence, not just ours, or it'd falsely flag them
+        # stale between their own perfectly normal heartbeats.
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a.poll_interval_seconds = 3.0
+            relay_a._own_presence_mtime = 100.0
+            relay_a.storage.read_presence_with_mtime = lambda peer_id: (
+                {"poll_interval_seconds": 30}, 75.0,  # distance 25s
+            )
+
+            result = relay_a.peer_liveness("B")
+
+            # threshold = 2.0 * (3 + 30) = 66, distance 25 <= 66
+            self.assertEqual(result["state"], "alive")
+            self.assertEqual(result["peer_poll_interval_seconds"], 30.0)
+
+    def test_known_peer_identities_derived_from_applied_bookkeeping(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a._state["applied"] = {
+                "topic-1": {"B": "hash-1", "C": "hash-2"},
+                "topic-2": {"B": "hash-3"},
+            }
+
+            self.assertEqual(relay_a.known_peer_identities(), ["B", "C"])
+
+    def test_status_payload_includes_presence_for_known_peers(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a._state["applied"] = {"topic-1": {"B": "hash-1"}}
+            relay_a._own_presence_mtime = 100.0
+            relay_a.storage.read_presence_with_mtime = lambda peer_id: (
+                {"poll_interval_seconds": 3}, 99.0,
+            )
+
+            payload = relay_a.status_payload()
+
+            self.assertEqual(payload["presence"]["B"]["state"], "alive")
 
     def test_publish_then_apply_runs_through_existing_reconciliation(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
