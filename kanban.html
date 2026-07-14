@@ -1445,20 +1445,15 @@
       }
       function peerIdentityValue(address, field) {
         const root = (state.peers || {})[address];
-        const profile = findIdentityProfile(root, address) || findIdentityProfile(root, null);
+        const profile = findIdentityProfile(root);
         const node = findIdentityField(profile || root, field);
         return node?.data?.value || node?.data?.[field] || "";
       }
-      function findIdentityProfile(node, address) {
+      function findIdentityProfile(node) {
         if (!node) return null;
-        if (
-          node.data?.type === "shared_user_profile" &&
-          (!address || node.data?.address === address)
-        ) {
-          return node;
-        }
+        if (node.data?.type === "shared_user_profile") return node;
         for (const child of node.children || []) {
-          const found = findIdentityProfile(child, address);
+          const found = findIdentityProfile(child);
           if (found) return found;
         }
         return null;

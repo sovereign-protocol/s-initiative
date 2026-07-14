@@ -813,7 +813,7 @@ class KanbanLogic:
     def _user_info(self, fallback_addr: str, profile: PRSPNode | None,
                    profile_uuid: str | None = None) -> dict:
         data = profile.data if profile else {}
-        address = data.get("address") or fallback_addr
+        address = fallback_addr
         user_id = profile_uuid or (profile.uuid if profile else None)
         display_name = data.get("display_name") or ""
         if display_name == address or display_name.startswith(("http://", "https://")):
@@ -827,7 +827,7 @@ class KanbanLogic:
         }
 
     def _find_peer_user_profile(self, address: str) -> PRSPNode | None:
-        return self.session.find_peer_identity(address)
+        return self.session.peer_identity(address)
 
     def _peer_profile_uuid(self, address: str, profile: PRSPNode | None = None) -> str:
         if profile:

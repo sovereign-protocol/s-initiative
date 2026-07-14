@@ -731,7 +731,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         profile = right.logic.user_profile()
 
         self.assertNotEqual(profile.uuid, peer_identity.uuid)
-        self.assertEqual(profile.data["address"], right.address)
+        self.assertNotEqual(profile.data["identity_key"], peer_identity.data["identity_key"])
 
     def test_share_board_shares_board_and_profile_topics(self):
         left = self.runtime(8322)
