@@ -378,6 +378,22 @@ class RelayLogicTests(unittest.TestCase):
         self.assertEqual(relay_a.storage.host, "example.test")
         self.assertEqual(relay_a.storage.root, "/relay")
 
+    def test_sftp_host_strips_accidental_url_scheme(self):
+        # Regression: a host value copied from an FTP client's connection
+        # string (e.g. "sftp://ftp.example.com") fails DNS resolution
+        # outright if passed through as-is - getaddrinfo has no idea what
+        # to do with the scheme prefix.
+        session_a = Session("addr-a")
+        config = {
+            "relay_backend": "sftp", "relay_identity": "A",
+            "relay_sftp_host": "sftp://ftp.example.com",
+            "relay_sftp_username": "u",
+        }
+
+        relay_a = RelayLogic(session_a, config)
+
+        self.assertEqual(relay_a.storage.host, "ftp.example.com")
+
     def test_sftp_password_resolves_from_env_var_when_not_in_config(self):
         session_a = Session("addr-a")
         config = {
