@@ -269,7 +269,8 @@
             } else {
               avatar.textContent = initials(user.name || peerLabel(addr));
             }
-            avatar.title = peerLabel(addr);
+            const channel = peerChannel(addr);
+            avatar.title = channel ? `${peerLabel(addr)} (${channel})` : peerLabel(addr);
             networkBtn.append(avatar);
           }
           if (peers.length > 4) {
@@ -286,7 +287,8 @@
               status.state === "offline"
                 ? ` (on hold${status.last_error ? `: ${status.last_error}` : ""})`
                 : "";
-            return `${peerLabel(addr)}${suffix}`;
+            const channel = peerChannel(addr);
+            return `${peerLabel(addr)}${channel ? ` [${channel}]` : ""}${suffix}`;
           })
           .join("\\n");
       }
@@ -1399,6 +1401,12 @@
             last_error: null,
           }
         );
+      }
+      function peerChannel(address) {
+        // The only transport-shaped thing this app is allowed to show -
+        // which channel (direct/relay) last delivered for this peer, or
+        // null if unknown. Purely informational, never affects behavior.
+        return state.network?.peers?.[address]?.channel || null;
       }
       function boardPeerAddresses() {
         const boardUuid = state.board?.uuid;

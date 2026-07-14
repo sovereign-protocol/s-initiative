@@ -1,11 +1,10 @@
-import base64
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from kanban_logic import KanbanLogic
-from relay_logic import RelayLogic
+from relay_logic import RelayLogic, channel_descriptor
 from relay_storage import LocalFolderRelayStorage
 from session import Session
 
@@ -158,6 +157,43 @@ class RelayLogicTests(unittest.TestCase):
         self.assertEqual(relay_a.publish_due_topics(), [])
         self.assertEqual(relay_a.poll_and_apply(), [])
         self.assertFalse(relay_a.status_payload()["configured"])
+        self.assertIsNone(relay_a.channel_descriptor())
+
+    def test_channel_descriptor_shape_when_configured(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+
+            descriptor = relay_a.channel_descriptor()
+
+            self.assertEqual(descriptor["type"], "relay")
+            self.assertEqual(descriptor["version"], 1)
+            self.assertEqual(descriptor["identity"], "A")
+            self.assertEqual(descriptor["root"], str(relay_a.storage.root))
+
+    def test_module_channel_descriptor_hook_delegates_to_stashed_instance(self):
+        # This is the shape app_server.py's collect_channel_descriptors
+        # actually calls - a module-level function taking (runtime, config),
+        # delegating to whichever instance create_logic already stashed.
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            config = self._relay_config(relay_root, "A", state_dir)
+            relay_a = RelayLogic(session_a, config)
+            config["_relay_logic_instance"] = relay_a
+
+            descriptor = channel_descriptor(runtime=None, config=config)
+
+            self.assertEqual(descriptor["type"], "relay")
+
+        self.assertIsNone(channel_descriptor(runtime=None, config={}))
+
+    def test_mark_topics_desired_rejects_empty_list(self):
+        session_a = Session("addr-a")
+        relay_a = RelayLogic(session_a, {})
+
+        result = relay_a.mark_topics_desired([])
+
+        self.assertEqual(result.status, "error")
 
     def test_accept_connect_token_grafts_a_never_before_seen_board(self):
         # The scenario the token-accept path exists for: A and B have never
@@ -168,15 +204,12 @@ class RelayLogicTests(unittest.TestCase):
             session_a = Session("addr-a")
             kanban_a = KanbanLogic(session_a, {})
             board_uuid = kanban_a.create_board("Shared Board").value
-            token = base64.b64encode(
-                json.dumps({"address": "addr-a", "topic_uuids": [board_uuid]}).encode("utf-8")
-            ).decode("ascii")
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
 
             session_b = Session("addr-b")
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
-            accept_result = relay_b.accept_connect_token(token)
+            accept_result = relay_b.mark_topics_desired([board_uuid])
             self.assertEqual(accept_result.status, "ok")
             applied = relay_b.poll_and_apply()
 
@@ -203,10 +236,7 @@ class RelayLogicTests(unittest.TestCase):
             kanban_b = KanbanLogic(session_b, {})
             self.assertNotIn(board_uuid, [b.uuid for b in kanban_b.boards()])
 
-            token = base64.b64encode(
-                json.dumps({"address": "addr-a", "topic_uuids": [board_uuid]}).encode("utf-8")
-            ).decode("ascii")
-            relay_b.accept_connect_token(token)
+            relay_b.mark_topics_desired([board_uuid])
             applied = relay_b.poll_and_apply()
 
             self.assertEqual(applied, [(board_uuid, "A")])
@@ -235,15 +265,12 @@ class RelayLogicTests(unittest.TestCase):
             board_uuid = kanban_a.create_board("Shared Board").value
             board = kanban_a.ensure_board()
             todo = kanban_a.columns(board)[0]
-            token = base64.b64encode(
-                json.dumps({"address": "addr-a", "topic_uuids": [board_uuid]}).encode("utf-8")
-            ).decode("ascii")
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
 
             session_b = Session("addr-b")
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
-            relay_b.accept_connect_token(token)
+            relay_b.mark_topics_desired([board_uuid])
             relay_b.poll_and_apply()
 
             card = kanban_a.create_card(todo.uuid, "Later Card").value
