@@ -900,9 +900,16 @@ class KanbanLogic:
             cached = self.session.get_cached_peer_subtree(address, topic_uuid)
             if cached and self._is_shared_user_topic(cached):
                 return cached.uuid
-        for topic_uuid in self.session.fetch_topic_uuids(address):
-            if not self._is_kanban_board_topic(self.session.protocol.index.get(topic_uuid)):
-                return topic_uuid
+        # No "assume it's the profile if it's not a board we recognize"
+        # fallback here on purpose: that used to be safe when a peer's only
+        # ever-fetched topics were exactly one board plus one profile
+        # (join_discussion's own accept-time guarantee), but relay now
+        # tracks every topic a peer publishes via peer_topic_sets - a board
+        # this side never grafted locally has no entry in
+        # self.session.protocol.index either, so "not a board" and "is the
+        # profile" stopped meaning the same thing. Returning "" (unknown
+        # for now) is correct; guessing wrong hands a peer's own board back
+        # as if it were their identity.
         return ""
 
     def _folder(self, parent: PRSPNode, name: str,

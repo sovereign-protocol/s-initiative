@@ -797,6 +797,48 @@ class RelayLogicTests(unittest.TestCase):
             self.assertIn("relay:A", users)
             self.assertEqual(users["relay:A"]["name"], "Ann")
 
+    def test_users_never_misattributes_an_ungrafted_peer_board_as_their_profile(self):
+        # Regression: kanban_logic._peer_profile_uuid used to fall back to
+        # "the first topic tracked for this peer that isn't a board I
+        # recognize locally" whenever their real identity wasn't cached yet
+        # - safe back when a peer's only ever-fetched topics were exactly
+        # one board plus one profile (join_discussion's own accept-time
+        # guarantee), but relay now tracks every topic a peer publishes via
+        # peer_topic_sets regardless of whether this side grafted it. A
+        # second board this side never desired has no entry in this side's
+        # own protocol.index either, so it was wrongly treated as "not a
+        # board, must be the profile" - handing back a peer's own board as
+        # if it were their identity (with a blank name/picture, since a
+        # board node has no display_name field).
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            kanban_a = KanbanLogic(session_a, {})
+            desired_board = kanban_a.create_board("Board One").value
+            other_board = kanban_a.create_board("Board Two").value
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            # Publish only the boards, not identity yet - simulates the
+            # window before the peer's own identity has ever been polled.
+            relay_a.storage.write_snapshot(
+                desired_board, "A", session_a.node_state_hash(desired_board),
+                session_a.get_subtree(desired_board),
+            )
+            relay_a.storage.write_snapshot(
+                other_board, "A", session_a.node_state_hash(other_board),
+                session_a.get_subtree(other_board),
+            )
+
+            session_b = Session("addr-b")
+            kanban_b = KanbanLogic(session_b, {})
+            relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
+            relay_b.mark_topics_desired([desired_board])  # other_board never desired
+            relay_b.poll_and_apply()
+
+            users = {user["address"]: user for user in kanban_b.users()}
+
+            self.assertIn("relay:A", users)
+            self.assertNotEqual(users["relay:A"]["id"], other_board)
+            self.assertEqual(users["relay:A"]["name"], "?")  # unknown, not mislabeled
+
     def test_mark_topics_desired_rejects_empty_list(self):
         session_a = Session("addr-a")
         relay_a = RelayLogic(session_a, {})
