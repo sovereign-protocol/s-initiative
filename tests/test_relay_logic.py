@@ -1,12 +1,129 @@
 import json
+import os
+import stat as stat_module
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from kanban_logic import KanbanLogic
 from relay_logic import RelayLogic, channel_descriptor
-from relay_storage import LocalFolderRelayStorage
+from relay_storage import LocalFolderRelayStorage, SftpRelayStorage
 from session import Session
+
+
+class FakeSftpFile:
+    def __init__(self, client, path, write, data=b""):
+        self.client = client
+        self.path = path
+        self.write_mode = write
+        self.buffer = bytearray()
+        self.data = data
+
+    def write(self, chunk):
+        self.buffer.extend(chunk)
+
+    def read(self):
+        return self.data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        if self.write_mode:
+            self.client.files[self.path] = bytes(self.buffer)
+        return False
+
+
+class FakeSftpClient:
+    """In-memory stand-in for paramiko.SFTPClient, covering only the calls
+    SftpRelayStorage makes - lets us test path construction, atomic-rename
+    fallback, and retry behavior without a real network/SSH server."""
+
+    def __init__(self, supports_posix_rename=True):
+        self.files: dict[str, bytes] = {}
+        self.dirs: set[str] = {"/"}
+        self.supports_posix_rename = supports_posix_rename
+        self.fail_next_calls = 0
+
+    def _maybe_fail(self):
+        if self.fail_next_calls > 0:
+            self.fail_next_calls -= 1
+            raise OSError("simulated transient connection failure")
+
+    def open(self, path, mode):
+        self._maybe_fail()
+        if "w" in mode:
+            return FakeSftpFile(self, path, write=True)
+        if path not in self.files:
+            raise FileNotFoundError(path)
+        return FakeSftpFile(self, path, write=False, data=self.files[path])
+
+    def stat(self, path):
+        self._maybe_fail()
+        if path in self.dirs:
+            return types.SimpleNamespace(st_mode=stat_module.S_IFDIR)
+        if path in self.files:
+            return types.SimpleNamespace(st_mode=stat_module.S_IFREG)
+        raise FileNotFoundError(path)
+
+    def mkdir(self, path):
+        self._maybe_fail()
+        self.dirs.add(path)
+
+    def listdir_attr(self, path):
+        self._maybe_fail()
+        if path not in self.dirs:
+            raise FileNotFoundError(path)
+        prefix = path.rstrip("/") + "/"
+        names = set()
+        for existing in list(self.files) + list(self.dirs):
+            if existing.startswith(prefix) and existing != path:
+                names.add(existing[len(prefix):].split("/")[0])
+        result = []
+        for name in sorted(names):
+            full = prefix + name
+            mode = stat_module.S_IFDIR if full in self.dirs else stat_module.S_IFREG
+            result.append(types.SimpleNamespace(filename=name, st_mode=mode))
+        return result
+
+    def remove(self, path):
+        self._maybe_fail()
+        if path not in self.files:
+            raise FileNotFoundError(path)
+        del self.files[path]
+
+    def rename(self, old, new):
+        self._maybe_fail()
+        if old not in self.files:
+            raise FileNotFoundError(old)
+        if new in self.files:
+            raise OSError("destination already exists")
+        self.files[new] = self.files.pop(old)
+
+    def posix_rename(self, old, new):
+        self._maybe_fail()
+        if not self.supports_posix_rename:
+            raise OSError("posix_rename extension not supported")
+        if old not in self.files:
+            raise FileNotFoundError(old)
+        self.files[new] = self.files.pop(old)
+
+    def close(self):
+        pass
+
+
+def _sftp_storage_with_fake(fake: FakeSftpClient) -> SftpRelayStorage:
+    storage = SftpRelayStorage(
+        host="example.test", username="u", remote_root="/relay",
+    )
+    storage._sftp = fake
+    # _with_retry reconnects via _connect() on failure - stub it to hand
+    # back the same fake (now past its simulated failure) rather than
+    # attempting a real SSH connection.
+    storage._connect = lambda: setattr(storage, "_sftp", fake)
+    return storage
 
 
 class LocalFolderRelayStorageTests(unittest.TestCase):
@@ -48,6 +165,79 @@ class LocalFolderRelayStorageTests(unittest.TestCase):
 
             leftovers = list(Path(root).rglob("*.tmp"))
             self.assertEqual(leftovers, [])
+
+
+class SftpRelayStorageTests(unittest.TestCase):
+    def test_write_then_read_round_trips_head_and_snapshot(self):
+        fake = FakeSftpClient()
+        storage = _sftp_storage_with_fake(fake)
+
+        storage.write_snapshot("topic-1", "A", "hash-1", {"subtree": {"name": "x"}, "parent_uuid": None})
+
+        head = storage.read_head("topic-1", "A")
+        self.assertEqual(head["hash"], "hash-1")
+        self.assertEqual(head["peer"], "A")
+        snapshot = storage.read_snapshot("topic-1", "A", "hash-1")
+        self.assertEqual(snapshot["subtree"], {"name": "x"})
+
+    def test_read_missing_peer_or_topic_returns_none(self):
+        fake = FakeSftpClient()
+        storage = _sftp_storage_with_fake(fake)
+
+        self.assertIsNone(storage.read_head("no-such-topic", "A"))
+        self.assertIsNone(storage.read_snapshot("no-such-topic", "A", "hash-1"))
+        self.assertEqual(storage.list_peers("no-such-topic"), [])
+        self.assertEqual(storage.list_topics(), [])
+
+    def test_second_write_overwrites_head_but_keeps_old_snapshot(self):
+        fake = FakeSftpClient()
+        storage = _sftp_storage_with_fake(fake)
+        storage.write_snapshot("topic-1", "A", "hash-1", {"subtree": {"n": 1}, "parent_uuid": None})
+
+        storage.write_snapshot("topic-1", "A", "hash-2", {"subtree": {"n": 2}, "parent_uuid": None})
+
+        self.assertEqual(storage.read_head("topic-1", "A")["hash"], "hash-2")
+        self.assertEqual(storage.read_snapshot("topic-1", "A", "hash-1")["subtree"], {"n": 1})
+        self.assertEqual(storage.read_snapshot("topic-1", "A", "hash-2")["subtree"], {"n": 2})
+
+    def test_write_leaves_no_tmp_files_behind(self):
+        fake = FakeSftpClient()
+        storage = _sftp_storage_with_fake(fake)
+
+        storage.write_snapshot("topic-1", "A", "hash-1", {"subtree": {}, "parent_uuid": None})
+
+        self.assertEqual([p for p in fake.files if p.endswith(".tmp")], [])
+
+    def test_list_peers_and_topics(self):
+        fake = FakeSftpClient()
+        storage = _sftp_storage_with_fake(fake)
+        storage.write_snapshot("topic-1", "A", "hash-1", {"subtree": {}, "parent_uuid": None})
+        storage.write_snapshot("topic-1", "B", "hash-2", {"subtree": {}, "parent_uuid": None})
+        storage.write_snapshot("topic-2", "A", "hash-3", {"subtree": {}, "parent_uuid": None})
+
+        self.assertEqual(storage.list_peers("topic-1"), ["A", "B"])
+        self.assertEqual(storage.list_topics(), ["topic-1", "topic-2"])
+
+    def test_write_falls_back_to_remove_then_rename_without_posix_rename(self):
+        # Not every SFTP server supports the posix_rename extension -
+        # confirms the fallback path (remove existing, then plain rename)
+        # still produces a correct, atomic-from-the-caller's-view result.
+        fake = FakeSftpClient(supports_posix_rename=False)
+        storage = _sftp_storage_with_fake(fake)
+        storage.write_snapshot("topic-1", "A", "hash-1", {"subtree": {"n": 1}, "parent_uuid": None})
+
+        storage.write_snapshot("topic-1", "A", "hash-2", {"subtree": {"n": 2}, "parent_uuid": None})
+
+        self.assertEqual(storage.read_head("topic-1", "A")["hash"], "hash-2")
+
+    def test_transient_failure_triggers_one_reconnect_and_retry(self):
+        fake = FakeSftpClient()
+        fake.fail_next_calls = 1
+        storage = _sftp_storage_with_fake(fake)
+
+        storage.write_snapshot("topic-1", "A", "hash-1", {"subtree": {"n": 1}, "parent_uuid": None})
+
+        self.assertEqual(storage.read_head("topic-1", "A")["hash"], "hash-1")
 
 
 class RelayLogicTests(unittest.TestCase):
@@ -170,6 +360,82 @@ class RelayLogicTests(unittest.TestCase):
             self.assertEqual(descriptor["version"], 1)
             self.assertEqual(descriptor["identity"], "A")
             self.assertEqual(descriptor["root"], str(relay_a.storage.root))
+
+    def test_sftp_backend_selected_via_config(self):
+        session_a = Session("addr-a")
+        config = {
+            "relay_backend": "sftp",
+            "relay_identity": "A",
+            "relay_sftp_host": "example.test",
+            "relay_sftp_username": "u",
+            "relay_sftp_root": "/relay",
+            "relay_sftp_password": "secret",
+        }
+
+        relay_a = RelayLogic(session_a, config)
+
+        self.assertIsInstance(relay_a.storage, SftpRelayStorage)
+        self.assertEqual(relay_a.storage.host, "example.test")
+        self.assertEqual(relay_a.storage.root, "/relay")
+
+    def test_sftp_password_resolves_from_env_var_when_not_in_config(self):
+        session_a = Session("addr-a")
+        config = {
+            "relay_backend": "sftp", "relay_identity": "A",
+            "relay_sftp_host": "example.test", "relay_sftp_username": "u",
+        }
+        with patch.dict(os.environ, {"SKANBAN_SFTP_PASSWORD": "from-env"}):
+            relay_a = RelayLogic(session_a, config)
+
+        self.assertEqual(relay_a.storage.password, "from-env")
+
+    def test_sftp_password_resolves_from_file_when_no_config_or_env(self):
+        session_a = Session("addr-a")
+        with tempfile.TemporaryDirectory() as tmp:
+            secret_path = Path(tmp) / "password.txt"
+            secret_path.write_text("from-file\n", encoding="utf-8")
+            config = {
+                "relay_backend": "sftp", "relay_identity": "A",
+                "relay_sftp_host": "example.test", "relay_sftp_username": "u",
+                "relay_sftp_password_file": str(secret_path),
+            }
+
+            relay_a = RelayLogic(session_a, config)
+
+        self.assertEqual(relay_a.storage.password, "from-file")
+
+    def test_sftp_backend_without_host_is_unconfigured(self):
+        session_a = Session("addr-a")
+        config = {"relay_backend": "sftp", "relay_identity": "A"}
+
+        relay_a = RelayLogic(session_a, config)
+
+        self.assertIsNone(relay_a.storage)
+        self.assertIsNone(relay_a.channel_descriptor())
+
+    def test_sftp_channel_descriptor_never_includes_credentials(self):
+        session_a = Session("addr-a")
+        config = {
+            "relay_backend": "sftp",
+            "relay_identity": "A",
+            "relay_sftp_host": "example.test",
+            "relay_sftp_port": 2222,
+            "relay_sftp_username": "u",
+            "relay_sftp_root": "/relay",
+            "relay_sftp_password": "super-secret",
+            "relay_sftp_private_key_passphrase": "also-secret",
+        }
+        relay_a = RelayLogic(session_a, config)
+
+        descriptor = relay_a.channel_descriptor()
+
+        self.assertEqual(descriptor, {
+            "type": "sftp", "version": 1, "host": "example.test",
+            "port": 2222, "root": "/relay", "identity": "A",
+        })
+        serialized = json.dumps(descriptor)
+        self.assertNotIn("super-secret", serialized)
+        self.assertNotIn("also-secret", serialized)
 
     def test_module_channel_descriptor_hook_delegates_to_stashed_instance(self):
         # This is the shape app_server.py's collect_channel_descriptors
