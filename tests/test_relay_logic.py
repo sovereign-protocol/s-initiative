@@ -94,6 +94,12 @@ class FakeSftpClient:
             raise FileNotFoundError(path)
         del self.files[path]
 
+    def rmdir(self, path):
+        self._maybe_fail()
+        if path not in self.dirs:
+            raise FileNotFoundError(path)
+        self.dirs.discard(path)
+
     def rename(self, old, new):
         self._maybe_fail()
         if old not in self.files:
@@ -165,6 +171,24 @@ class LocalFolderRelayStorageTests(unittest.TestCase):
 
             leftovers = list(Path(root).rglob("*.tmp"))
             self.assertEqual(leftovers, [])
+
+    def test_delete_topic_removes_all_peers_under_it(self):
+        with tempfile.TemporaryDirectory() as root:
+            storage = LocalFolderRelayStorage(root)
+            storage.write_snapshot("topic-1", "A", "hash-1", {"subtree": {}, "parent_uuid": None})
+            storage.write_snapshot("topic-1", "B", "hash-2", {"subtree": {}, "parent_uuid": None})
+            storage.write_snapshot("topic-2", "A", "hash-3", {"subtree": {}, "parent_uuid": None})
+
+            storage.delete_topic("topic-1")
+
+            self.assertEqual(storage.list_topics(), ["topic-2"])
+            self.assertIsNone(storage.read_head("topic-1", "A"))
+            self.assertIsNone(storage.read_head("topic-1", "B"))
+
+    def test_delete_topic_missing_topic_is_a_no_op(self):
+        with tempfile.TemporaryDirectory() as root:
+            storage = LocalFolderRelayStorage(root)
+            storage.delete_topic("no-such-topic")  # must not raise
 
 
 class SftpRelayStorageTests(unittest.TestCase):
@@ -239,6 +263,28 @@ class SftpRelayStorageTests(unittest.TestCase):
 
         self.assertEqual(storage.read_head("topic-1", "A")["hash"], "hash-1")
 
+    def test_delete_topic_removes_all_peers_under_it(self):
+        fake = FakeSftpClient()
+        storage = _sftp_storage_with_fake(fake)
+        storage.write_snapshot("topic-1", "A", "hash-1", {"subtree": {}, "parent_uuid": None})
+        storage.write_snapshot("topic-1", "B", "hash-2", {"subtree": {}, "parent_uuid": None})
+        storage.write_snapshot("topic-2", "A", "hash-3", {"subtree": {}, "parent_uuid": None})
+
+        storage.delete_topic("topic-1")
+
+        self.assertEqual(storage.list_topics(), ["topic-2"])
+        self.assertIsNone(storage.read_head("topic-1", "A"))
+        self.assertIsNone(storage.read_head("topic-1", "B"))
+        # No leftover empty directories either - a real listdir_attr on the
+        # deleted path would now raise, same as the local backend's is_dir().
+        self.assertNotIn("/relay/topics/topic-1", fake.dirs)
+
+    def test_delete_topic_missing_topic_is_a_no_op(self):
+        fake = FakeSftpClient()
+        storage = _sftp_storage_with_fake(fake)
+
+        storage.delete_topic("no-such-topic")  # must not raise
+
 
 class RelayLogicTests(unittest.TestCase):
     def _relay_config(self, relay_root: str, identity: str, state_dir: str) -> dict:
@@ -291,6 +337,38 @@ class RelayLogicTests(unittest.TestCase):
             second = relay_a.publish_due_topics()
 
             self.assertEqual(second, [])
+
+    def test_delete_topic_clears_storage_and_local_bookkeeping(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            kanban_a = KanbanLogic(session_a, {})
+            board_uuid = kanban_a.create_board("Board").value
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a.publish_due_topics()
+            self.assertIn(board_uuid, relay_a.status_payload()["topics"])
+
+            result = relay_a.delete_topic(board_uuid)
+
+            self.assertEqual(result.status, "ok")
+            # status_payload always includes locally-owned boards regardless
+            # of relay state (Part 3b's own diagnostic-visibility fix) - the
+            # bookkeeping fields resetting to "never published" is the
+            # actual thing delete_topic is responsible for clearing.
+            topic_status = relay_a.status_payload()["topics"][board_uuid]
+            self.assertIsNone(topic_status["published_hash"])
+            self.assertEqual(topic_status["applied"], {})
+            self.assertEqual(relay_a.storage.list_topics(), [])
+            # kanban_logic's own board is untouched - deletion is storage
+            # cleanup only, never an app-level decision about local content.
+            self.assertIn(board_uuid, [b.uuid for b in kanban_a.boards()])
+
+    def test_delete_topic_without_storage_configured_is_an_error(self):
+        session_a = Session("addr-a")
+        relay_a = RelayLogic(session_a, {"relay_identity": "A"})
+
+        result = relay_a.delete_topic("some-topic")
+
+        self.assertEqual(result.status, "error")
 
     def test_repolling_without_a_new_publish_is_a_no_op(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
