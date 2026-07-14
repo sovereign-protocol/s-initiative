@@ -611,6 +611,41 @@ class RelayLogicTests(unittest.TestCase):
 
             self.assertNotEqual(relay_a._state_path, relay_b._state_path)
 
+    def test_default_state_file_differs_per_backend_not_just_per_identity(self):
+        # Regression, found live: an SFTP-backed instance and a
+        # local-folder-backed instance sharing the same relay_identity (a
+        # very plausible thing to do - "A" is a natural identity to reuse
+        # across setups) must not share bookkeeping. Otherwise switching
+        # backends silently inherits stale "already published/applied"
+        # state from a completely different, unrelated storage location -
+        # publish_due_topics/poll_and_apply would then wrongly believe
+        # they'd already synced against a server they'd never contacted.
+        session_a = Session("addr-a")
+        relay_local = RelayLogic(session_a, {
+            "relay_backend": "local", "relay_root": "/some/local/path",
+            "relay_identity": "A",
+        })
+        session_b = Session("addr-b")
+        relay_sftp = RelayLogic(session_b, {
+            "relay_backend": "sftp", "relay_identity": "A",
+            "relay_sftp_host": "example.test", "relay_sftp_username": "u",
+            "relay_sftp_root": "/relay",
+        })
+
+        self.assertNotEqual(relay_local._state_path, relay_sftp._state_path)
+
+    def test_default_state_file_differs_per_sftp_root_not_just_per_host(self):
+        session_a = Session("addr-a")
+        base_config = {
+            "relay_backend": "sftp", "relay_identity": "A",
+            "relay_sftp_host": "example.test", "relay_sftp_username": "u",
+        }
+        relay_one = RelayLogic(session_a, {**base_config, "relay_sftp_root": "/relay-one"})
+        session_b = Session("addr-b")
+        relay_two = RelayLogic(session_b, {**base_config, "relay_sftp_root": "/relay-two"})
+
+        self.assertNotEqual(relay_one._state_path, relay_two._state_path)
+
 
 if __name__ == "__main__":
     unittest.main()
