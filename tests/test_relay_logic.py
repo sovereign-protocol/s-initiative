@@ -490,13 +490,15 @@ class RelayLogicTests(unittest.TestCase):
 
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             published = relay_a.publish_due_topics()
-            self.assertEqual(published, [board.uuid])
+            # Own identity is published alongside owned boards (so a peer
+            # can pick up later display-name/picture edits over relay too).
+            self.assertIn(board.uuid, published)
 
             session_b = Session("addr-b")
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
             applied = relay_b.poll_and_apply()
 
-            self.assertEqual(applied, [(board.uuid, "A")])
+            self.assertIn((board.uuid, "A"), applied)
             cached = session_b.get_cached_peer_subtree("relay:A", card.uuid)
             self.assertIsNotNone(cached)
             self.assertEqual(cached.data["name"], "Test Card")
@@ -516,7 +518,7 @@ class RelayLogicTests(unittest.TestCase):
             kanban_a.create_board("Board")
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             first = relay_a.publish_due_topics()
-            self.assertEqual(len(first), 1)
+            self.assertEqual(len(first), 2)  # board + own identity
 
             second = relay_a.publish_due_topics()
 
@@ -541,7 +543,9 @@ class RelayLogicTests(unittest.TestCase):
             topic_status = relay_a.status_payload()["topics"][board_uuid]
             self.assertIsNone(topic_status["published_hash"])
             self.assertEqual(topic_status["applied"], {})
-            self.assertEqual(relay_a.storage.list_topics(), [])
+            # Own identity topic remains published independently of the
+            # deleted board.
+            self.assertNotIn(board_uuid, relay_a.storage.list_topics())
             # kanban_logic's own board is untouched - deletion is storage
             # cleanup only, never an app-level decision about local content.
             self.assertIn(board_uuid, [b.uuid for b in kanban_a.boards()])
@@ -563,7 +567,7 @@ class RelayLogicTests(unittest.TestCase):
             session_b = Session("addr-b")
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
             first = relay_b.poll_and_apply()
-            self.assertEqual(len(first), 1)
+            self.assertEqual(len(first), 2)  # board + A's identity
 
             second = relay_b.poll_and_apply()
 
@@ -596,9 +600,43 @@ class RelayLogicTests(unittest.TestCase):
             second_uuid = kanban_a.create_board("Board Two").value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
 
-            self.assertEqual(set(relay_a.relay_topic_uuids()), {first_uuid, second_uuid})
+            identity_uuid = session_a.identity.uuid
+            self.assertEqual(
+                set(relay_a.relay_topic_uuids()), {first_uuid, second_uuid, identity_uuid}
+            )
             published = relay_a.publish_due_topics()
-            self.assertEqual(set(published), {first_uuid, second_uuid})
+            self.assertEqual(set(published), {first_uuid, second_uuid, identity_uuid})
+
+    def test_identity_updates_after_initial_connect_still_propagate_over_relay(self):
+        # Regression: identity used to reach a relay peer only once, inline
+        # in the connect token at accept time (Session.
+        # apply_peer_identity_snapshot) - relay itself never published the
+        # identity topic, so a later display-name/picture edit had no way
+        # to reach an already-connected peer. relay_topic_uuids() now
+        # includes our own identity node, so ordinary publish/poll keeps it
+        # current, same as any board.
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            session_a.set_identity("Ann", picture="", email="ann@example.com")
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a.publish_due_topics()
+
+            session_b = Session("addr-b")
+            relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
+            relay_b.poll_and_apply()
+
+            cached = session_b.get_cached_peer_subtree("relay:A", session_a.identity.uuid)
+            self.assertIsNotNone(cached)
+            self.assertEqual(cached.data["display_name"], "Ann")
+
+            # A changes their name well after the initial exchange - no new
+            # token, just the ordinary poll loop.
+            session_a.set_identity("Annabelle", picture="", email="ann@example.com")
+            relay_a.publish_due_topics()
+            relay_b.poll_and_apply()
+
+            cached = session_b.get_cached_peer_subtree("relay:A", session_a.identity.uuid)
+            self.assertEqual(cached.data["display_name"], "Annabelle")
 
     def test_relay_inactive_without_relay_root_configured(self):
         session_a = Session("addr-a")
@@ -785,7 +823,7 @@ class RelayLogicTests(unittest.TestCase):
             self.assertEqual(accept_result.status, "ok")
             applied = relay_b.poll_and_apply()
 
-            self.assertEqual(applied, [(board_uuid, "A")])
+            self.assertIn((board_uuid, "A"), applied)
             kanban_b = KanbanLogic(session_b, {})
             self.assertIn(board_uuid, [b.uuid for b in kanban_b.boards()])
             self.assertEqual(kanban_b.auto_adopt_mode(session_b.protocol.index[board_uuid]), "never")
