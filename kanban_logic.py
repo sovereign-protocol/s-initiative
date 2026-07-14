@@ -564,26 +564,7 @@ class KanbanLogic:
 
     def accept_peer_node(self, source_addr: str, node_uuid: str,
                          adopt_absence: bool = False) -> SessionResult:
-        if adopt_absence:
-            return self.session.delete(node_uuid)
-        peer = self.session.get_cached_peer_subtree(source_addr, node_uuid)
-        if not peer:
-            return SessionResult("error", reason="peer node not found")
-        local = self.session.protocol.index.get(node_uuid)
-        parent_uuid = peer.parent_uuid if peer.parent_uuid in self.session.protocol.index else None
-        if not parent_uuid and local:
-            parent_uuid = local.parent_uuid
-        if not parent_uuid or parent_uuid not in self.session.protocol.index:
-            return SessionResult("error", reason="local parent not found")
-
-        def operation():
-            return self.session.adopt_subtree(
-                peer,
-                parent_uuid,
-                remove_descendant_duplicates=True,
-            )
-
-        return operation()
+        return self.session.accept_peer_node(source_addr, node_uuid, adopt_absence)
 
     def set_perspective_state(self, node_uuid: str, state: str) -> SessionResult:
         return self.session.set_perspective_state(node_uuid, state)
@@ -593,146 +574,37 @@ class KanbanLogic:
         mode = self.auto_adopt_mode(board)
         if mode == "never":
             return False
-        candidates = []
-        for addr, peer in sorted(self.session.peer_perspectives.items()):
-            if not self._peer_discusses_node(addr, board.uuid):
-                self.session.trace_event("kanban.adopt_skip", reason="does_not_discuss", peer_addr=addr, board_uuid=board.uuid)
-                continue
-            peer_board = self.session.get_cached_peer_subtree(addr, board.uuid)
-            if not peer_board:
-                self.session.trace_event("kanban.adopt_skip", reason="no_cached_subtree", peer_addr=addr, board_uuid=board.uuid)
-                continue
-            board = self.session.protocol.index.get(board.uuid) or board
-            peer_hash = peer_board.state_hash
-            local_hash = board.state_hash
-            if peer_hash == local_hash:
-                self.session.trace_event("kanban.adopt_skip", reason="hashes_equal", peer_addr=addr, board_uuid=board.uuid)
-                continue
-            # Bug fix: this used to only look at the board root's own event
-            # (analyze_peer_transitions(...)[0]), which is "in_agreement"
-            # whenever the board's own name/objective didn't change - true
-            # for virtually every real edit, since those touch a card or
-            # column, not the board itself. That silently skipped this peer
-            # entirely, so auto-adopt "always" never actually fired for
-            # ordinary card/column changes. Now checks the whole subtree.
-            peer_events = self.session.analyze_peer_transitions(addr, board.uuid)
-            self.session.trace_event(
-                "kanban.adopt_peer_events",
-                peer_addr=addr,
-                board_uuid=board.uuid,
-                events=[{"type": e["type"], "node_uuid": e.get("node_uuid")} for e in peer_events],
-            )
-            if not any(event["type"] != "in_agreement" for event in peer_events):
-                self.session.trace_event("kanban.adopt_skip", reason="all_in_agreement", peer_addr=addr, board_uuid=board.uuid)
-                continue
-            top_event = peer_events[0] if peer_events else None
-            candidates.append((addr, peer_board, top_event))
-        if not candidates:
-            self.session.trace_event("kanban.adopt_no_candidates", board_uuid=board.uuid)
-            return False
+
+        def eligible(node: PRSPNode, event_type: str) -> bool:
+            is_card = node.data.get("type") == "kanban_card"
+            if is_card:
+                return self._auto_adopt_allows_node(mode, node)
+            # A column (or any non-card node) that doesn't exist locally yet
+            # would have to be adopted as a whole subtree, which could pull
+            # in child cards the current mode is supposed to filter out.
+            # Only "always" mode may adopt those; other modes leave it for
+            # manual review.
+            if event_type == "local_missing_node":
+                return mode == "always"
+            return True
+
+        def adopt_mode(node: PRSPNode) -> str:
+            # Update a non-card node's own fields only - never cascade into
+            # its children, so an allowed column-rename can't smuggle in a
+            # filtered-out card change underneath it.
+            return "full" if node.data.get("type") == "kanban_card" else "shallow"
 
         changed = False
-        self.session.trace_event(
-            "kanban.auto_adopt_start",
-            board_uuid=board.uuid,
-            board_state_hash=board.state_hash,
-        )
-        for addr, peer_board, top_event in candidates:
-            board = self.session.protocol.index.get(board.uuid) or board
-            self.session.trace_event(
-                "kanban.auto_adopt_peer_event",
-                board_uuid=board.uuid,
-                peer_addr=addr,
-                event_type=top_event.get("type") if top_event else None,
-                local_state_hash=top_event.get("local_state_hash") if top_event else None,
-                peer_state_hash=top_event.get("peer_state_hash") if top_event else None,
-                causal_distance=top_event.get("causal_distance") if top_event else None,
-            )
-            # The root's own event only ever decides the wholesale-replace
-            # shortcut below - it must NOT gate whether the per-node loop
-            # further down runs at all. A root of "in_agreement" or
-            # "local_made_changes" just means the board's own name/objective
-            # didn't change (or we're ahead there) - a child card/column can
-            # still independently have real peer_made_changes/
-            # local_missing_node events that the per-node loop's own guards
-            # already know how to evaluate safely. Bailing out here (as this
-            # used to) is what silently broke auto-adopt for the overwhelmingly
-            # common case of "only a card changed."
-            if (top_event and top_event["type"] == "peer_made_changes" and mode == "always"
-                    and not self._subtree_has_kept_mine(board)
-                    and not self._subtree_has_pushed_back(peer_board)):
-                self.session.trace_event(
-                    "kanban.auto_adopt_replace_board",
-                    board_uuid=board.uuid,
-                    peer_addr=addr,
-                    local_state_hash=top_event.get("local_state_hash"),
-                    peer_state_hash=top_event.get("peer_state_hash"),
-                )
-                self._replace_subtree(peer_board)
-                changed = True
+        for addr in sorted(self.session.peer_perspectives):
+            if not self.session.peer_discusses_node(addr, board.uuid):
                 continue
-            for event in self.session.analyze_peer_transitions(addr, board.uuid):
-                if event["type"] not in ("peer_made_changes", "local_missing_node"):
-                    continue
-                peer_node = self.session.get_cached_peer_subtree(addr, event["node_uuid"])
-                local_node = self.session.protocol.index.get(event["node_uuid"])
-                reference_node = local_node or peer_node
-                if not reference_node:
-                    continue
-                if local_node and self.session.keep_mine_active(local_node, peer_node):
-                    continue
-                if peer_node and self.session.peer_pushed_back(peer_node):
-                    continue
-                is_card = reference_node.data.get("type") == "kanban_card"
-                if is_card and not self._auto_adopt_allows_node(mode, reference_node):
-                    continue
-                # A column (or any non-card node) that doesn't exist locally yet
-                # would have to be adopted as a whole subtree, which could pull
-                # in child cards the current mode is supposed to filter out.
-                # Only "always" mode may adopt those; other modes leave it for
-                # manual review.
-                if not is_card and event["type"] == "local_missing_node" and mode != "always":
-                    continue
-                self.session.trace_event(
-                    "kanban.auto_adopt_node",
-                    board_uuid=board.uuid,
-                    peer_addr=addr,
-                    node_uuid=event["node_uuid"],
-                    event_type=event["type"],
-                    peer_state_hash=event.get("peer_state_hash"),
-                )
-                if not is_card and event["type"] == "peer_made_changes" and peer_node:
-                    # Update the node's own fields only - never cascade into
-                    # its children, so an allowed column-rename can't smuggle
-                    # in a filtered-out card change underneath it.
-                    result = self.session.modify(event["node_uuid"], peer_node.data, peer_node.weights)
-                else:
-                    result = self.accept_peer_node(addr, event["node_uuid"])
-                changed = changed or result.status == "ok"
-        self.session.trace_event(
-            "kanban.auto_adopt_done",
-            board_uuid=board.uuid,
-            changed=changed,
-        )
+            changed = self.session.reconcile_peer_changes(
+                addr, board.uuid,
+                node_is_eligible=eligible,
+                node_adopt_mode=adopt_mode,
+                allow_wholesale_replace=(mode == "always"),
+            ) or changed
         return changed
-
-    def _subtree_has_kept_mine(self, node: PRSPNode) -> bool:
-        # The whole-board replace shortcut may only run when nothing under
-        # the board has a local perspective decision or pushback - a wholesale replace would
-        # silently overwrite a node the user explicitly decided to keep.
-        if node.perspective_state != "none":
-            return True
-        return any(self._subtree_has_kept_mine(child) for child in node.children)
-
-    def _subtree_has_pushed_back(self, node: PRSPNode) -> bool:
-        # Same guard, but over the *incoming peer* subtree: the whole-board
-        # replace shortcut bypasses the per-node peer_pushed_back check
-        # entirely, so a peer's pushed_back node anywhere in what would be
-        # replaced must block the shortcut the same way a local keep-mine decision
-        # already does.
-        if node.perspective_state == "pushed_back":
-            return True
-        return any(self._subtree_has_pushed_back(child) for child in node.children)
 
     def _auto_adopt_allows_node(self, mode: str, node: PRSPNode | None) -> bool:
         if mode == "always":
@@ -778,7 +650,7 @@ class KanbanLogic:
         board_uuid = board_uuid or board.uuid
         events = []
         for addr in sorted(self.session.peer_perspectives):
-            if not self._peer_discusses_node(addr, board.uuid):
+            if not self.session.peer_discusses_node(addr, board.uuid):
                 continue
             events.extend(self.session.analyze_peer_transitions(addr, board_uuid))
         return events
@@ -905,16 +777,6 @@ class KanbanLogic:
             effects.extend(result.effects)
         return SessionResult("ok", value=True, effects=effects)
 
-    def _replace_subtree(self, peer_board: PRSPNode) -> None:
-        local_board = self.session.protocol.index.get(peer_board.uuid)
-        self.session.trace_event(
-            "kanban.replace_subtree",
-            board_uuid=peer_board.uuid,
-            local_state_hash=local_board.state_hash if local_board else None,
-            incoming_state_hash=peer_board.state_hash,
-        )
-        self.session.replace_subtree(peer_board)
-
     def _node(self, uuid: str, node_type: str) -> PRSPNode | None:
         node = self.session.protocol.index.get(uuid)
         if node and node.data.get("type") == node_type:
@@ -1017,28 +879,9 @@ class KanbanLogic:
 
     def _is_active_discussion_node(self, node_uuid: str) -> bool:
         return any(
-            self._contains_uuid(topic_uuid, node_uuid)
+            self.session._is_descendant_or_self(topic_uuid, node_uuid)
             for topic_uuid in self.session.active_topic_uuids
         )
-
-    def _peer_discusses_node(self, peer_addr: str, node_uuid: str) -> bool:
-        return any(
-            self._contains_uuid(topic_uuid, node_uuid)
-            for topic_uuid in self.session.peer_topic_sets.get(peer_addr, set())
-        )
-
-    def _contains_uuid(self, root_uuid: str, node_uuid: str) -> bool:
-        root = self.session.protocol.index.get(root_uuid)
-        return bool(root and self._find_in_tree(root, node_uuid))
-
-    def _find_in_tree(self, root: PRSPNode, node_uuid: str) -> PRSPNode | None:
-        if root.uuid == node_uuid:
-            return root
-        for child in root.children:
-            found = self._find_in_tree(child, node_uuid)
-            if found:
-                return found
-        return None
 
     def _collect_subtree_uuids(self, node: PRSPNode) -> set[str]:
         out = {node.uuid}

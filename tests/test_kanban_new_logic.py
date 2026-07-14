@@ -6,6 +6,7 @@ from pathlib import Path
 import app_server
 from kanban_logic import KanbanLogic
 from protocol import PRSPNode
+from session import Session
 
 
 class MemoryHttpClient:
@@ -378,6 +379,11 @@ class KanbanNewLogicTests(unittest.TestCase):
         )
 
     def test_subtree_has_kept_mine_also_counts_pushed_back(self):
+        # _subtree_has_kept_mine/_subtree_has_pushed_back moved into Session
+        # (they're generic - only walk perspective_state) as part of
+        # generalizing adopt_incoming_changes into
+        # Session.reconcile_peer_changes; this guard behavior itself is
+        # unchanged, just relocated.
         runtime = self.runtime(8377)
         logic: KanbanLogic = runtime.logic
         board = logic.ensure_board()
@@ -385,7 +391,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         card = logic.create_card(column.uuid, "Task", "", []).value
 
         self.assertFalse(
-            logic._subtree_has_kept_mine(runtime.session.protocol.index[board.uuid])
+            Session._subtree_has_kept_mine(runtime.session.protocol.index[board.uuid])
         )
 
         logic.set_perspective_state(card.uuid, "pushed_back")
@@ -394,7 +400,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         # pushed_back node exactly as it already is by a keep-mine one -
         # both represent an explicit decision to keep this node.
         self.assertTrue(
-            logic._subtree_has_kept_mine(runtime.session.protocol.index[board.uuid])
+            Session._subtree_has_kept_mine(runtime.session.protocol.index[board.uuid])
         )
 
     def test_auto_adopt_not_member_skips_any_card_im_on(self):
