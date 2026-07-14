@@ -187,6 +187,34 @@ class RelayLogicTests(unittest.TestCase):
 
         self.assertIsNone(channel_descriptor(runtime=None, config={}))
 
+    def test_users_includes_relay_only_peer_via_peer_perspectives(self):
+        # kanban_logic.users() used to only look at session.members, which
+        # a relay-only peer ("relay:A") never joins - note_relay_peer_topic
+        # deliberately keeps relay peers out of the live-connection
+        # machinery (add_peer), so they'd never show up here at all without
+        # also unioning in peer_perspectives, where their cached identity
+        # (delivered inline via a connect token, same as the real
+        # /api/connect flow) actually lives.
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            kanban_a = KanbanLogic(session_a, {})
+            kanban_a.set_user_profile("Ann", "")
+            board_uuid = kanban_a.create_board("Shared Board").value
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a.publish_due_topics()
+
+            session_b = Session("addr-b")
+            kanban_b = KanbanLogic(session_b, {})
+            relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
+            relay_b.mark_topics_desired([board_uuid])
+            session_b.apply_peer_identity_snapshot("relay:A", kanban_a.user_profile().to_dict())
+            relay_b.poll_and_apply()
+
+            users = {user["address"]: user for user in kanban_b.users()}
+
+            self.assertIn("relay:A", users)
+            self.assertEqual(users["relay:A"]["name"], "Ann")
+
     def test_mark_topics_desired_rejects_empty_list(self):
         session_a = Session("addr-a")
         relay_a = RelayLogic(session_a, {})

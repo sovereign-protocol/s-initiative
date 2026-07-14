@@ -445,7 +445,13 @@ class KanbanLogic:
 
     def users(self) -> list[dict]:
         users = [self._user_info(self.session.address, self.user_profile())]
-        for addr in sorted(self.session.members - {self.session.address}):
+        # Union with peer_perspectives, not just members - a relay-only
+        # peer (e.g. "relay:B") never goes through add_peer (deliberately;
+        # see Session.note_relay_peer_topic), so it would never appear here
+        # if this only looked at members. Their identity is still visible
+        # via the ordinary peer_perspectives cache, same as any HTTP peer's.
+        addrs = (self.session.members | set(self.session.peer_perspectives)) - {self.session.address}
+        for addr in sorted(addrs):
             profile = self._find_peer_user_profile(addr)
             users.append(self._user_info(addr, profile, self._peer_profile_uuid(addr, profile)))
         seen = set()
