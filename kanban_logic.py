@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import time
 from typing import Any
 
 from protocol import PRSPNode
@@ -64,6 +65,20 @@ class KanbanLogic:
     def __init__(self, session: Session, config: dict):
         self.session = session
         self.config = config
+        # How long a "divergence" classification must be observed
+        # continuously before it's shown to the user as a real conflict -
+        # see _debounce_divergences. Defaults to 2 sync cycles (whichever
+        # of the two sync mechanisms this instance actually has configured
+        # is slower), since that's roughly how long a transient one can
+        # take to resolve on its own.
+        self._divergence_debounce_seconds = float(config.get(
+            "divergence_debounce_seconds",
+            2 * max(
+                float(config.get("peer_sync_interval_seconds", 2)),
+                float(config.get("relay_poll_interval_seconds", 3)),
+            ),
+        ))
+        self._divergence_first_seen: dict[tuple[str, str], float] = {}
 
     def board_payload(self, auto_adopt: bool = True) -> dict:
         board = self.ensure_board()
@@ -659,7 +674,50 @@ class KanbanLogic:
             if not self.session.peer_discusses_node(addr, board.uuid):
                 continue
             events.extend(self.session.analyze_peer_transitions(addr, board_uuid))
-        return events
+        return self._debounce_divergences(events)
+
+    def _debounce_divergences(self, events: list[dict]) -> list[dict]:
+        # Display-only concern - reconciliation (adopt_incoming_changes)
+        # calls session.analyze_peer_transitions directly, never through
+        # here, so debouncing what the UI shows can never delay or mask
+        # what auto-adopt actually acts on.
+        #
+        # A "divergence" classification can be a genuine conflict, or just
+        # a timing artifact: the single-hop causal model
+        # (Session._classify_content/_classify_move) only recognizes a
+        # clean one-hop relationship as peer_made_changes/local_made_changes -
+        # two rapid local changes landing before the peer's next sync tick
+        # has caught up even once look identical to a real divergence, even
+        # though it resolves itself the moment the peer's cache refreshes
+        # (e.g. once a peer with auto-adopt on catches up and re-publishes).
+        # Rather than flash an alarming "Conflict" label for something
+        # very likely to self-resolve within a sync cycle or two, hold off
+        # reporting it as a real divergence until it's been observed
+        # continuously for a short grace window.
+        now = time.time()
+        still_diverging = set()
+        out = []
+        for event in events:
+            node_uuid = event.get("node_uuid")
+            peer_addr = event.get("peer_addr")
+            if event["type"] != "divergence" or not node_uuid or not peer_addr:
+                out.append(event)
+                continue
+            key = (peer_addr, node_uuid)
+            still_diverging.add(key)
+            first_seen = self._divergence_first_seen.setdefault(key, now)
+            if now - first_seen < self._divergence_debounce_seconds:
+                # Within the grace window - report as in_agreement for now
+                # (nothing worth showing yet), not a lie about the actual
+                # sync state, just a deferred display decision.
+                out.append({**event, "type": "in_agreement"})
+            else:
+                out.append(event)
+        # Drop tracking for anything not divergent this round, so a later
+        # divergence on the same node starts its own fresh grace window.
+        for key in set(self._divergence_first_seen) - still_diverging:
+            del self._divergence_first_seen[key]
+        return out
 
     def transition_by_node(self, events: list[dict]) -> dict:
         priority = {

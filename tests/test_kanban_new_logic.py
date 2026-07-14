@@ -1292,6 +1292,67 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(out["node-1"]["priority"], 6)
         self.assertEqual(out["node-1"]["events"][0]["priority"], 6)
 
+    # _debounce_divergences - display-only smoothing for the "divergence"
+    # classification, which the single-hop causal model can report as a
+    # transient timing artifact (two rapid local changes outpacing the
+    # peer's next sync tick) indistinguishable from a real conflict until
+    # it either resolves on its own or persists past a grace window.
+
+    def test_debounce_suppresses_divergence_within_grace_window(self):
+        runtime = self.runtime(8390)
+        runtime.logic._divergence_debounce_seconds = 10.0
+        events = [{"type": "divergence", "node_uuid": "n1", "peer_addr": "http://peer"}]
+
+        out = runtime.logic._debounce_divergences(events)
+
+        self.assertEqual(out[0]["type"], "in_agreement")
+
+    def test_debounce_shows_divergence_once_grace_window_elapses(self):
+        runtime = self.runtime(8391)
+        runtime.logic._divergence_debounce_seconds = 0.02
+        events = [{"type": "divergence", "node_uuid": "n1", "peer_addr": "http://peer"}]
+        runtime.logic._debounce_divergences(events)
+        time.sleep(0.1)
+
+        out = runtime.logic._debounce_divergences(events)
+
+        self.assertEqual(out[0]["type"], "divergence")
+
+    def test_debounce_restarts_grace_window_after_resolving(self):
+        runtime = self.runtime(8392)
+        runtime.logic._divergence_debounce_seconds = 0.02
+        diverging = [{"type": "divergence", "node_uuid": "n1", "peer_addr": "http://peer"}]
+        resolved = [{"type": "in_agreement", "node_uuid": "n1", "peer_addr": "http://peer"}]
+        runtime.logic._debounce_divergences(diverging)
+        time.sleep(0.1)
+        runtime.logic._debounce_divergences(resolved)  # caught up in between
+
+        out = runtime.logic._debounce_divergences(diverging)  # diverges again
+
+        self.assertEqual(out[0]["type"], "in_agreement")
+
+    def test_debounce_only_applies_to_divergence_type(self):
+        runtime = self.runtime(8393)
+        events = [{"type": "peer_made_changes", "node_uuid": "n1", "peer_addr": "http://peer"}]
+
+        out = runtime.logic._debounce_divergences(events)
+
+        self.assertEqual(out[0]["type"], "peer_made_changes")
+
+    def test_default_divergence_debounce_uses_slower_configured_sync_interval(self):
+        session = Session("http://a")
+        logic = KanbanLogic(session, {
+            "peer_sync_interval_seconds": 2, "relay_poll_interval_seconds": 7,
+        })
+
+        self.assertEqual(logic._divergence_debounce_seconds, 14.0)
+
+    def test_divergence_debounce_seconds_is_explicitly_configurable(self):
+        session = Session("http://a")
+        logic = KanbanLogic(session, {"divergence_debounce_seconds": 1.5})
+
+        self.assertEqual(logic._divergence_debounce_seconds, 1.5)
+
     @staticmethod
     def runtime(port: int):
         directory = tempfile.TemporaryDirectory()
