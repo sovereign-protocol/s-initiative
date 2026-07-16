@@ -729,7 +729,14 @@ class RelayLogicTests(unittest.TestCase):
         self.assertIsNone(relay_a.storage)
         self.assertIsNone(relay_a.channel_descriptor())
 
-    def test_sftp_channel_descriptor_never_includes_credentials(self):
+    def test_sftp_channel_descriptor_includes_credentials(self):
+        # Deliberate reversal of the old "never includes credentials" rule
+        # (DESIGN §1.6): the descriptor now carries the SFTP username +
+        # password so a pure accepter can build storage straight from the
+        # token. Safe only because the relay account is chroot-jailed and
+        # the token is a bearer credential over a trusted channel. The
+        # private-key passphrase is still never embedded (we carry a
+        # password, never a key).
         session_a = Session("addr-a")
         config = {
             "relay_backend": "sftp",
@@ -748,10 +755,94 @@ class RelayLogicTests(unittest.TestCase):
         self.assertEqual(descriptor, {
             "type": "sftp", "version": 1, "host": "example.test",
             "port": 2222, "root": "/relay", "identity": "A",
+            "username": "u", "password": "super-secret",
         })
-        serialized = json.dumps(descriptor)
-        self.assertNotIn("super-secret", serialized)
-        self.assertNotIn("also-secret", serialized)
+        # The password IS present now (that's the point); the key passphrase
+        # is not (no key is ever embedded).
+        self.assertNotIn("also-secret", json.dumps(descriptor))
+
+    def test_adopt_storage_from_descriptor_builds_sftp_when_none(self):
+        # A pure accepter (no relay config) builds its single storage from
+        # the token's advertised location + credentials.
+        session_b = Session("addr-b")
+        relay_b = RelayLogic(session_b, {})  # no storage configured
+        self.assertIsNone(relay_b.storage)
+        boot_state_path = relay_b._state_path
+
+        adopted = relay_b.adopt_storage_from_descriptor({
+            "type": "sftp", "version": 1, "host": "example.test",
+            "port": 2222, "root": "/relay", "identity": "A",
+            "username": "u", "password": "super-secret",
+        })
+
+        self.assertTrue(adopted)
+        self.assertIsInstance(relay_b.storage, SftpRelayStorage)
+        self.assertEqual(relay_b.storage.host, "example.test")
+        self.assertEqual(relay_b.storage.port, 2222)
+        self.assertEqual(relay_b.storage.username, "u")
+        self.assertEqual(relay_b.storage.password, "super-secret")
+        self.assertEqual(relay_b.storage.root, "/relay")
+        # Bookkeeping re-keyed to the real location, not the empty-config
+        # boot default.
+        self.assertNotEqual(relay_b._state_path, boot_state_path)
+
+    def test_adopt_storage_from_descriptor_builds_local_relay(self):
+        session_b = Session("addr-b")
+        relay_b = RelayLogic(session_b, {})
+        with tempfile.TemporaryDirectory() as root:
+            adopted = relay_b.adopt_storage_from_descriptor({
+                "type": "relay", "version": 1, "root": root, "identity": "A",
+            })
+            self.assertTrue(adopted)
+            self.assertIsInstance(relay_b.storage, LocalFolderRelayStorage)
+
+    def test_adopt_storage_from_descriptor_noop_when_storage_exists(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_b = Session("addr-b")
+            relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
+            existing = relay_b.storage
+            self.assertIsNotNone(existing)
+
+            adopted = relay_b.adopt_storage_from_descriptor({
+                "type": "sftp", "version": 1, "host": "other.test",
+                "port": 22, "root": "/elsewhere", "identity": "A",
+                "username": "u", "password": "p",
+            })
+
+            self.assertFalse(adopted)
+            self.assertIs(relay_b.storage, existing)
+
+    def test_adopt_storage_from_descriptor_rejects_malformed(self):
+        session_b = Session("addr-b")
+        relay_b = RelayLogic(session_b, {})
+
+        self.assertFalse(relay_b.adopt_storage_from_descriptor({"type": "sftp"}))  # no host
+        self.assertFalse(relay_b.adopt_storage_from_descriptor({"type": "carrier_pigeon"}))
+        self.assertIsNone(relay_b.storage)
+
+    def test_accepter_with_no_config_grafts_via_adopted_storage(self):
+        # End-to-end: an inviter publishes to a local root; a fresh accepter
+        # with NO storage of its own adopts the inviter's descriptor and
+        # grafts the board - neither side shared a config file, only a token.
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            kanban_a = KanbanLogic(session_a, {})
+            board_uuid = kanban_a.create_board("Shared Board").value
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a.publish_due_topics()
+            descriptor = relay_a.channel_descriptor()
+
+            session_b = Session("addr-b")
+            relay_b = RelayLogic(session_b, {"relay_state_file": str(Path(state_dir) / "b.json")})
+            self.assertIsNone(relay_b.storage)
+
+            self.assertTrue(relay_b.adopt_storage_from_descriptor(descriptor))
+            relay_b.mark_topics_desired([board_uuid])
+            applied = relay_b.poll_and_apply()
+
+            self.assertIn((board_uuid, "A"), applied)
+            kanban_b = KanbanLogic(session_b, {})
+            self.assertIn(board_uuid, [b.uuid for b in kanban_b.boards()])
 
     def test_module_channel_descriptor_hook_delegates_to_stashed_instance(self):
         # This is the shape app_server.py's collect_channel_descriptors
