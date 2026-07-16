@@ -590,7 +590,10 @@ class RelayLogicTests(unittest.TestCase):
             self.assertTrue(state_file.is_file())
             with state_file.open(encoding="utf-8") as f:
                 state = json.load(f)
-            self.assertIn("applied", state)
+            # Durable bookkeeping is persisted; `applied` deliberately is
+            # not (it tracks the in-memory peer cache - see _save_state).
+            self.assertIn("published", state)
+            self.assertNotIn("applied", state)
 
     def test_all_boards_sync_automatically_no_allow_list(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
@@ -843,6 +846,79 @@ class RelayLogicTests(unittest.TestCase):
             self.assertIn((board_uuid, "A"), applied)
             kanban_b = KanbanLogic(session_b, {})
             self.assertIn(board_uuid, [b.uuid for b in kanban_b.boards()])
+
+    def test_mark_topics_shared_activates_shared_board_for_auto_adopt(self):
+        # Regression, caught live: over relay-only there's no /p2p/join to
+        # mark the issuer's board an active discussion, so auto-adopt never
+        # ran and incoming changes were stuck (a diff with no Adopt button).
+        # Sharing a board must activate it.
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            kanban_a = KanbanLogic(session_a, {})
+            board_uuid = kanban_a.create_board("Shared Board").value
+            self.assertNotIn(board_uuid, session_a.active_topic_uuids)
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+
+            relay_a.mark_topics_shared([board_uuid])
+
+            self.assertIn(board_uuid, session_a.active_topic_uuids)
+
+    def test_shared_boards_reactivated_on_construction(self):
+        # A board shared in a prior run must come back active when a fresh
+        # RelayLogic is constructed on the same state file (a restart), or
+        # the issuer silently loses auto-adopt for it. active_topic_uuids
+        # is persisted, but a board shared before this fix existed would not
+        # have been recorded active - __init__ re-derives it from `shared`.
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            kanban_a = KanbanLogic(session_a, {})
+            board_uuid = kanban_a.create_board("Shared Board").value
+            config = self._relay_config(relay_root, "A", state_dir)
+            RelayLogic(session_a, config).mark_topics_shared([board_uuid])
+
+            # Simulate the state where activation was lost (board still in
+            # the index, `shared` still persisted, but not marked active).
+            session_a.active_topic_uuids.discard(board_uuid)
+            self.assertNotIn(board_uuid, session_a.active_topic_uuids)
+
+            RelayLogic(session_a, config)  # __init__ re-activates from `shared`
+
+            self.assertIn(board_uuid, session_a.active_topic_uuids)
+
+    def test_applied_bookkeeping_not_persisted_across_restart(self):
+        # Regression, caught live: `applied` tracks what's been pulled into
+        # peer_perspectives, but that cache is in-memory only. If `applied`
+        # survived a restart, poll_and_apply would skip re-fetching an
+        # unchanged peer topic while holding an empty cache - the peer
+        # silently vanishes. A restart must re-fetch and re-cache.
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            kanban_a = KanbanLogic(session_a, {})
+            board_uuid = kanban_a.create_board("Shared Board").value
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a.publish_due_topics()
+
+            session_b = Session("addr-b")
+            config_b = self._relay_config(relay_root, "B", state_dir)
+            relay_b = RelayLogic(session_b, config_b)
+            relay_b.mark_topics_desired([board_uuid])
+            # A publishes its board + its own identity, so both are applied.
+            self.assertIn((board_uuid, "A"), relay_b.poll_and_apply())
+            self.assertIsNotNone(session_b.peer_perspectives.get("relay:A"))
+
+            # Restart B: fresh session (empty peer_perspectives) + fresh
+            # RelayLogic on the same persisted state file. A published
+            # nothing new.
+            session_b2 = Session("addr-b")
+            kanban_b2 = KanbanLogic(session_b2, {})
+            relay_b2 = RelayLogic(session_b2, config_b)
+            self.assertEqual(relay_b2._state["applied"], {})  # not restored
+
+            applied = relay_b2.poll_and_apply()
+
+            # Re-fetched despite the unchanged hash, repopulating the cache.
+            self.assertIn((board_uuid, "A"), applied)
+            self.assertIsNotNone(session_b2.peer_perspectives.get("relay:A"))
 
     def test_module_channel_descriptor_hook_delegates_to_stashed_instance(self):
         # This is the shape app_server.py's collect_channel_descriptors
