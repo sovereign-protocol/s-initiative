@@ -582,8 +582,6 @@ class KanbanLogic:
     def adopt_incoming_changes(self, board: PRSPNode | None = None) -> bool:
         board = board or self.ensure_board()
         mode = self.auto_adopt_mode(board)
-        if mode == "never":
-            return False
 
         def eligible(node: PRSPNode, event_type: str) -> bool:
             is_card = node.data.get("type") == "kanban_card"
@@ -616,12 +614,51 @@ class KanbanLogic:
         for addr in sorted(self.session.peer_perspectives):
             if not self.session.peer_discusses_node(addr, board.uuid):
                 continue
+            # Collaboration topics belong to their author and always follow
+            # that author's perspective, independently of the board's card
+            # auto-adopt policy.
+            changed = self._adopt_originator_agenda_changes(addr, board.uuid) or changed
+            if mode == "never":
+                continue
+
+            def source_eligible(node: PRSPNode, event_type: str) -> bool:
+                # Agenda changes are handled above using author authority;
+                # never accept a forwarded/stale copy from another peer.
+                if node.data.get("type") == "agenda_item":
+                    return False
+                return eligible(node, event_type)
+
             changed = self.session.reconcile_peer_changes(
                 addr, board.uuid,
-                node_is_eligible=eligible,
+                node_is_eligible=source_eligible,
                 node_adopt_mode=adopt_mode,
-                allow_wholesale_replace=(mode == "always"),
+                # Per-node reconciliation is required here: replacing the
+                # whole board could bypass agenda-author authority (and the
+                # card ownership filters above) through a parent hash.
+                allow_wholesale_replace=False,
             ) or changed
+        return changed
+
+    def _adopt_originator_agenda_changes(self, peer_addr: str,
+                                          board_uuid: str) -> bool:
+        """Make an agenda item's originator authoritative on every peer."""
+        originator_uuid = self._peer_profile_uuid(peer_addr)
+        if not originator_uuid:
+            return False
+        changed = False
+        for event in self.session.analyze_peer_transitions(peer_addr, board_uuid):
+            if event["type"] not in (
+                "peer_made_changes", "local_missing_node", "divergence",
+            ):
+                continue
+            node_uuid = event.get("node_uuid")
+            peer_node = self.session.get_cached_peer_subtree(peer_addr, node_uuid)
+            if not peer_node or peer_node.data.get("type") != "agenda_item":
+                continue
+            if peer_node.data.get("author") != originator_uuid:
+                continue
+            result = self.session.accept_peer_node(peer_addr, node_uuid)
+            changed = changed or result.status == "ok"
         return changed
 
     def _auto_adopt_allows_node(self, mode: str, node: PRSPNode | None) -> bool:
@@ -659,7 +696,7 @@ class KanbanLogic:
                 active=active,
                 mode=mode,
             )
-            if active and mode != "never":
+            if active:
                 changed = self.adopt_incoming_changes(board) or changed
         return changed
 
@@ -789,12 +826,16 @@ class KanbanLogic:
         item = self._node(item_uuid, "agenda_item")
         if not item:
             return SessionResult("error", reason="agenda item not found")
+        if item.data.get("author") != self.user_profile().uuid:
+            return SessionResult("error", reason="only the topic originator can delete it")
         return self.session.delete(item.uuid)
 
     def set_agenda_item_priority(self, item_uuid: str, priority: str | None) -> SessionResult:
         item = self._node(item_uuid, "agenda_item")
         if not item:
             return SessionResult("error", reason="agenda item not found")
+        if item.data.get("author") != self.user_profile().uuid:
+            return SessionResult("error", reason="only the topic originator can set its priority")
         data = dict(item.data)
         data["priority"] = priority if priority in AGENDA_PRIORITIES else None
         return self.session.modify(item.uuid, data, item.weights)

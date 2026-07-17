@@ -76,7 +76,7 @@
         <div id="mergedAgendaList" class="agenda-list"></div>
       </div>
       <div class="side-panel-section separated">
-        <h3>Current Discussion</h3>
+        <h3>Cards and columns not aligned</h3>
         <div id="discussionList" class="discussion-list"></div>
       </div>
       <div id="settingsSection" class="side-panel-section separated">
@@ -550,6 +550,10 @@
       const AGENDA_PRIORITY_LABELS = { "": "No priority", high: "High", medium: "Medium", low: "Low" };
 
       function renderAgenda() {
+        // The board refreshes every 1.5 seconds. Replacing a focused native
+        // select closes its open dropdown, so leave the agenda DOM untouched
+        // while the user is choosing a priority.
+        if (document.activeElement?.classList.contains("agenda-priority-select")) return;
         const items = state.agenda_items || [];
         const myId = state.user_profile?.uuid;
         renderMyAgendaList(items.filter((item) => item.data.author === myId));
@@ -579,15 +583,18 @@
             select.append(option);
           }
           select.value = item.data.priority || "";
-          select.onchange = () =>
+          select.onchange = () => {
+            const priority = select.value || null;
+            select.blur();
             run(
               () =>
                 api("/api/kanban/agenda/set_priority", {
                   item_uuid: item.uuid,
-                  priority: select.value || null,
+                  priority,
                 }),
               "Priority updated",
             );
+          };
           row.append(select);
           const text = document.createElement("span");
           text.className = "agenda-text";
@@ -638,6 +645,12 @@
         peer_missing_node: "New from you",
       };
 
+      function discussionNode(uuid, info) {
+        return findNode(state.board, uuid) ||
+          (info.peer_addr && findNode(state.peers?.[info.peer_addr], uuid)) ||
+          Object.values(state.peers || {}).map(peer => findNode(peer, uuid)).find(Boolean);
+      }
+
       function renderDiscussionList() {
         const container = el("discussionList");
         container.replaceChildren();
@@ -650,17 +663,21 @@
           // local folder - see BACKLOG.md item 11), so it can look
           // "diverged" forever even when every real card agrees.
           if (uuid === state.board.uuid) return false;
+          // Agenda priorities reconcile automatically. This panel is only
+          // for actionable board structure/content conflicts.
+          const localNode = findNode(state.board, uuid);
+          const node = localNode || discussionNode(uuid, info);
+          if (!["kanban_card", "kanban_column"].includes(node?.data?.type)) return false;
           // A container (column) whose own fields match the peer and is
           // only flagged because a child changed underneath it would just
           // be noise here - that same event already shows up on the child
           // itself.
-          const localNode = findNode(state.board, uuid);
           return !(localNode && isContainerOnlyDivergence(localNode));
         });
         if (!entries.length) {
           const empty = document.createElement("p");
           empty.className = "confirm-text";
-          empty.textContent = "Nothing currently in discussion.";
+          empty.textContent = "All cards and columns are aligned.";
           container.append(empty);
           return;
         }
@@ -675,9 +692,7 @@
           // A node with no local copy yet (e.g. local_missing_node) still
           // has a name on the peer's side - look there before giving up,
           // so it doesn't misleadingly read as "removed".
-          const node =
-            findNode(state.board, uuid) ||
-            (info.peer_addr && findNode(state.peers?.[info.peer_addr], uuid));
+          const node = discussionNode(uuid, info);
           const row = document.createElement("div");
           row.className = "discussion-row";
           const name = document.createElement("span");

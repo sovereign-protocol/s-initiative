@@ -215,6 +215,70 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertIn(card.uuid, right.session.protocol.index)
         self.assertEqual(right.session.protocol.index[card.uuid].data["name"], "Shared")
 
+    def test_agenda_priority_always_follows_its_originator(self):
+        left = self.runtime(8393)
+        right = self.runtime(8394)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        right.logic.set_auto_adopt_mode("never")
+
+        item = left.logic.create_agenda_item("Discuss priority", "high").value
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        right.logic.board_payload()
+
+        # Simulate a stale/non-author copy that diverged from the same
+        # previously agreed version. The public logic rejects this edit;
+        # using the session directly recreates persisted pre-fix data.
+        stale = right.session.protocol.index[item.uuid]
+        stale_data = dict(stale.data)
+        stale_data["priority"] = "low"
+        right.session.modify(stale.uuid, stale_data, stale.weights)
+        left.logic.set_agenda_item_priority(item.uuid, "medium")
+        left_payload = left.session.get_subtree(board.uuid)
+        right_payload = right.session.get_subtree(board.uuid)
+        left.session.apply_peer_subtree(
+            right.address,
+            PRSPNode.from_dict(right_payload["subtree"]),
+            right_payload["parent_uuid"],
+        )
+        right.session.apply_peer_subtree(
+            left.address,
+            PRSPNode.from_dict(left_payload["subtree"]),
+            left_payload["parent_uuid"],
+        )
+
+        self.assertEqual(
+            right.session.analyze_peer_transitions(left.address, item.uuid)[0]["type"],
+            "divergence",
+        )
+        self.assertTrue(right.logic.adopt_incoming_changes())
+        self.assertEqual(
+            right.session.protocol.index[item.uuid].data["priority"],
+            "medium",
+        )
+
+    def test_non_originator_cannot_change_agenda_priority(self):
+        left = self.runtime(8395)
+        right = self.runtime(8396)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        item = left.logic.create_agenda_item("Owned by left", "low").value
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        right.logic.board_payload()
+
+        result = right.logic.set_agenda_item_priority(item.uuid, "high")
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(right.session.protocol.index[item.uuid].data["priority"], "low")
+
     def test_two_clients_auto_adopt_card_move(self):
         left = self.runtime(8313)
         right = self.runtime(8314)

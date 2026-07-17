@@ -2,6 +2,7 @@ import json
 import os
 import stat as stat_module
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -242,6 +243,67 @@ class LocalFolderRelayStorageTests(unittest.TestCase):
 
 
 class SftpRelayStorageTests(unittest.TestCase):
+    def test_verify_access_writes_and_removes_probe(self):
+        fake = FakeSftpClient()
+        storage = _sftp_storage_with_fake(fake)
+
+        storage.verify_access()
+
+        self.assertFalse(any(".s-kanban-probe-" in path for path in fake.files))
+
+    def test_authentication_failure_is_not_retried(self):
+        import paramiko
+
+        storage = SftpRelayStorage(
+            host="example.test", username="u", remote_root="/relay",
+        )
+        attempts = []
+
+        def fail_authentication():
+            attempts.append(True)
+            raise paramiko.AuthenticationException("bad credentials")
+
+        storage._connect = fail_authentication
+
+        with self.assertRaises(paramiko.AuthenticationException):
+            storage.list_topics()
+
+        self.assertEqual(len(attempts), 1)
+
+    def test_operations_on_shared_client_are_serialized(self):
+        storage = SftpRelayStorage(
+            host="example.test", username="u", remote_root="/relay",
+        )
+        storage._sftp = object()
+        first_inside = threading.Event()
+        release_first = threading.Event()
+        second_inside = threading.Event()
+        call_count = 0
+        count_lock = threading.Lock()
+
+        def operation(client):
+            nonlocal call_count
+            with count_lock:
+                call_count += 1
+                call_number = call_count
+            if call_number == 1:
+                first_inside.set()
+                release_first.wait(timeout=1)
+            else:
+                second_inside.set()
+
+        first = threading.Thread(target=storage._with_retry, args=(operation,))
+        second = threading.Thread(target=storage._with_retry, args=(operation,))
+        first.start()
+        self.assertTrue(first_inside.wait(timeout=1))
+        second.start()
+
+        self.assertFalse(second_inside.wait(timeout=0.05))
+        release_first.set()
+        first.join(timeout=1)
+        second.join(timeout=1)
+        self.assertTrue(second_inside.is_set())
+
     def test_write_then_read_round_trips_head_and_snapshot(self):
         fake = FakeSftpClient()
         storage = _sftp_storage_with_fake(fake)
@@ -853,6 +915,37 @@ class RelayLogicTests(unittest.TestCase):
         self.assertFalse(relay_b.adopt_storage_from_descriptor({"type": "sftp"}))  # no host
         self.assertFalse(relay_b.adopt_storage_from_descriptor({"type": "carrier_pigeon"}))
         self.assertIsNone(relay_b.storage)
+
+    def test_ensure_usable_storage_adopts_only_after_probe_succeeds(self):
+        session_b = Session("addr-b")
+        relay_b = RelayLogic(session_b, {})
+        candidate = types.SimpleNamespace(
+            root="x",
+            verify_access=lambda: None,
+        )
+
+        with patch.object(relay_b, "_storage_from_descriptor", return_value=candidate):
+            result = relay_b.ensure_usable_storage({"type": "relay", "root": "x"})
+
+        self.assertEqual(result.status, "ok")
+        self.assertIs(relay_b.storage, candidate)
+
+    def test_ensure_usable_storage_failure_does_not_adopt_candidate(self):
+        session_b = Session("addr-b")
+        relay_b = RelayLogic(session_b, {})
+        original_state_path = relay_b._state_path
+
+        def fail_probe():
+            raise PermissionError("denied")
+
+        candidate = types.SimpleNamespace(root="x", verify_access=fail_probe)
+        with patch.object(relay_b, "_storage_from_descriptor", return_value=candidate):
+            result = relay_b.ensure_usable_storage({"type": "relay", "root": "x"})
+
+        self.assertEqual(result.status, "error")
+        self.assertIn("PermissionError: denied", result.reason)
+        self.assertIsNone(relay_b.storage)
+        self.assertEqual(relay_b._state_path, original_state_path)
 
     def test_accepter_with_no_config_grafts_via_adopted_storage(self):
         # End-to-end: an inviter publishes to a local root; a fresh accepter
