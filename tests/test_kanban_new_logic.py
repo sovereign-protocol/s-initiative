@@ -209,7 +209,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         column = left.logic.columns(board)[0]
         card = left.logic.create_card(column.uuid, "Shared", "", []).value
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
 
         self.assertIn(card.uuid, right.session.protocol.index)
@@ -227,11 +227,11 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
         card = left.logic.create_card(first.uuid, "Move me", "", []).value
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
 
         left.logic.move_card(card.uuid, second.uuid, 0)
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
 
         self.assertEqual(right.session.protocol.index[card.uuid].parent_uuid, second.uuid)
@@ -248,10 +248,10 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
         card = left.logic.create_card(second.uuid, "Opposing move", "", []).value
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
         left.logic.move_card(card.uuid, first.uuid, 0)
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
         self.assertEqual(right.session.protocol.index[card.uuid].parent_uuid, first.uuid)
 
@@ -273,10 +273,10 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
         card = left.logic.create_card(second.uuid, "Move back", "", []).value
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
         left.logic.move_card(card.uuid, first.uuid, 0)
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
         self.assertEqual(right.session.protocol.index[card.uuid].parent_uuid, first.uuid)
 
@@ -311,13 +311,13 @@ class KanbanNewLogicTests(unittest.TestCase):
         owned_by_peer = left.logic.create_card(
             column.uuid, "Owned by peer", "", [right_id], owner=left_id,
         ).value
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
 
         right.logic.set_auto_adopt_mode("not_owner")
         left.logic.update_card(owned_by_me.uuid, "Renamed (owned by me)", "", [right_id], owner=right_id)
         left.logic.update_card(owned_by_peer.uuid, "Renamed (owned by peer)", "", [right_id], owner=left_id)
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
 
         self.assertEqual(
@@ -341,7 +341,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         column = left.logic.columns(board)[0]
 
         card = left.logic.create_card(column.uuid, "Original", "", []).value
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
         self.assertEqual(right.session.protocol.index[card.uuid].data["name"], "Original")
 
@@ -349,7 +349,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(keep_mine_result.status, "ok")
 
         left.logic.update_card(card.uuid, "Changed by left", "", [])
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
 
         self.assertEqual(
@@ -377,13 +377,13 @@ class KanbanNewLogicTests(unittest.TestCase):
         column = left.logic.columns(board)[0]
 
         card = left.logic.create_card(column.uuid, "Original", "", []).value
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
         self.assertEqual(right.session.protocol.index[card.uuid].data["name"], "Original")
 
         left.logic.update_card(card.uuid, "Changed by left", "", [])
         left.logic.set_perspective_state(card.uuid, "pushed_back")
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
 
         # Right's auto-adopt (mode "always") would normally pull this
@@ -436,13 +436,13 @@ class KanbanNewLogicTests(unittest.TestCase):
         not_involved = left.logic.create_card(
             column.uuid, "Not involved", "", [],
         ).value
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
 
         right.logic.set_auto_adopt_mode("not_member")
         left.logic.update_card(im_a_member.uuid, "Renamed (member)", "", [right_id])
         left.logic.update_card(not_involved.uuid, "Renamed (uninvolved)", "", [])
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
 
         self.assertEqual(
@@ -477,7 +477,7 @@ class KanbanNewLogicTests(unittest.TestCase):
                 runtime.adapter.execute_effects(result.effects)
 
         card = left.logic.create_card(first.uuid, "Move through chain", "", []).value
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         for _ in range(3):
             tick()
         self.assertIn(card.uuid, middle.session.protocol.index)
@@ -506,15 +506,15 @@ class KanbanNewLogicTests(unittest.TestCase):
         first, second = left.logic.columns(board)[:2]
 
         card = left.logic.create_card(first.uuid, "Hash safe", "", []).value
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
-        right.adapter.execute_effects(right.session._sync_effects(board.uuid))
+        right.adapter.execute_effects(right.session.sync_effects(board.uuid))
         left.logic.board_payload()
 
         left.logic.move_card(card.uuid, second.uuid, 0)
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
-        right.adapter.execute_effects(right.session._sync_effects(board.uuid))
+        right.adapter.execute_effects(right.session.sync_effects(board.uuid))
         left.logic.board_payload()
 
         for runtime in (left, right):
@@ -535,7 +535,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         column = left.logic.columns(board)[0]
         card = left.logic.create_card(column.uuid, "Needs adopt", "", []).value
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
 
         self.assertNotIn(card.uuid, right.session.protocol.index)
@@ -600,13 +600,13 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
         card = left.logic.create_card(first.uuid, "Move me", "", []).value
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         right.logic.board_payload()
         right.logic.set_auto_adopt_mode("never")
 
         left.logic.move_card(card.uuid, second.uuid, 0)
         PRSPNode.from_dict(left.session.protocol.root.to_dict())
-        left.adapter.execute_effects(left.session._sync_effects(board.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         payload = right.logic.board_payload()
 
         self.assertEqual(
@@ -1161,7 +1161,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         column = left.logic.columns(board1)[0]
         card = left.logic.create_card(column.uuid, "Board 1 card", "", []).value
-        left.adapter.execute_effects(left.session._sync_effects(board1.uuid))
+        left.adapter.execute_effects(left.session.sync_effects(board1.uuid))
         right.logic.board_payload()
 
         self.assertIn(card.uuid, right.session.protocol.index)

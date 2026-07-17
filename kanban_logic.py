@@ -93,7 +93,7 @@ class KanbanLogic:
             "users": self.users(),
             "network": self._network_info_with_relay_liveness(),
             "peers": {
-                addr: tree.to_dict() if tree else None
+                addr: tree.to_dict()
                 for addr, tree in sorted(self.session.peer_perspectives.items())
             },
             "auto_adopt_mode": self.auto_adopt_mode(board),
@@ -188,7 +188,7 @@ class KanbanLogic:
         board = self._create_board_node(name or "Kanban Board")
         self._remember_board(board.uuid, explicit=True)
         return SessionResult("ok", value=board.uuid,
-                             effects=self.session._sync_effects(self._kanban_container().uuid))
+                             effects=self.session.sync_effects(self._kanban_container().uuid))
 
     def select_board(self, board_uuid: str) -> SessionResult:
         board = self.session.protocol.index.get(board_uuid)
@@ -239,7 +239,7 @@ class KanbanLogic:
         self.session.modify(clone.uuid, data, clone.weights)
         self._remember_board(clone.uuid, explicit=True)
         return SessionResult("ok", value=clone.uuid,
-                             effects=self.session._sync_effects(clone.uuid))
+                             effects=self.session.sync_effects(clone.uuid))
 
     def delete_board(self, board_uuid: str) -> SessionResult:
         boards = self.boards()
@@ -405,7 +405,7 @@ class KanbanLogic:
                 topic_uuids=[*sorted(topics), own_profile_uuid],
             )
         for topic in response_topic_uuids:
-            runtime.adapter.execute_effects(self.session._sync_effects(topic))
+            runtime.adapter.execute_effects(self.session.sync_effects(topic))
         return {
             "status": "ok",
             "members": sorted({
@@ -645,7 +645,7 @@ class KanbanLogic:
         return SessionResult(
             "ok",
             value=True,
-            effects=self.session._sync_effects(None),
+            effects=self.session.sync_effects(None),
         )
 
     def adopt_all_incoming_changes(self) -> bool:
@@ -950,12 +950,6 @@ class KanbanLogic:
             self.session._is_descendant_or_self(topic_uuid, node_uuid)
             for topic_uuid in self.session.active_topic_uuids
         )
-
-    def _collect_subtree_uuids(self, node: PRSPNode) -> set[str]:
-        out = {node.uuid}
-        for child in node.children:
-            out.update(self._collect_subtree_uuids(child))
-        return out
 
 
 def create_logic(session: Session, config: dict) -> KanbanLogic:
