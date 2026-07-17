@@ -9,6 +9,26 @@ from protocol import PRSPNode
 from session import Session
 
 
+def connect(host, guest, board_uuid: str | None = None) -> dict:
+    """Wire two runtimes the way the app actually does: `guest` accepts a
+    connect token offering `host`'s http channel.
+
+    Replaces the removed address-based invite/share_board flow, which had no
+    UI caller left. Omit board_uuid to share only the host's identity (the
+    old `invite`); pass one to share a board too (the old `share_board`).
+    """
+    profile_uuid = host.logic.user_profile().uuid
+    topic_uuids = [profile_uuid] if board_uuid is None else [board_uuid, profile_uuid]
+    for topic_uuid in topic_uuids:
+        host.session.start_discussion(topic_uuid)
+    return app_server.accept_connect_token(
+        guest,
+        identity=host.session.identity.to_dict(),
+        topic_uuids=topic_uuids,
+        channels=[{"type": "http", "version": 1, "address": host.address}],
+    )
+
+
 class MemoryHttpClient:
     def __init__(self, runtimes):
         self.runtimes = runtimes
@@ -43,11 +63,6 @@ class MemoryHttpClient:
             response, status = runtime.adapter.p2p_join(payload)
             if status != 200:
                 raise RuntimeError(response.get("reason", "join failed"))
-            return response
-        if path == "/p2p/ping":
-            response, status = runtime.adapter.p2p_ping(payload)
-            if status != 200:
-                raise RuntimeError(response.get("reason", "ping failed"))
             return response
         if path == "/p2p/sync_status":
             response, status = runtime.adapter.p2p_sync_status(payload)
@@ -184,10 +199,10 @@ class KanbanNewLogicTests(unittest.TestCase):
         board = left.logic.ensure_board()
         right.logic.ensure_board()
 
-        invite = left.logic.invite(left, right.address)
+        invite = connect(left, right)
         self.assertEqual(invite["status"], "ok")
         self.assertNotIn(board.uuid, right.session.protocol.index)
-        share = left.logic.share_board(left, right.address, board.uuid)
+        share = connect(left, right, board.uuid)
         self.assertEqual(share["status"], "ok")
         self.assertEqual(right.logic.ensure_board().uuid, board.uuid)
         right.logic.set_auto_adopt_mode("always")
@@ -207,8 +222,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.http = client
         right.adapter.http = client
         board = left.logic.ensure_board()
-        left.logic.invite(left, right.address)
-        left.logic.share_board(left, right.address, board.uuid)
+        connect(left, right)
+        connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
         card = left.logic.create_card(first.uuid, "Move me", "", []).value
@@ -228,8 +243,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.http = client
         right.adapter.http = client
         board = left.logic.ensure_board()
-        left.logic.invite(left, right.address)
-        left.logic.share_board(left, right.address, board.uuid)
+        connect(left, right)
+        connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
         card = left.logic.create_card(second.uuid, "Opposing move", "", []).value
@@ -252,8 +267,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.http = client
         right.adapter.http = client
         board = left.logic.ensure_board()
-        left.logic.invite(left, right.address)
-        left.logic.share_board(left, right.address, board.uuid)
+        connect(left, right)
+        connect(left, right, board.uuid)
         left.logic.set_auto_adopt_mode("always")
         right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
@@ -284,8 +299,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.http = client
         right.adapter.http = client
         board = left.logic.ensure_board()
-        left.logic.invite(left, right.address)
-        left.logic.share_board(left, right.address, board.uuid)
+        connect(left, right)
+        connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("always")
         column = left.logic.columns(board)[0]
         right_id = right.logic.user_profile().uuid
@@ -320,8 +335,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.http = client
         right.adapter.http = client
         board = left.logic.ensure_board()
-        left.logic.invite(left, right.address)
-        left.logic.share_board(left, right.address, board.uuid)
+        connect(left, right)
+        connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("always")
         column = left.logic.columns(board)[0]
 
@@ -356,8 +371,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.http = client
         right.adapter.http = client
         board = left.logic.ensure_board()
-        left.logic.invite(left, right.address)
-        left.logic.share_board(left, right.address, board.uuid)
+        connect(left, right)
+        connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("always")
         column = left.logic.columns(board)[0]
 
@@ -410,8 +425,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.http = client
         right.adapter.http = client
         board = left.logic.ensure_board()
-        left.logic.invite(left, right.address)
-        left.logic.share_board(left, right.address, board.uuid)
+        connect(left, right)
+        connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("always")
         column = left.logic.columns(board)[0]
         right_id = right.logic.user_profile().uuid
@@ -450,8 +465,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         for runtime in (left, middle, right):
             runtime.adapter.http = client
         board = left.logic.ensure_board()
-        left.logic.share_board(left, middle.address, board.uuid)
-        middle.logic.share_board(middle, right.address, board.uuid)
+        connect(left, middle, board.uuid)
+        connect(middle, right, board.uuid)
         middle.logic.set_auto_adopt_mode("always")
         right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
@@ -486,8 +501,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.http = client
         right.adapter.http = client
         board = left.logic.ensure_board()
-        left.logic.invite(left, right.address)
-        left.logic.share_board(left, right.address, board.uuid)
+        connect(left, right)
+        connect(left, right, board.uuid)
         first, second = left.logic.columns(board)[:2]
 
         card = left.logic.create_card(first.uuid, "Hash safe", "", []).value
@@ -514,8 +529,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.http = client
         right.adapter.http = client
         board = left.logic.ensure_board()
-        left.logic.invite(left, right.address)
-        left.logic.share_board(left, right.address, board.uuid)
+        connect(left, right)
+        connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("never")
 
         column = left.logic.columns(board)[0]
@@ -541,7 +556,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.adapter.http = client
         board = left.logic.ensure_board()
 
-        share = left.logic.share_board(left, right.address, board.uuid)
+        share = connect(left, right, board.uuid)
 
         self.assertEqual(share["status"], "ok")
         self.assertEqual(right.logic.ensure_board().uuid, board.uuid)
@@ -554,7 +569,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.http = client
         right.adapter.http = client
         board = left.logic.ensure_board()
-        left.logic.share_board(left, right.address, board.uuid)
+        connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("never")
         right_board = right.logic.ensure_board()
         column = right.logic.columns(right_board)[0]
@@ -581,7 +596,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.http = client
         right.adapter.http = client
         board = left.logic.ensure_board()
-        left.logic.share_board(left, right.address, board.uuid)
+        connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
         card = left.logic.create_card(first.uuid, "Move me", "", []).value
@@ -613,8 +628,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.http = client
         right.adapter.http = client
         board = left.logic.ensure_board()
-        left.logic.invite(left, right.address)
-        left.logic.share_board(left, right.address, board.uuid)
+        connect(left, right)
+        connect(left, right, board.uuid)
         column = left.logic.columns(board)[0]
 
         card = left.logic.create_card(column.uuid, "Local", "", []).value
@@ -702,7 +717,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.logic.set_user_profile("Alice", "")
 
         board = left.logic.ensure_board()
-        invite = left.logic.share_board(left, right.address, board.uuid)
+        invite = connect(left, right, board.uuid)
 
         self.assertEqual(invite["status"], "ok")
         left_profile = left.logic.user_profile()
@@ -733,7 +748,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertNotEqual(profile.uuid, peer_identity.uuid)
         self.assertNotEqual(profile.data["identity_key"], peer_identity.data["identity_key"])
 
-    def test_share_board_shares_board_and_profile_topics(self):
+    def test_connect_shares_board_and_profile_topics(self):
         left = self.runtime(8322)
         right = self.runtime(8323)
         client = MemoryHttpClient({left.address: left, right.address: right})
@@ -743,37 +758,35 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.logic.set_user_profile("Alice", "")
 
         board = left.logic.ensure_board()
-        invite = left.logic.share_board(left, right.address, board.uuid)
+        result = connect(left, right, board.uuid)
 
-        self.assertEqual(invite["status"], "ok")
-        topics = invite["topic_uuids"]
-        local_topic_data = [
-            left.session.protocol.index[uuid].data
-            for uuid in topics
-            if uuid in left.session.protocol.index
-        ]
-        self.assertIn(board.uuid, topics)
-        self.assertIn(left.logic.user_profile().uuid, topics)
-        self.assertTrue(any(data.get("type") == "shared_user_profile" for data in local_topic_data))
-        self.assertIn(right.address, left.session.members)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["channels_used"], ["http"])
+        # A share carries the board *and* the sharer's profile, so each side
+        # ends up tracking the other's identity topic as well as the board.
         left_identity = left.logic.user_profile().uuid
         right_identity = right.logic.user_profile().uuid
+        self.assertEqual(
+            left.session.protocol.index[left_identity].data["type"],
+            "shared_user_profile",
+        )
+        self.assertIn(board.uuid, right.session.protocol.index)
+        self.assertIn(right.address, left.session.members)
         self.assertIn(right_identity, left.session.fetch_topic_uuids(right.address))
         self.assertIn(left_identity, right.session.fetch_topic_uuids(left.address))
 
-    def test_share_board_adds_selected_board_topic(self):
+    def test_connect_adds_selected_board_topic(self):
         left = self.runtime(8326)
         right = self.runtime(8327)
         client = MemoryHttpClient({left.address: left, right.address: right})
         left.adapter.http = client
         right.adapter.http = client
         board = left.logic.ensure_board()
-        left.logic.invite(left, right.address)
+        connect(left, right)
 
-        share = left.logic.share_board(left, right.address, board.uuid)
+        share = connect(left, right, board.uuid)
 
         self.assertEqual(share["status"], "ok")
-        self.assertIn(board.uuid, share["topic_uuids"])
         self.assertIn(board.uuid, right.session.protocol.index)
         self.assertIn(board.uuid, left.session.fetch_topic_uuids(right.address))
         self.assertIn(board.uuid, right.session.fetch_topic_uuids(left.address))
@@ -798,7 +811,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.adapter.http = client
         board = left.logic.create_board("Glow").value
 
-        share = left.logic.share_board(left, right.address, board)
+        share = connect(left, right, board)
 
         self.assertEqual(share["status"], "ok")
         self.assertIn(board, right.session.protocol.index)
@@ -814,7 +827,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.http = client
         right.adapter.http = client
         board = left.logic.create_board("Glow").value
-        left.logic.share_board(left, right.address, board)
+        connect(left, right, board)
 
         unshare = left.logic.unshare_board(left, board)
 
@@ -830,8 +843,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.adapter.http = client
         first = left.logic.create_board("Glow").value
         second = left.logic.create_board("Flow").value
-        left.logic.share_board(left, right.address, first)
-        left.logic.share_board(left, right.address, second)
+        connect(left, right, first)
+        connect(left, right, second)
 
         unshare = left.logic.unshare_board(left, first)
 
@@ -854,8 +867,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         middle.adapter.http = client
         right.adapter.http = client
         board = left.logic.create_board("Glow").value
-        left.logic.share_board(left, middle.address, board)
-        left.logic.share_board(left, right.address, board)
+        connect(left, middle, board)
+        connect(left, right, board)
 
         unshare = left.logic.unshare_board(left, board)
 
@@ -879,11 +892,11 @@ class KanbanNewLogicTests(unittest.TestCase):
         third.adapter.http = client
         shared_board = first.logic.ensure_board()
         middle_private_board = middle.logic.create_board("Middle private").value
-        first.logic.invite(first, middle.address)
-        first.logic.share_board(first, middle.address, shared_board.uuid)
-        middle.logic.invite(middle, third.address)
+        connect(first, middle)
+        connect(first, middle, shared_board.uuid)
+        connect(middle, third)
 
-        share = middle.logic.share_board(middle, third.address, shared_board.uuid)
+        share = connect(middle, third, shared_board.uuid)
 
         self.assertEqual(share["status"], "ok")
         self.assertIn(
@@ -914,11 +927,11 @@ class KanbanNewLogicTests(unittest.TestCase):
         third.adapter.http = client
         first.logic.set_user_profile("Alice", "https://example.test/a.png")
         shared_board = first.logic.ensure_board()
-        first.logic.invite(first, middle.address)
-        first.logic.share_board(first, middle.address, shared_board.uuid)
-        middle.logic.invite(middle, third.address)
+        connect(first, middle)
+        connect(first, middle, shared_board.uuid)
+        connect(middle, third)
 
-        share = middle.logic.share_board(middle, third.address, shared_board.uuid)
+        share = connect(middle, third, shared_board.uuid)
 
         self.assertEqual(share["status"], "ok")
         users = {user["address"]: user for user in third.logic.users()}
@@ -942,8 +955,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         third.logic.set_user_profile("Cynthia", "")
         shared_board = first.logic.ensure_board()
 
-        first.logic.share_board(first, middle.address, shared_board.uuid)
-        share = first.logic.share_board(first, third.address, shared_board.uuid)
+        connect(first, middle, shared_board.uuid)
+        share = connect(first, third, shared_board.uuid)
 
         self.assertEqual(share["status"], "ok")
         users = {user["address"]: user for user in middle.logic.users()}
@@ -1084,8 +1097,8 @@ class KanbanNewLogicTests(unittest.TestCase):
             runtime.adapter.http = client
             runtime.logic.set_user_profile(runtime.address, "")
         board = left.logic.ensure_board()
-        left.logic.share_board(left, middle.address, board.uuid)
-        left.logic.share_board(left, right.address, board.uuid)
+        connect(left, middle, board.uuid)
+        connect(left, right, board.uuid)
 
         def tick():
             for runtime in (left, middle, right):
@@ -1137,9 +1150,9 @@ class KanbanNewLogicTests(unittest.TestCase):
         board2 = left.logic.create_board("Board 2").value
         left.logic.select_board(board1.uuid)
         right.logic.ensure_board()
-        left.logic.invite(left, right.address)
-        left.logic.share_board(left, right.address, board1.uuid)
-        left.logic.share_board(left, right.address, board2)
+        connect(left, right)
+        connect(left, right, board1.uuid)
+        connect(left, right, board2)
         right.logic.select_board(board2)
         right.logic.set_auto_adopt_mode("never")
         right.logic.select_board(board1.uuid)
@@ -1393,6 +1406,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         runtime = app_server.create_runtime(port, config)
         runtime._test_tmp = directory
         return runtime
+
 
 
 if __name__ == "__main__":

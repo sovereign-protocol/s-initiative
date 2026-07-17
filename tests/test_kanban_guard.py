@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 import app_server
-from tests.test_kanban_new_logic import MemoryHttpClient
+from tests.test_kanban_new_logic import MemoryHttpClient, connect
 
 
 class KanbanGuardTests(unittest.TestCase):
@@ -14,8 +14,7 @@ class KanbanGuardTests(unittest.TestCase):
         left.adapter.http = client
         right.adapter.http = client
         board = left.logic.ensure_board()
-        left.logic.invite(left, right.address)
-        left.logic.share_board(left, right.address, board.uuid)
+        connect(left, right, board.uuid)
         column = left.logic.columns(board)[0]
 
         card = left.logic.create_card(column.uuid, "Mine", "", []).value

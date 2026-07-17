@@ -24,7 +24,6 @@ Contract:
     POST /api/kanban/agenda/delete        {item_uuid}
     POST /api/kanban/agenda/set_priority  {item_uuid, priority}  # priority optional, clears if omitted
     POST /api/kanban/auto_adopt          {mode}  # one of: always, not_owner, not_member, never
-    POST /api/kanban/invite              {address}
     POST /api/kanban/columns/create      {name}
     POST /api/kanban/columns/rename      {column_uuid, name}
     POST /api/kanban/columns/delete      {column_uuid}
@@ -272,42 +271,6 @@ class KanbanLogic:
             )
         return self.session.get_node(board.uuid) or board
 
-    def invite(self, runtime, address: str) -> dict:
-        topic_uuids = [self.user_profile().uuid]
-        for topic_uuid in topic_uuids:
-            start = self.session.start_discussion(topic_uuid)
-            if start.status != "ok":
-                return {"status": "error", "reason": start.reason}
-        result = runtime.adapter.invite_to_discuss(
-            address,
-            topic_uuids=topic_uuids,
-        )
-        if result.get("status") == "ok":
-            self._pull_returned_peer_topics(runtime, address, result.get("topic_uuids", []))
-            peer_fetch_topics = [
-                uuid for uuid in result.get("topic_uuids", [])
-                if uuid not in self.session.protocol.index
-            ]
-            self._set_peer_owned_topics(address, peer_fetch_topics)
-        return result
-
-    def share_board(self, runtime, address: str,
-                    board_uuid: str | None = None) -> dict:
-        address = address.rstrip("/")
-        board = self.session.protocol.index.get(board_uuid) if board_uuid else self.ensure_board()
-        if not board or board.data.get("type") != "kanban_board":
-            return {"status": "error", "reason": "board not found"}
-        profile = self.user_profile()
-        for topic_uuid in (board.uuid, profile.uuid):
-            start = self.session.start_discussion(topic_uuid)
-            if start.status != "ok":
-                return {"status": "error", "reason": start.reason}
-        topic_uuids = [board.uuid, profile.uuid]
-        return runtime.adapter.invite_to_discuss(
-            address,
-            topic_uuids=topic_uuids,
-        )
-
     def unshare_board(self, runtime, board_uuid: str | None = None) -> dict:
         board = self.session.protocol.index.get(board_uuid) if board_uuid else self.ensure_board()
         if not board or board.data.get("type") != "kanban_board":
@@ -350,21 +313,6 @@ class KanbanLogic:
         if errors:
             payload["delivery_errors"] = errors
         return payload
-
-    def _pull_returned_peer_topics(self, runtime, address: str,
-                                   topic_uuids: list[str]) -> None:
-        for topic_uuid in topic_uuids or []:
-            if topic_uuid in self.session.protocol.index:
-                continue
-            try:
-                payload = runtime.adapter.fetch_subtree(address, topic_uuid)
-                tree = runtime.adapter._decode_wire_subtree(payload["subtree"], address)
-                self.session.apply_peer_subtree(address, tree, payload.get("parent_uuid"))
-            except Exception as exc:
-                runtime.adapter.logger(
-                    "[kanban] returned peer topic fetch failed "
-                    f"{address} {topic_uuid}: {exc}"
-                )
 
     def join_discussion(self, runtime, address: str,
                         topic_uuid: str | None = None,
@@ -1009,13 +957,6 @@ class KanbanLogic:
             out.update(self._collect_subtree_uuids(child))
         return out
 
-    def _remove_uuids_from_tree(self, root: PRSPNode, uuids: set[str]) -> None:
-        self.session.remove_subtree_uuids(root.uuid, uuids)
-
-    def _remove_uuids_from_tree_locked(self, root: PRSPNode, uuids: set[str]) -> bool:
-        result = self.session.remove_subtree_uuids(root.uuid, uuids)
-        return bool(result.value)
-
 
 def create_logic(session: Session, config: dict) -> KanbanLogic:
     return KanbanLogic(session, config)
@@ -1062,27 +1003,6 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
     async def api_delete_board(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.delete_board(data["board_uuid"]))
-
-    async def api_invite(request: Request):
-        data = await request.json()
-        result = await asyncio.to_thread(logic.invite, runtime, data["address"].strip().rstrip("/"))
-        status = 200 if result.get("status") == "ok" else 409
-        if status == 200:
-            runtime.notify_change()
-        return JSONResponse(result, status_code=status)
-
-    async def api_share_board(request: Request):
-        data = await request.json()
-        result = await asyncio.to_thread(
-            logic.share_board,
-            runtime,
-            data["address"].strip().rstrip("/"),
-            data.get("board_uuid"),
-        )
-        status = 200 if result.get("status") == "ok" else 409
-        if status == 200:
-            runtime.notify_change()
-        return JSONResponse(result, status_code=status)
 
     async def api_unshare_board(request: Request):
         data = await request.json()
@@ -1195,8 +1115,6 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
         Route("/api/kanban/boards/copy", api_copy_board, methods=["POST"]),
         Route("/api/kanban/boards/delete", api_delete_board, methods=["POST"]),
         Route("/api/kanban/profile", api_profile, methods=["POST"]),
-        Route("/api/kanban/invite", api_invite, methods=["POST"]),
-        Route("/api/kanban/boards/share", api_share_board, methods=["POST"]),
         Route("/api/kanban/boards/unshare", api_unshare_board, methods=["POST"]),
         Route("/api/kanban/columns/create", api_create_column, methods=["POST"]),
         Route("/api/kanban/columns/rename", api_rename_column, methods=["POST"]),

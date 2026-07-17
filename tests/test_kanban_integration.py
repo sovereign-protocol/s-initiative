@@ -44,6 +44,26 @@ def wait_for_server(port: int) -> None:
     raise RuntimeError(f"server on {port} did not start: {last_error}")
 
 
+def connect_over_http(host_port: int, guest_port: int, board_uuid: str) -> dict:
+    """Connect two live servers the way the UI does: fetch a connect token
+    from the host and hand it to the guest's /api/connect.
+
+    Replaces the removed address-based /api/kanban/invite +
+    /api/kanban/boards/share endpoints, which had no UI caller left.
+    """
+    token = request_json(
+        "GET",
+        f"http://127.0.0.1:{host_port}/api/connect_token?topic_uuids={board_uuid}",
+        timeout=20,
+    )
+    return request_json(
+        "POST",
+        f"http://127.0.0.1:{guest_port}/api/connect",
+        {"token": token},
+        timeout=20,
+    )
+
+
 def card_names(board: dict) -> list[str]:
     names = []
     for column in board["children"]:
@@ -112,22 +132,7 @@ class ServerIntegrationTests(unittest.TestCase):
                     },
                 )
 
-                invite = request_json(
-                    "POST",
-                    f"http://127.0.0.1:{port_a}/api/kanban/invite",
-                    {"address": f"http://127.0.0.1:{port_b}"},
-                    timeout=20,
-                )
-                self.assertEqual(invite["status"], "ok")
-                share = request_json(
-                    "POST",
-                    f"http://127.0.0.1:{port_a}/api/kanban/boards/share",
-                    {
-                        "address": f"http://127.0.0.1:{port_b}",
-                        "board_uuid": board_a["uuid"],
-                    },
-                    timeout=20,
-                )
+                share = connect_over_http(port_a, port_b, board_a["uuid"])
                 self.assertEqual(share["status"], "ok")
 
                 deadline = time.monotonic() + 10
@@ -198,26 +203,10 @@ class ServerIntegrationTests(unittest.TestCase):
             try:
                 wait_for_server(port_a)
                 wait_for_server(port_b)
-                invite = request_json(
-                    "POST",
-                    f"http://127.0.0.1:{port_a}/api/kanban/invite",
-                    {"address": f"http://127.0.0.1:{port_b}"},
-                    timeout=20,
-                )
-                self.assertEqual(invite["status"], "ok")
-
                 board_a = request_json(
                     "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
                 )["board"]
-                share = request_json(
-                    "POST",
-                    f"http://127.0.0.1:{port_a}/api/kanban/boards/share",
-                    {
-                        "address": f"http://127.0.0.1:{port_b}",
-                        "board_uuid": board_a["uuid"],
-                    },
-                    timeout=20,
-                )
+                share = connect_over_http(port_a, port_b, board_a["uuid"])
                 self.assertEqual(share["status"], "ok")
                 request_json(
                     "POST",
@@ -296,26 +285,10 @@ class ServerIntegrationTests(unittest.TestCase):
             try:
                 wait_for_server(port_a)
                 wait_for_server(port_b)
-                invite = request_json(
-                    "POST",
-                    f"http://127.0.0.1:{port_a}/api/kanban/invite",
-                    {"address": f"http://127.0.0.1:{port_b}"},
-                    timeout=20,
-                )
-                self.assertEqual(invite["status"], "ok")
-
                 board_a = request_json(
                     "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
                 )["board"]
-                share = request_json(
-                    "POST",
-                    f"http://127.0.0.1:{port_a}/api/kanban/boards/share",
-                    {
-                        "address": f"http://127.0.0.1:{port_b}",
-                        "board_uuid": board_a["uuid"],
-                    },
-                    timeout=20,
-                )
+                share = connect_over_http(port_a, port_b, board_a["uuid"])
                 self.assertEqual(share["status"], "ok")
                 request_json(
                     "POST",
