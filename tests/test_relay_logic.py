@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from kanban_logic import KanbanLogic
+from protocol import PRSPNode
 from relay_logic import RelayLogic, channel_descriptor
 from relay_storage import LocalFolderRelayStorage, SftpRelayStorage
 from session import Session
@@ -175,6 +176,22 @@ class LocalFolderRelayStorageTests(unittest.TestCase):
 
             self.assertEqual(storage.read_head("topic-1", "A")["hash"], "hash-2")
             self.assertEqual(storage.read_snapshot("topic-1", "A", "hash-1")["subtree"], {"n": 1})
+
+    def test_superseded_snapshots_are_pruned(self):
+        # Review R-4: every published revision used to stay forever. Keep
+        # the current head and its immediate predecessor (a lagging peer may
+        # be mid-fetch of that one); drop anything older.
+        with tempfile.TemporaryDirectory() as root:
+            storage = LocalFolderRelayStorage(root)
+            storage.write_snapshot("topic-1", "A", "hash-1", {"subtree": {"n": 1}, "parent_uuid": None})
+            storage.write_snapshot("topic-1", "A", "hash-2", {"subtree": {"n": 2}, "parent_uuid": None})
+
+            storage.write_snapshot("topic-1", "A", "hash-3", {"subtree": {"n": 3}, "parent_uuid": None})
+
+            self.assertIsNone(storage.read_snapshot("topic-1", "A", "hash-1"))
+            self.assertIsNotNone(storage.read_snapshot("topic-1", "A", "hash-2"))
+            self.assertIsNotNone(storage.read_snapshot("topic-1", "A", "hash-3"))
+            self.assertEqual(storage.read_head("topic-1", "A")["hash"], "hash-3")
             self.assertEqual(storage.read_snapshot("topic-1", "A", "hash-2")["subtree"], {"n": 2})
 
     def test_write_is_atomic_no_tmp_files_left_behind(self):
@@ -256,6 +273,20 @@ class SftpRelayStorageTests(unittest.TestCase):
         self.assertEqual(storage.read_head("topic-1", "A")["hash"], "hash-2")
         self.assertEqual(storage.read_snapshot("topic-1", "A", "hash-1")["subtree"], {"n": 1})
         self.assertEqual(storage.read_snapshot("topic-1", "A", "hash-2")["subtree"], {"n": 2})
+
+    def test_superseded_snapshots_are_pruned(self):
+        # Review R-4, sftp side - same keep-current-and-previous rule.
+        fake = FakeSftpClient()
+        storage = _sftp_storage_with_fake(fake)
+        storage.write_snapshot("topic-1", "A", "hash-1", {"subtree": {"n": 1}, "parent_uuid": None})
+        storage.write_snapshot("topic-1", "A", "hash-2", {"subtree": {"n": 2}, "parent_uuid": None})
+
+        storage.write_snapshot("topic-1", "A", "hash-3", {"subtree": {"n": 3}, "parent_uuid": None})
+
+        self.assertIsNone(storage.read_snapshot("topic-1", "A", "hash-1"))
+        self.assertIsNotNone(storage.read_snapshot("topic-1", "A", "hash-2"))
+        self.assertIsNotNone(storage.read_snapshot("topic-1", "A", "hash-3"))
+        self.assertEqual(storage.read_head("topic-1", "A")["hash"], "hash-3")
 
     def test_write_leaves_no_tmp_files_behind(self):
         fake = FakeSftpClient()
@@ -847,6 +878,78 @@ class RelayLogicTests(unittest.TestCase):
             kanban_b = KanbanLogic(session_b, {})
             self.assertIn(board_uuid, [b.uuid for b in kanban_b.boards()])
 
+    def test_board_payload_attaches_relay_liveness_for_relay_peers(self):
+        # Review U-7: relay peers have no http reachability signal, so the
+        # UI needs the presence-mtime liveness attached per relay peer.
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session = Session("addr-a")
+            config = self._relay_config(relay_root, "A", state_dir)
+            kanban = KanbanLogic(session, config)
+            relay = RelayLogic(session, config)
+            config["_relay_logic_instance"] = relay
+            # A relay peer with a cached perspective + a stubbed liveness.
+            bob = PRSPNode({"type": "kanban_board", "name": "Bob board"})
+            bob.refresh_hashes()
+            session.apply_peer_subtree("relay:B", bob, None)
+            relay._own_presence_mtime = 100.0
+            relay.storage.read_presence_with_mtime = lambda peer_id: (
+                {"poll_interval_seconds": 3}, 99.0,
+            )
+
+            payload = kanban.board_payload(auto_adopt=False)
+
+            peer = payload["network"]["peers"]["relay:B"]
+            self.assertIn("relay_liveness", peer)
+            self.assertEqual(peer["relay_liveness"]["state"], "alive")
+
+    def test_unmark_topics_shared_disarms_relay(self):
+        # Review R-3: `shared` had no shrink path - unsharing a board never
+        # stopped relay publishing it, and has_active_relationship() stayed
+        # armed forever once anything had ever been shared.
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            kanban_a = KanbanLogic(session_a, {})
+            board_uuid = kanban_a.create_board("Shared Board").value
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a.mark_topics_shared([board_uuid])
+            self.assertTrue(relay_a.has_active_relationship())
+
+            relay_a.unmark_topics_shared([board_uuid])
+
+            self.assertEqual(relay_a._state["shared"], [])
+            self.assertFalse(relay_a.has_active_relationship())
+
+    def test_unshare_board_unmarks_relay_shared(self):
+        # The kanban unshare hook: even with no peers yet (token issued,
+        # never accepted), unsharing must stop relay publishing the board.
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            config = self._relay_config(relay_root, "A", state_dir)
+            kanban_a = KanbanLogic(session_a, config)
+            board_uuid = kanban_a.create_board("Shared Board").value
+            relay_a = RelayLogic(session_a, config)
+            config["_relay_logic_instance"] = relay_a
+            relay_a.mark_topics_shared([board_uuid])
+
+            result = kanban_a.unshare_board(runtime=None, board_uuid=board_uuid)
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(relay_a._state["shared"], [])
+
+    def test_delete_topic_clears_shared_too(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            kanban_a = KanbanLogic(session_a, {})
+            board_uuid = kanban_a.create_board("Shared Board").value
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a.mark_topics_shared([board_uuid])
+            relay_a.publish_due_topics()
+
+            relay_a.delete_topic(board_uuid)
+
+            self.assertEqual(relay_a._state["shared"], [])
+            self.assertNotIn(board_uuid, relay_a._state["published"])
+
     def test_mark_topics_shared_activates_shared_board_for_auto_adopt(self):
         # Regression, caught live: over relay-only there's no /p2p/join to
         # mark the issuer's board an active discussion, so auto-adopt never
@@ -963,6 +1066,26 @@ class RelayLogicTests(unittest.TestCase):
 
             self.assertIn("relay:A", users)
             self.assertEqual(users["relay:A"]["name"], "Ann")
+
+    def test_users_keeps_every_unresolved_peer_visible(self):
+        # Review K-6: users() deduped on `id`, and unresolved identities all
+        # share id "" - with two unresolved peers, the second vanished from
+        # the list entirely.
+        session = Session("addr-a")
+        kanban = KanbanLogic(session, {})
+        # Two peers whose content is cached but whose identity isn't - a
+        # board subtree carries no identity_key, so both resolve to id "".
+        board_b = PRSPNode({"type": "kanban_board", "name": "B board"})
+        board_b.refresh_hashes()
+        session.apply_peer_subtree("relay:B", board_b, None)
+        board_c = PRSPNode({"type": "kanban_board", "name": "C board"})
+        board_c.refresh_hashes()
+        session.apply_peer_subtree("relay:C", board_c, None)
+
+        users = {user["address"] for user in kanban.users()}
+
+        self.assertIn("relay:B", users)
+        self.assertIn("relay:C", users)
 
     def test_users_never_misattributes_an_ungrafted_peer_board_as_their_profile(self):
         # Regression: kanban_logic._peer_profile_uuid used to fall back to

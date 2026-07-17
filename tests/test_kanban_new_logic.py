@@ -1004,6 +1004,38 @@ class KanbanNewLogicTests(unittest.TestCase):
         updated = runtime.session.get_node(card.uuid)
         self.assertEqual(updated.data["participants"], ["owner-2", "participant-2"])
 
+    def test_update_card_rejects_stale_expected_state_hash(self):
+        # Review U-3 lost-update guard.
+        runtime = self.runtime(8319)
+        board = runtime.logic.ensure_board()
+        column = runtime.logic.columns(board)[0]
+        card = runtime.logic.create_card(column.uuid, "Task", "", []).value
+        stale_hash = card.state_hash
+
+        # Someone else changes the card first.
+        runtime.logic.update_card(card.uuid, "Changed by peer", "", [])
+
+        # A save carrying the now-stale hash is rejected...
+        rejected = runtime.logic.update_card(
+            card.uuid, "My edit", "", [], expected_state_hash=stale_hash,
+        )
+        self.assertEqual(rejected.status, "error")
+        self.assertIn("changed while you were editing", rejected.reason)
+        self.assertEqual(
+            runtime.session.get_node(card.uuid).data["name"], "Changed by peer",
+        )
+
+        # ...but with the current hash it goes through.
+        current = runtime.session.get_node(card.uuid).state_hash
+        accepted = runtime.logic.update_card(
+            card.uuid, "My edit", "", [], expected_state_hash=current,
+        )
+        self.assertEqual(accepted.status, "ok")
+
+        # And with no hash at all it stays last-write-wins (back-compat).
+        nohash = runtime.logic.update_card(card.uuid, "No-hash edit", "", [])
+        self.assertEqual(nohash.status, "ok")
+
     def test_card_owner_must_be_a_participant(self):
         runtime = self.runtime(8366)
         board = runtime.logic.ensure_board()

@@ -150,8 +150,8 @@
       const AUTO_ADOPT_FILL = { always: 4, not_owner: 2, not_member: 1, never: 0 };
       const AUTO_ADOPT_DESCRIPTIONS = {
         always: "Peer changes are automatically adopted into every card.",
-        not_owner: "Peer changes are automatically adopted, except on cards you own.",
-        not_member: "Peer changes are automatically adopted, except on cards you're a member of.",
+        not_owner: "Peer changes are automatically adopted, except on cards you own. New columns from peers wait for manual adoption.",
+        not_member: "Peer changes are automatically adopted, except on cards you're a member of. New columns from peers wait for manual adoption.",
         never: "Peer changes are never auto-adopted - you review and adopt each one yourself.",
       };
 
@@ -260,7 +260,7 @@
         } else {
           for (const addr of peers.slice(0, 4)) {
             const user = userForParticipant(addr);
-            const online = peerStatus(addr).state !== "offline";
+            const online = peerPresence(addr).online;
             const avatar = document.createElement("span");
             avatar.className = "header-avatar";
             avatar.classList.add(online ? "status-online" : "status-offline");
@@ -373,8 +373,7 @@
           peerList.append(empty);
         }
         for (const addr of boardPeers) {
-          const info = peerStatus(addr);
-          const online = info.state !== "offline";
+          const { online, metaText } = peerPresence(addr);
           const row = document.createElement("div");
           row.className = "peer-graph-peer";
           row.append(avatarElement(userForParticipant(addr), online));
@@ -385,7 +384,7 @@
           name.textContent = peerLabel(addr);
           const meta = document.createElement("span");
           meta.className = "peer-graph-peer-meta";
-          meta.textContent = `${online ? "online" : "on hold"} - ${formatLastSeen(info.last_seen)}`;
+          meta.textContent = metaText;
           details.append(name, meta);
           row.append(details);
           peerList.append(row);
@@ -393,17 +392,71 @@
         graph.append(peerList);
         fields.append(graph);
 
-        // Sharing/connecting/unsharing a board now lives in the Board of
-        // Boards overview, scoped per board there - this panel is a
-        // read-only status view.
-        const overviewHint = document.createElement("p");
-        overviewHint.className = "confirm-text";
-        overviewHint.textContent = "Manage sharing and connections from the Board of Boards overview.";
-        fields.append(overviewHint);
+        // 2) Share/connect right here - the share modal never needed
+        // overview context (board uuid/name and three same-server
+        // endpoints), so no page switch for the common case. The overview
+        // keeps its own share modal for multi-board management.
+        const shareRow = document.createElement("div");
+        shareRow.className = "peer-share-row";
+        const copyBtn = document.createElement("button");
+        copyBtn.type = "button";
+        copyBtn.textContent = "Copy share token";
+        copyBtn.onclick = async () => {
+          try {
+            const token = await api(
+              `/api/connect_token?topic_uuids=${encodeURIComponent(state.board.uuid)}`,
+            );
+            await navigator.clipboard.writeText(btoa(JSON.stringify(token)));
+            showToast("Token copied");
+          } catch (error) {
+            showToast(error.message, true);
+          }
+        };
+        shareRow.append(copyBtn);
+        const unshareBtn = document.createElement("button");
+        unshareBtn.type = "button";
+        unshareBtn.className = "danger";
+        unshareBtn.textContent = "Stop discussing";
+        unshareBtn.onclick = () => {
+          el("simpleModal").close();
+          confirmAction(
+            "Stop discussing this board?",
+            "This stops discussing it with everyone currently on it. The board itself is not deleted.",
+            () => run(() => api("/api/kanban/boards/unshare", { board_uuid: state.board.uuid }), "Stopped discussing this board"),
+          );
+        };
+        shareRow.append(unshareBtn);
+        fields.append(shareRow);
+
+        const connectRow = document.createElement("div");
+        connectRow.className = "peer-share-row";
+        const tokenInput = document.createElement("input");
+        tokenInput.placeholder = "Paste a share token…";
+        connectRow.append(tokenInput);
+        const connectBtn = document.createElement("button");
+        connectBtn.type = "button";
+        connectBtn.textContent = "Connect";
+        connectBtn.onclick = () => {
+          let token;
+          try {
+            token = JSON.parse(atob(tokenInput.value.trim()));
+            if (token.version !== 1 || !Array.isArray(token.topic_uuids) || !token.topic_uuids.length) {
+              throw new Error("Invalid or unrecognized token");
+            }
+          } catch (err) {
+            showToast("Invalid token", true);
+            return;
+          }
+          el("simpleModal").close();
+          run(() => api("/api/connect", { token }), "Connected");
+        };
+        connectRow.append(connectBtn);
+        fields.append(connectRow);
+
         const overviewLink = document.createElement("a");
         overviewLink.className = "overview-link";
         overviewLink.href = `/summary?share=${encodeURIComponent(state.board.uuid)}`;
-        overviewLink.textContent = "Manage sharing →";
+        overviewLink.textContent = "Manage all boards →";
         fields.append(overviewLink);
 
         el("simpleForm").onsubmit = (event) => {
@@ -411,6 +464,32 @@
           el("simpleModal").close();
         };
         el("simpleModal").showModal();
+      }
+
+      function peerPresence(addr) {
+        // One presence answer per peer: relay peers get real liveness from
+        // presence-file mtimes (server-attached relay_liveness) - their
+        // http-shaped peer_status is always "online, never seen", which
+        // made a stopped relay peer look permanently alive. Direct peers
+        // keep the http status.
+        const relayLive = state.network?.peers?.[addr]?.relay_liveness;
+        if (relayLive) {
+          if (relayLive.state === "alive") {
+            const ago = Math.max(0, Math.round(relayLive.last_seen_seconds_ago || 0));
+            return { online: true, metaText: `online - relay, ${ago}s ago` };
+          }
+          if (relayLive.state === "stale") {
+            const ago = Math.round(relayLive.last_seen_seconds_ago || 0);
+            return { online: false, metaText: `stale - last relay heartbeat ${ago}s ago` };
+          }
+          return { online: false, metaText: "no relay heartbeat yet" };
+        }
+        const info = peerStatus(addr);
+        const online = info.state !== "offline";
+        return {
+          online,
+          metaText: `${online ? "online" : "on hold"} - ${formatLastSeen(info.last_seen)}`,
+        };
       }
 
       function formatLastSeen(timestamp) {
@@ -1192,7 +1271,21 @@
         };
         if (modalCard) {
           payload.card_uuid = modalCard.uuid;
-          await run(() => api("/api/kanban/cards/update", payload), "Card saved");
+          // Lost-update guard (review U-3): the server rejects the save if
+          // the card changed since this modal opened, rather than silently
+          // overwriting a peer's merged edit. On conflict keep the modal
+          // open so nothing typed is lost - the next poll shows the merged
+          // card underneath, and re-opening edits against it.
+          payload.expected_state_hash = modalCard.state_hash;
+          try {
+            await api("/api/kanban/cards/update", payload);
+          } catch (error) {
+            showToast(error.message, true);
+            await loadBoard();
+            return;
+          }
+          showToast("Card saved");
+          await loadBoard();
         } else {
           payload.column_uuid = modalColumn;
           await run(() => api("/api/kanban/cards/create", payload), "Card added");

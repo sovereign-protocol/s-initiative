@@ -92,7 +92,7 @@ class KanbanLogic:
             "boards": [item.to_dict() for item in self.boards()],
             "user_profile": self.user_profile().to_dict(),
             "users": self.users(),
-            "network": self.session.get_network_info(),
+            "network": self._network_info_with_relay_liveness(),
             "peers": {
                 addr: tree.to_dict() if tree else None
                 for addr, tree in sorted(self.session.peer_perspectives.items())
@@ -102,6 +102,26 @@ class KanbanLogic:
             "transition_by_node": self.transition_by_node(events),
             "agenda_items": [item.to_dict() for item in self.agenda_items(board)],
         }
+
+    def _network_info_with_relay_liveness(self) -> dict:
+        # Relay peers have no http reachability signal, so peer_status
+        # always shows them "online, last_seen: never" - a stopped peer
+        # looked permanently alive (review U-7). The relay layer already
+        # computes real liveness from presence-file mtimes
+        # (RelayLogic.peer_liveness); attach it per relay peer so the UI
+        # can show stale/unknown honestly. The instance access mirrors
+        # accept_connect_token's (relay stashes itself in the shared
+        # config dict); absent relay config, the payload is unchanged.
+        info = self.session.get_network_info()
+        relay_logic = self.config.get("_relay_logic_instance")
+        if relay_logic is None or not getattr(relay_logic, "storage", None):
+            return info
+        for addr, peer_info in (info.get("peers") or {}).items():
+            if addr.startswith("relay:"):
+                peer_info["relay_liveness"] = relay_logic.peer_liveness(
+                    addr.split(":", 1)[1],
+                )
+        return info
 
     def auto_adopt_mode(self, board: PRSPNode | None = None) -> str:
         board = board or self.ensure_board()
@@ -292,6 +312,14 @@ class KanbanLogic:
         board = self.session.protocol.index.get(board_uuid) if board_uuid else self.ensure_board()
         if not board or board.data.get("type") != "kanban_board":
             return {"status": "error", "reason": "board not found"}
+        # Unsharing must also unmark the board in relay's `shared` intent,
+        # or relay keeps publishing it (and stays armed) forever - `shared`
+        # has no other shrink path (review R-3). Done before the peer check
+        # below: a board shared via token but never yet accepted by anyone
+        # has no peers, yet its relay publishing still has to stop.
+        relay_logic = self.config.get("_relay_logic_instance")
+        if relay_logic is not None:
+            relay_logic.unmark_topics_shared([board.uuid])
         board_peers = [
             peer for peer, topics in sorted(self.session.peer_topic_sets.items())
             if board.uuid in topics
@@ -472,9 +500,13 @@ class KanbanLogic:
         seen = set()
         out = []
         for user in users:
-            if user["id"] in seen:
-                continue
-            seen.add(user["id"])
+            # An empty id means "identity not resolved yet", not a real
+            # identity - deduping on it would collapse every unresolved
+            # peer into whichever one happened to come first (review K-6).
+            if user["id"]:
+                if user["id"] in seen:
+                    continue
+                seen.add(user["id"])
             out.append(user)
         return out
 
@@ -537,10 +569,19 @@ class KanbanLogic:
     def update_card(self, card_uuid: str, name: str,
                     description: str = "",
                     participants: list[str] | None = None,
-                    owner: str | None = None) -> SessionResult:
+                    owner: str | None = None,
+                    expected_state_hash: str | None = None) -> SessionResult:
         card = self._node(card_uuid, "kanban_card")
         if not card:
             return SessionResult("error", reason="card not found")
+        # Lost-update guard (review U-3): the modal captured the card's
+        # state_hash when it opened; if the card changed since (a peer
+        # edit landed, or auto-adopt merged one) we'd silently overwrite
+        # that with the stale form values. Reject instead so the user can
+        # re-open against the merged card. Optional - callers that don't
+        # pass a hash keep the old last-write-wins behavior.
+        if expected_state_hash is not None and expected_state_hash != card.state_hash:
+            return SessionResult("error", reason="card changed while you were editing")
         participants = participants or []
         data = dict(card.data)
         data.update({
@@ -600,6 +641,14 @@ class KanbanLogic:
             is_card = node.data.get("type") == "kanban_card"
             if is_card:
                 return self._auto_adopt_allows_node(mode, node)
+            # Known consequence (review S-6/K-4): in not_owner/not_member,
+            # a peer's brand-new column is ineligible here, and reconcile
+            # walks events uuid-sorted rather than parents-first, so its
+            # child cards can't adopt either (no local parent yet) - the
+            # whole new column waits for manual adoption. Documented in
+            # AUTO_ADOPT_DESCRIPTIONS; revisit if parents-first ordering
+            # ever lands.
+            #
             # A column (or any non-card node) that doesn't exist locally yet
             # would have to be adopted as a whole subtree, which could pull
             # in child cards the current mode is supposed to filter out.
@@ -1088,6 +1137,7 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
             data.get("description", ""),
             _participants(data.get("participants")),
             data.get("owner"),
+            expected_state_hash=data.get("expected_state_hash"),
         ))
 
     async def api_delete_card(request: Request):
