@@ -192,6 +192,10 @@
         return hasPendingDivergence(node) && keepMineActive(node);
       }
 
+      function needsReaction(node) {
+        return needsManualAdopt(node) || needsKeepMineMenu(node);
+      }
+
       function peerCopyOf(node) {
         const info = transitionInfo(node.uuid);
         if (!info || !info.peer_addr) return null;
@@ -212,19 +216,6 @@
           JSON.stringify(node.weights || {}) === JSON.stringify(peerNode.weights || {}) &&
           (node.data.type === "kanban_board" || node.parent_uuid === peerNode.parent_uuid)
         );
-      }
-
-      function moveDivergenceType(uuid) {
-        // Whether uuid's divergence involves a move, and in which
-        // direction - based on the *local* node (if we have one) vs its
-        // attributed peer, so a ghost and a solid rendering of the same
-        // uuid always agree on what's actually happening, regardless of
-        // which of the two is currently on screen.
-        const localNode = findNode(state.board, uuid);
-        if (!localNode) return null;
-        const peerNode = peerCopyOf(localNode);
-        if (!peerNode || localNode.parent_uuid === peerNode.parent_uuid) return null;
-        return transitionInfo(uuid)?.type || null;
       }
 
       function renderAutoAdoptSquare(container) {
@@ -704,7 +695,7 @@
           type.className = "discussion-type";
           type.textContent = DISCUSSION_TYPE_LABELS[info.type] || info.type;
           row.append(type);
-          if (info.peer_addr) row.title = `With ${peerLabel(info.peer_addr)}`;
+          row.title = transitionLabel(info);
           row.onclick = () => highlightCard(uuid);
           container.append(row);
           lastPriority = info.priority;
@@ -870,10 +861,8 @@
         const tools = colEl.querySelector(".adopt-tools");
         if (tools) {
           tools.replaceChildren();
-          if (needsManualAdopt(col) && (col._isGhost || !isContainerOnlyDivergence(col))) {
-            tools.append(...adoptTools(col, col._isGhost));
-          } else if (needsKeepMineMenu(col)) {
-            tools.append(keepMineMenu(col));
+          if (needsReaction(col) && (col._isGhost || !isContainerOnlyDivergence(col))) {
+            tools.append(reactionButton(col));
           }
         }
 
@@ -934,8 +923,8 @@
           const rendered = renderParticipants(participantItems, card.data.owner);
           if (participantsEl) participantsEl.replaceWith(rendered);
           else {
-            const adoptEl = cardEl.querySelector(".adopt");
-            cardEl.insertBefore(rendered, adoptEl || null);
+            const reactionEl = cardEl.querySelector(".react-button");
+            cardEl.insertBefore(rendered, reactionEl || null);
           }
         } else if (participantsEl) {
           participantsEl.remove();
@@ -943,8 +932,8 @@
 
         // P2P Konflikt-Klassen aktualisieren (nutzt deine bestehende Helper-Funktion)
         applyTransitionClass(cardEl, card.uuid);
-        cardEl.querySelectorAll(".adopt, .keep-mine-menu").forEach((button) => button.remove());
-        cardEl.append(...cardAdoptTools(card, card._isGhost));
+        cardEl.querySelectorAll(".react-button, .adopt, .keep-mine-menu").forEach((button) => button.remove());
+        cardEl.append(...cardReactionTools(card, card._isGhost));
       }
 
       function renderColumn(column, ghost = false) {
@@ -987,10 +976,8 @@
         head.append(name, del);
         const tools = document.createElement("div");
         tools.className = "adopt-tools";
-        if (needsManualAdopt(column) && (ghost || !isContainerOnlyDivergence(column))) {
-          tools.append(...adoptTools(column, ghost));
-        } else if (needsKeepMineMenu(column)) {
-          tools.append(keepMineMenu(column));
+        if (needsReaction(column) && (ghost || !isContainerOnlyDivergence(column))) {
+          tools.append(reactionButton(column));
         }
         head.append(tools);
         article.append(head);
@@ -1054,7 +1041,7 @@
           ? card.data.participants
           : [];
         if (participantItems.length) node.append(renderParticipants(participantItems, card.data.owner));
-        node.append(...cardAdoptTools(card, ghost));
+        node.append(...cardReactionTools(card, ghost));
         node.onclick = (event) => {
           if (ghost) return;
           if (isInteractiveCardTarget(event)) return;
@@ -1147,117 +1134,132 @@
         // The board root inherits every descendant hash difference. Only
         // offer a board-level decision when the board's own fields differ.
         if (isContainerOnlyDivergence(board)) return;
-        if (needsManualAdopt(board)) {
-          tools.append(adoptButton(board.uuid), keepMineMenu(board));
-        } else if (needsKeepMineMenu(board)) {
-          tools.append(keepMineMenu(board));
+        if (needsReaction(board)) {
+          tools.append(reactionButton(board));
         }
       }
 
-      function adoptButton(uuid, label = "Adopt") {
+      function reactionButton(node) {
         const button = document.createElement("button");
         button.type = "button";
-        button.textContent = label;
-        button.setAttribute("aria-label", label);
-        button.className = "adopt";
+        button.textContent = "React";
+        button.setAttribute("aria-label", "React to differences");
+        button.className = "react-button";
+        const info = transitionInfo(node.uuid);
+        if (info) button.title = transitionLabel(info);
         button.onclick = (event) => {
           event.stopPropagation();
-          openAdopt(uuid);
+          openReaction(node.uuid);
         };
         return button;
       }
 
-      function adoptTools(node, ghost, label = "Adopt") {
-        // A ghost node has no local copy to keep, so the keep-mine menu
-        // (keep my version) is meaningless there and fails server-side -
-        // only offer Adopt for ghosts.
-        return ghost ? [adoptButton(node.uuid, label)] : [adoptButton(node.uuid, label), keepMineMenu(node)];
+      function cardReactionTools(card, ghost = false) {
+        // A moved card can be rendered once at our position and once as a
+        // ghost at the peer position. Keep a single reaction entry point on
+        // the real local card; a brand-new peer-only card has only a ghost.
+        if (ghost && findNode(state.board, card.uuid)) return [];
+        return needsReaction(card) ? [reactionButton(card)] : [];
       }
 
-      const PERSPECTIVE_MENU_OPTIONS = [
-        { value: "none", label: "..." },
-        { value: "kept_mine", label: "Keep mine" },
-        { value: "pushed_back", label: "Push back" },
-      ];
-
-      function keepMineMenu(node) {
-        const select = document.createElement("select");
-        select.className = "keep-mine-menu";
-        select.title = "Keep mine keeps my version quietly - Push back also lets peers know";
-        for (const option of PERSPECTIVE_MENU_OPTIONS) {
-          const opt = document.createElement("option");
-          opt.value = option.value;
-          opt.textContent = option.label;
-          select.append(opt);
-        }
-        select.value = node.perspective_state || "none";
-        select.dataset.state = select.value;
-        select.onclick = (event) => event.stopPropagation();
-        select.onchange = () =>
-          run(
-            () => api("/api/kanban/perspective", { node_uuid: node.uuid, state: select.value }),
-            "Updated",
-          );
-        return select;
-      }
-
-      function cardAdoptTools(card, ghost) {
-        if (!needsManualAdopt(card)) {
-          return needsKeepMineMenu(card) ? [keepMineMenu(card)] : [];
-        }
-        const moveType = moveDivergenceType(card.uuid);
-        if (moveType === "peer_made_changes") {
-          // Peer moved it: the ghost at the destination is the meaningful
-          // "adopt" here; the original spot only offers to keep it put -
-          // adopting from both would just resolve the same divergence twice.
-          return ghost ? [adoptButton(card.uuid, "Adopt move")] : [keepMineMenu(card)];
-        }
-        if (moveType === "local_made_changes") {
-          // We moved it and a peer hasn't caught up: there's nothing to
-          // pull from them, so our own spot just offers the keep-mine menu;
-          // the ghost at their lagging old position is the one place
-          // "adopting" makes sense - and doing so reverts our own move.
-          return ghost ? [adoptButton(card.uuid, "Reject move")] : [keepMineMenu(card)];
-        }
-        return adoptTools(card, ghost);
-      }
-
-      function openAdopt(uuid) {
+      function openReaction(uuid) {
         const info = transitionInfo(uuid);
-        // A node can equally diverge from several peers at once (e.g. two
-        // peers who already agree with each other, and only differ from us)
-        // - transitionInfo's top-level peer_addr is just one of them for
-        // display purposes, but info.events lists everyone who contributed.
-        // Offer all of them, not just the first.
-        const contributingAddrs = new Set((info?.events || (info ? [info] : [])).map((e) => e.peer_addr));
+        const contributingEvents = info?.events || (info ? [info] : []);
+        const eventByAddr = new Map(contributingEvents.map((event) => [event.peer_addr, event]));
+        const contributingAddrs = new Set(eventByAddr.keys());
         const peers = Object.entries(state.peers || {})
           .map(([addr, root]) => ({
             addr,
             missing: !(root && findNode(root, uuid)),
+            event: eventByAddr.get(addr),
           }))
           .filter((item) => contributingAddrs.has(item.addr));
-        if (!peers.length) return showToast("No peer version available", true);
+        const localNode = findNode(state.board, uuid);
+        const reactions = peers.map((item, index) => {
+          const changes = eventChangeSummary(item.event, 6) || "Adopt complete peer version";
+          return {
+            value: `adopt:${index}`,
+            label: `${changes} (from ${transitionActorLabel(item.event)})`,
+            details: `Adopts the complete version from ${transitionActorLabel(item.event)}.`,
+            action: "adopt",
+            peer: item,
+          };
+        });
+        if (localNode) {
+          reactions.push({
+            value: "keep",
+            label: "Keep as is for the moment",
+            details: "Keep your complete current version without asking peers to change theirs.",
+            action: "perspective",
+            state: "kept_mine",
+          });
+          const pushedChanges = localChangeSummary(info, 6) || "your complete current version";
+          reactions.push({
+            value: "push",
+            label: `Push back current changes: ${pushedChanges}`,
+            details: "Keep your complete current version and ask peers to adopt it.",
+            action: "perspective",
+            state: "pushed_back",
+          });
+          if (localNode.perspective_state && localNode.perspective_state !== "none") {
+            reactions.push({
+              value: "clear",
+              label: "Clear current reaction",
+              details: "Remove the current keep or push-back decision.",
+              action: "perspective",
+              state: "none",
+            });
+          }
+        }
+        if (!reactions.length) return showToast("No reaction available", true);
+        const selectedValue =
+          localNode?.perspective_state === "kept_mine" ? "keep" :
+          localNode?.perspective_state === "pushed_back" ? "push" :
+          reactions[0].value;
+        const selectedReaction = () => reactions.find((item) => item.value === selectedValue) || reactions[0];
         openSimple(
-          "Adopt From Peer",
+          "React to Differences",
           [
             {
-              name: "peer",
-              label: "Peer",
+              name: "reaction",
+              label: "Reaction",
               type: "select",
-              value: peers[0].addr,
-              options: peers.map((item) => ({
-                value: item.addr,
-                label: peerLabel(item.addr),
+              value: selectedValue,
+              options: reactions.map((item) => ({
+                value: item.value,
+                label: item.label,
               })),
             },
+            {
+              name: "reaction_summary",
+              label: "Effect",
+              type: "display",
+              value: selectedReaction().details,
+            },
           ],
-          async (form) =>
-            api("/api/kanban/adopt", {
-              source_addr: form.get("peer"),
+          async (form) => {
+            const reaction = reactions.find((item) => item.value === form.get("reaction"));
+            if (!reaction) throw new Error("Reaction no longer available");
+            if (reaction.action === "adopt") {
+              return api("/api/kanban/adopt", {
+                source_addr: reaction.peer.addr,
+                node_uuid: uuid,
+                adopt_absence: reaction.peer.missing,
+              });
+            }
+            return api("/api/kanban/perspective", {
               node_uuid: uuid,
-              adopt_absence: peers.find((item) => item.addr === form.get("peer"))?.missing || false,
-            }),
+              state: reaction.state,
+            });
+          },
         );
+        const reactionSelect = el("simpleFields").querySelector('select[name="reaction"]');
+        const summary = el("simpleFields").querySelector('[data-display="reaction_summary"]');
+        if (reactionSelect && summary) {
+          reactionSelect.onchange = () => {
+            summary.textContent = reactions.find((item) => item.value === reactionSelect.value)?.details || "";
+          };
+        }
       }
 
       function openCard(card, columnUuid) {
@@ -1349,6 +1351,11 @@
               if (option.value === field.value) opt.selected = true;
               control.append(opt);
             }
+          } else if (field.type === "display") {
+            control = document.createElement("div");
+            control.className = "change-summary";
+            control.dataset.display = field.name;
+            control.textContent = field.value || "";
           } else {
             control = document.createElement("input");
             control.name = field.name;

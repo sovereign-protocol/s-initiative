@@ -888,6 +888,65 @@ class KanbanNewLogicTests(unittest.TestCase):
             [addr_a, addr_c],
         )
 
+    def test_structured_peer_changes_describe_card_fields_people_and_move(self):
+        left = self.runtime(8317)
+        right = self.runtime(8318)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        left.logic.set_user_profile("Alice")
+        right.logic.set_user_profile("Bob")
+        alice = left.logic.user_profile().uuid
+        bob = right.logic.user_profile().uuid
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        first, second = left.logic.columns(board)[:2]
+        card = left.logic.create_card(
+            first.uuid, "Radar", "Initial", [alice], alice,
+        ).value
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        right.logic.board_payload()
+        right.logic.set_auto_adopt_mode("never")
+
+        left.logic.update_card(
+            card.uuid, "Radar", "Revised", [alice, bob], bob,
+        )
+        left.logic.move_card(card.uuid, second.uuid, 0)
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+
+        changes = right.logic.describe_peer_changes(left.address, card.uuid)
+        by_field = {change["field"]: change for change in changes}
+
+        self.assertEqual(
+            set(by_field),
+            {"parent_uuid", "description", "participants", "owner"},
+        )
+        self.assertEqual(by_field["parent_uuid"]["local_label"], "To Do")
+        self.assertEqual(by_field["parent_uuid"]["peer_label"], "Doing")
+        self.assertEqual(by_field["participants"]["added_labels"], ["Bob"])
+        self.assertEqual(
+            by_field["participants"]["summary"], "Add Bob as participant",
+        )
+        self.assertEqual(
+            by_field["participants"]["local_summary"],
+            "Remove Bob as participant",
+        )
+        self.assertEqual(by_field["owner"]["local_label"], "Alice")
+        self.assertEqual(by_field["owner"]["peer_label"], "Bob")
+        self.assertEqual(by_field["description"]["local_value"], "Initial")
+        self.assertEqual(by_field["description"]["peer_value"], "Revised")
+
+        payload = right.logic.board_payload(auto_adopt=False)
+        info = payload["transition_by_node"][card.uuid]
+        self.assertEqual(
+            {change["field"] for change in info["changes"]}, set(by_field),
+        )
+        self.assertEqual(
+            {change["field"] for change in info["events"][0]["changes"]},
+            set(by_field),
+        )
+
     def test_rename_board_updates_board_list(self):
         runtime = self.runtime(8315)
         board = runtime.logic.ensure_board()

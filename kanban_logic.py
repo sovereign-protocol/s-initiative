@@ -714,8 +714,257 @@ class KanbanLogic:
         for addr in sorted(self.session.peer_perspectives):
             if not self.session.peer_discusses_node(addr, board.uuid):
                 continue
-            events.extend(self.session.analyze_peer_transitions(addr, board_uuid))
+            for event in self.session.analyze_peer_transitions(addr, board_uuid):
+                event["changes"] = (
+                    [] if event["type"] == "in_agreement"
+                    else self.describe_peer_changes(
+                        addr, event.get("node_uuid"),
+                    )
+                )
+                events.append(event)
         return self._stage_transition_events(events)
+
+    def describe_peer_changes(self, peer_addr: str,
+                              node_uuid: str | None) -> list[dict]:
+        """Describe the peer's current version relative to this client.
+
+        These are semantic current-version differences, not an audit log:
+        in a true two-sided divergence they intentionally say what the peer
+        version contains relative to mine, without claiming which historical
+        operation produced it.
+        """
+        if not node_uuid:
+            return []
+        local = self.session.protocol.index.get(node_uuid)
+        peer = self.session.get_cached_peer_subtree(peer_addr, node_uuid)
+        if not local and not peer:
+            return []
+        if (local and peer
+                and not (local.state_hash != peer.state_hash
+                         or local.parent_uuid != peer.parent_uuid)):
+            return []
+        node = peer or local
+        node_type = node.data.get("type") or "node"
+        node_label = {
+            "kanban_card": "Card",
+            "kanban_column": "Column",
+            "kanban_board": "Board",
+            "agenda_item": "Discussion topic",
+        }.get(node_type, "Item")
+        if not local:
+            return [{
+                "kind": "presence",
+                "field": "node",
+                "label": node_label,
+                "local_value": None,
+                "peer_value": "present",
+                "summary": f"{node_label} exists only in the peer version",
+                "local_summary": f"Keep {node_label.lower()} absent",
+            }]
+        if not peer:
+            return [{
+                "kind": "presence",
+                "field": "node",
+                "label": node_label,
+                "local_value": "present",
+                "peer_value": None,
+                "summary": f"{node_label} exists only in your version",
+                "local_summary": f"Keep your {node_label.lower()}",
+            }]
+
+        changes: list[dict] = []
+
+        def add_field(field: str, label: str, summary: str,
+                      local_summary: str) -> None:
+            changes.append({
+                "kind": "field",
+                "field": field,
+                "label": label,
+                "local_value": local.data.get(field),
+                "peer_value": peer.data.get(field),
+                "summary": summary,
+                "local_summary": local_summary,
+            })
+
+        if local.deleted != peer.deleted:
+            changes.append({
+                "kind": "deletion",
+                "field": "deleted",
+                "label": node_label,
+                "local_value": local.deleted,
+                "peer_value": peer.deleted,
+                "summary": (
+                    f"{node_label} is deleted in the peer version"
+                    if peer.deleted else
+                    f"{node_label} is present in the peer version"
+                ),
+                "local_summary": (
+                    f"Keep your {node_label.lower()} present"
+                    if peer.deleted else
+                    f"Keep your {node_label.lower()} deleted"
+                ),
+            })
+
+        if local.parent_uuid != peer.parent_uuid:
+            local_parent = self.session.protocol.index.get(local.parent_uuid)
+            peer_parent = self.session.get_cached_peer_subtree(
+                peer_addr, peer.parent_uuid,
+            )
+            local_parent_name = self._node_display_name(local_parent)
+            peer_parent_name = self._node_display_name(peer_parent)
+            changes.append({
+                "kind": "move",
+                "field": "parent_uuid",
+                "label": "Column" if node_type == "kanban_card" else "Location",
+                "local_value": local.parent_uuid,
+                "peer_value": peer.parent_uuid,
+                "local_label": local_parent_name,
+                "peer_label": peer_parent_name,
+                "summary": (
+                    f'Move from "{local_parent_name}" to "{peer_parent_name}"'
+                ),
+                "local_summary": (
+                    f'Move from "{peer_parent_name}" to "{local_parent_name}"'
+                ),
+            })
+        elif (local.data.get("order") != peer.data.get("order")
+              and "order" in (set(local.data) | set(peer.data))):
+            changes.append({
+                "kind": "position",
+                "field": "order",
+                "label": "Position",
+                "local_value": local.data.get("order"),
+                "peer_value": peer.data.get("order"),
+                "summary": "Use peer position",
+                "local_summary": "Keep your current position",
+            })
+
+        scalar_labels = {
+            "name": "Name",
+            "description": "Description",
+            "objective": "Objective",
+            "text": "Text",
+            "priority": "Priority",
+        }
+        for field, label in scalar_labels.items():
+            local_value = local.data.get(field)
+            peer_value = peer.data.get(field)
+            if local_value == peer_value:
+                continue
+            if field in ("description", "objective"):
+                summary = f"Use peer {label.lower()}"
+                local_summary = f"Keep your {label.lower()}"
+            else:
+                summary = (
+                    f"{label}: {self._display_value(local_value)}"
+                    f" → {self._display_value(peer_value)}"
+                )
+                local_summary = (
+                    f"{label}: {self._display_value(peer_value)}"
+                    f" → {self._display_value(local_value)}"
+                )
+            add_field(field, label, summary, local_summary)
+
+        if node_type == "kanban_card":
+            local_participants = set(local.data.get("participants") or [])
+            peer_participants = set(peer.data.get("participants") or [])
+            added = sorted(peer_participants - local_participants)
+            removed = sorted(local_participants - peer_participants)
+            if added or removed:
+                added_labels = [self._participant_name(item) for item in added]
+                removed_labels = [self._participant_name(item) for item in removed]
+                parts = []
+                if added_labels:
+                    if len(added_labels) == 1:
+                        parts.append(f"Add {added_labels[0]} as participant")
+                    else:
+                        parts.append(f"Add {', '.join(added_labels)} as participants")
+                if removed_labels:
+                    if len(removed_labels) == 1:
+                        parts.append(f"Remove {removed_labels[0]} as participant")
+                    else:
+                        parts.append(f"Remove {', '.join(removed_labels)} as participants")
+                local_parts = []
+                if removed_labels:
+                    if len(removed_labels) == 1:
+                        local_parts.append(f"Add {removed_labels[0]} as participant")
+                    else:
+                        local_parts.append(f"Add {', '.join(removed_labels)} as participants")
+                if added_labels:
+                    if len(added_labels) == 1:
+                        local_parts.append(f"Remove {added_labels[0]} as participant")
+                    else:
+                        local_parts.append(f"Remove {', '.join(added_labels)} as participants")
+                changes.append({
+                    "kind": "participants",
+                    "field": "participants",
+                    "label": "Participants",
+                    "local_value": sorted(local_participants),
+                    "peer_value": sorted(peer_participants),
+                    "added": added,
+                    "removed": removed,
+                    "added_labels": added_labels,
+                    "removed_labels": removed_labels,
+                    "summary": "; ".join(parts),
+                    "local_summary": "; ".join(local_parts),
+                })
+            local_owner = local.data.get("owner")
+            peer_owner = peer.data.get("owner")
+            if local_owner != peer_owner:
+                changes.append({
+                    "kind": "owner",
+                    "field": "owner",
+                    "label": "Owner",
+                    "local_value": local_owner,
+                    "peer_value": peer_owner,
+                    "local_label": self._participant_name(local_owner),
+                    "peer_label": self._participant_name(peer_owner),
+                    "summary": (
+                        f"Owner: {self._participant_name(local_owner)}"
+                        f" → {self._participant_name(peer_owner)}"
+                    ),
+                    "local_summary": (
+                        f"Owner: {self._participant_name(peer_owner)}"
+                        f" → {self._participant_name(local_owner)}"
+                    ),
+                })
+
+        if local.weights != peer.weights:
+            changes.append({
+                "kind": "weights",
+                "field": "weights",
+                "label": "Weights",
+                "local_value": local.weights,
+                "peer_value": peer.weights,
+                "summary": "Weights changed",
+                "local_summary": "Keep your current weights",
+            })
+        return changes
+
+    @staticmethod
+    def _node_display_name(node: PRSPNode | None) -> str:
+        if not node:
+            return "Unknown"
+        return str(node.data.get("name") or node.data.get("text") or "Untitled")
+
+    @staticmethod
+    def _display_value(value: Any) -> str:
+        if value in (None, ""):
+            return "None"
+        return f'"{value}"'
+
+    def _participant_name(self, participant: str | None) -> str:
+        if not participant:
+            return "Unassigned"
+        for user in self.users():
+            if participant in (
+                user.get("id"), user.get("profile_uuid"),
+                user.get("identity_key"), user.get("address"),
+            ):
+                name = user.get("name")
+                if name and name != "?":
+                    return name
+        return str(participant)[:8]
 
     def _stage_transition_events(self, events: list[dict]) -> list[dict]:
         # Display-only state staging. A local change is not a confirmed
@@ -769,6 +1018,7 @@ class KanbanLogic:
                 "peer_state_hash": event.get("peer_state_hash"),
                 "local_revision": event.get("local_revision"),
                 "peer_revision": event.get("peer_revision"),
+                "changes": event.get("changes") or [],
                 "keep_mine_active": event.get("keep_mine_active"),
                 "peer_observed_local_revision": event.get(
                     "peer_observed_local_revision", False,

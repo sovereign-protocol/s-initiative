@@ -449,6 +449,15 @@ button.auto-adopt-square {
   background: rgba(255, 255, 255, 0.06);
 }
 
+.change-summary {
+  margin-top: 0.35rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 0.45rem;
+  background: rgba(127, 127, 127, 0.12);
+  line-height: 1.35;
+  white-space: pre-wrap;
+}
+
 .discussion-name {
   flex: 1;
   min-width: 0;
@@ -675,7 +684,8 @@ button.auto-adopt-square {
   justify-content: flex-end;
 }
 
-.adopt {
+.adopt,
+.react-button {
   border-color: var(--border-strong) !important;
   color: var(--text) !important;
   background: transparent !important;
