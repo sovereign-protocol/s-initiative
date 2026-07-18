@@ -574,46 +574,17 @@ class KanbanLogic:
 
     def accept_peer_node(self, source_addr: str, node_uuid: str,
                          adopt_absence: bool = False) -> SessionResult:
-        if not adopt_absence:
-            local = self.session.protocol.index.get(node_uuid)
-            peer = self.session.get_cached_peer_subtree(source_addr, node_uuid)
-            local_type = local.data.get("type") if local else None
-            if (local and peer
-                    and local_type in ("kanban_column", "kanban_board")
-                    and peer.data.get("type") == local_type):
-                # A container-level decision applies only to that
-                # container's own fields. Cards/columns below it remain
-                # independent decisions and keep their current versions.
-                return self.session.modify(
-                    node_uuid, peer.data, peer.weights,
-                    revision_origin_identity=peer.revision_origin_identity,
-                )
+        # Session adopts an existing node's own fields shallowly (containers
+        # keep their cards) and grafts only a brand-new subtree - no
+        # kanban-specific container handling is needed anymore.
         return self.session.accept_peer_node(source_addr, node_uuid, adopt_absence)
 
     def rollback_peer_node(self, source_addr: str,
                            node_uuid: str,
                            rollback_absence: bool = False) -> SessionResult:
-        target = self.session.validate_rollback_target(
+        return self.session.rollback_peer_node(
             source_addr, node_uuid, rollback_absence,
         )
-        if target.status != "ok":
-            return target
-        if rollback_absence:
-            return self.session.rollback_peer_node(
-                source_addr, node_uuid, rollback_absence=True,
-            )
-        local = self.session.protocol.index.get(node_uuid)
-        peer = target.value
-        local_type = local.data.get("type") if local else None
-        if (local and local_type in ("kanban_column", "kanban_board")
-                and peer.data.get("type") == local_type):
-            # Roll back only this container's own fields. Descendant cards
-            # and columns remain independent revision decisions.
-            return self.session.modify(
-                node_uuid, peer.data, peer.weights,
-                revision_origin_identity=peer.revision_origin_identity,
-            )
-        return self.session.rollback_peer_node(source_addr, node_uuid)
 
     def adopt_incoming_changes(self, board: PRSPNode | None = None) -> bool:
         board = board or self.ensure_board()
@@ -640,12 +611,6 @@ class KanbanLogic:
                 return mode == "always"
             return True
 
-        def adopt_mode(node: PRSPNode) -> str:
-            # Update a non-card node's own fields only - never cascade into
-            # its children, so an allowed column-rename can't smuggle in a
-            # filtered-out card change underneath it.
-            return "full" if node.data.get("type") == "kanban_card" else "shallow"
-
         changed = False
         for addr in sorted(self.session.peer_perspectives):
             if not self.session.peer_discusses_node(addr, board.uuid):
@@ -667,7 +632,6 @@ class KanbanLogic:
             changed = self.session.reconcile_peer_changes(
                 addr, board.uuid,
                 node_is_eligible=source_eligible,
-                node_adopt_mode=adopt_mode,
                 # Per-node reconciliation is required here: replacing the
                 # whole board could bypass agenda-author authority (and the
                 # card ownership filters above) through a parent hash.
