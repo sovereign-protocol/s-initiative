@@ -627,6 +627,19 @@ class KanbanLogic:
                 # never accept a forwarded/stale copy from another peer.
                 if node.data.get("type") == "agenda_item":
                     return False
+                # Deleting a container removes its whole subtree at the
+                # protocol level (no orphans), so Kanban decides here, before
+                # the protocol acts: decline a column/board deletion while it
+                # still holds a card this mode protects, or a later prune would
+                # take that card with it. The container stays as a divergence
+                # to resolve by hand; unprotected cards in it still delete
+                # through their own per-node events.
+                if (event_type == "peer_made_changes"
+                        and node.data.get("type") in ("kanban_column", "kanban_board")):
+                    peer = self.session.get_cached_peer_subtree(addr, node.uuid)
+                    if (peer is not None and peer.deleted
+                            and self._has_protected_descendant(mode, node)):
+                        return False
                 return eligible(node, event_type)
 
             changed = self.session.reconcile_peer_changes(
@@ -681,6 +694,20 @@ class KanbanLogic:
         if mode == "not_member":
             return my_id not in (node.data.get("participants") or [])
         return True
+
+    def _has_protected_descendant(self, mode: str, node: PRSPNode) -> bool:
+        # True if any live card under `node` is one this mode keeps (an owned
+        # card under not_owner, a joined card under not_member) - i.e. adopting
+        # a deletion of `node` would remove a card the policy protects.
+        for child in node.children:
+            if child.deleted:
+                continue
+            if child.data.get("type") == "kanban_card":
+                if not self._auto_adopt_allows_node(mode, child):
+                    return True
+            elif self._has_protected_descendant(mode, child):
+                return True
+        return False
 
     def on_peer_update(self) -> SessionResult:
         changed = self.adopt_all_incoming_changes()

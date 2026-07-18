@@ -459,6 +459,44 @@ class KanbanNewLogicTests(unittest.TestCase):
             "Renamed (uninvolved)",
         )
 
+    def test_not_owner_declines_column_deletion_holding_my_card(self):
+        # Deleting a container removes its whole subtree at the protocol level
+        # (no orphans). So under not_owner, Kanban must decline a column
+        # deletion while it still holds a card I own - otherwise a later prune
+        # of the deleted column would take my card with it. The column stays
+        # as a divergence to resolve by hand; both it and my card survive.
+        left = self.runtime(8373)
+        right = self.runtime(8374)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        right.logic.set_auto_adopt_mode("always")
+        column = left.logic.columns(board)[0]
+        right_id = right.logic.user_profile().uuid
+        my_card = left.logic.create_card(
+            column.uuid, "Right's card", "", [right_id], owner=right_id,
+        ).value
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        right.logic.board_payload()
+        self.assertIn(column.uuid, right.session.protocol.index)
+        self.assertIn(my_card.uuid, right.session.protocol.index)
+
+        right.logic.set_auto_adopt_mode("not_owner")
+        left.logic.delete_column(column.uuid)
+        # Two sync rounds: the first has right decline the column deletion, the
+        # second gives a prune the chance to (wrongly) collect it if it hadn't.
+        for _ in range(2):
+            left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+            right.logic.board_payload()
+
+        self.assertIn(column.uuid, right.session.protocol.index)
+        self.assertFalse(right.session.protocol.index[column.uuid].deleted)
+        self.assertIn(my_card.uuid, right.session.protocol.index)
+        self.assertFalse(right.session.protocol.index[my_card.uuid].deleted)
+
     def test_three_peer_chain_auto_adopts_card_move(self):
         left = self.runtime(8356)
         middle = self.runtime(8357)
