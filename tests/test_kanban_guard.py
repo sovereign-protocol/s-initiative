@@ -23,7 +23,7 @@ class KanbanGuardTests(unittest.TestCase):
         self.assertIn(card.uuid, left.session.protocol.index)
         self.assertEqual(
             payload["transition_by_node"][board.uuid]["type"],
-            "local_made_changes",
+            "in_transition",
         )
 
     @staticmethod

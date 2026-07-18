@@ -178,7 +178,7 @@
 
       function hasPendingDivergence(node) {
         const info = transitionInfo(node.uuid);
-        return !!info && info.type !== "in_agreement";
+        return !!info && !["in_agreement", "in_transition"].includes(info.type);
       }
 
       function needsManualAdopt(node) {
@@ -209,7 +209,8 @@
         if (!peerNode) return false;
         return (
           JSON.stringify(node.data) === JSON.stringify(peerNode.data) &&
-          node.parent_uuid === peerNode.parent_uuid
+          JSON.stringify(node.weights || {}) === JSON.stringify(peerNode.weights || {}) &&
+          (node.data.type === "kanban_board" || node.parent_uuid === peerNode.parent_uuid)
         );
       }
 
@@ -655,7 +656,7 @@
         const container = el("discussionList");
         container.replaceChildren();
         const entries = Object.entries(state.transition_by_node || {}).filter(([uuid, info]) => {
-          if (info.type === "in_agreement") return false;
+          if (["in_agreement", "in_transition"].includes(info.type)) return false;
           // The board itself is never something to act on here - it's
           // either cascading from a child (see below) or, for the topic
           // root specifically, a permanent attachment artifact (each peer
@@ -1143,6 +1144,9 @@
         tools.replaceChildren();
         const board = state.board;
         if (!board) return;
+        // The board root inherits every descendant hash difference. Only
+        // offer a board-level decision when the board's own fields differ.
+        if (isContainerOnlyDivergence(board)) return;
         if (needsManualAdopt(board)) {
           tools.append(adoptButton(board.uuid), keepMineMenu(board));
         } else if (needsKeepMineMenu(board)) {
@@ -1478,6 +1482,7 @@
       }
       function applyTransitionClass(element, uuid, options = {}) {
         element.classList.remove("diff");
+        element.classList.remove("in-transition");
         [...element.classList]
           .filter((name) => name.startsWith("event-"))
           .forEach((name) => element.classList.remove(name));
@@ -1486,6 +1491,11 @@
         delete element.dataset.transitionSymbol;
         const info = transitionInfo(uuid);
         if (!info || info.type === "in_agreement" || options.suppress) return;
+        if (info.type === "in_transition") {
+          element.classList.add("in-transition");
+          element.title = transitionLabel(info);
+          return;
+        }
         element.classList.add("diff", `event-${info.type}`);
         element.title = transitionLabel(info);
         element.dataset.transitionLabel = transitionLabel(info);
@@ -1534,10 +1544,12 @@
         return (
           users.find((user) => user.id === participant) ||
           users.find((user) => user.profile_uuid === participant) ||
+          users.find((user) => user.identity_key === participant) ||
           users.find((user) => user.address === participant) ||
           users.find((user) => user.name === participant) || {
             id: participant,
             profile_uuid: participant,
+            identity_key: participant,
             address: "",
             name: "?",
             picture: "",

@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import time
 from typing import Any
 
 from protocol import PRSPNode
@@ -64,20 +63,6 @@ class KanbanLogic:
     def __init__(self, session: Session, config: dict):
         self.session = session
         self.config = config
-        # How long a "divergence" classification must be observed
-        # continuously before it's shown to the user as a real conflict -
-        # see _debounce_divergences. Defaults to 2 sync cycles (whichever
-        # of the two sync mechanisms this instance actually has configured
-        # is slower), since that's roughly how long a transient one can
-        # take to resolve on its own.
-        self._divergence_debounce_seconds = float(config.get(
-            "divergence_debounce_seconds",
-            2 * max(
-                float(config.get("peer_sync_interval_seconds", 2)),
-                float(config.get("relay_poll_interval_seconds", 3)),
-            ),
-        ))
-        self._divergence_first_seen: dict[tuple[str, str], float] = {}
 
     def board_payload(self, auto_adopt: bool = True) -> dict:
         board = self.ensure_board()
@@ -199,13 +184,12 @@ class KanbanLogic:
 
     def accept_relay_board(self, subtree: PRSPNode) -> SessionResult:
         # Grafts a board first discovered via the relay (not a live P2P
-        # join) into our own board list - same graft call and same
-        # "manual review until the user opts in" default the live-join
-        # accept path already uses, just triggered by a connect token
-        # instead of a real-time /p2p/join handshake.
+        # join) into our own board list. A genuinely new shared board starts
+        # fully collaborative; reconnecting an existing board never reaches
+        # this path and therefore retains its local per-board setting.
         accepted = self.session.accept_topic_invitation(subtree, self._kanban_container().uuid)
         if accepted.status == "ok":
-            self._set_board_auto_adopt(accepted.value, False)
+            self._set_board_auto_adopt(accepted.value, "always")
             self._remember_board(accepted.value)
         return accepted
 
@@ -346,13 +330,15 @@ class KanbanLogic:
 
             adopted = []
             for tree, _parent_uuid in board_topics:
+                was_known = tree.uuid in self.session.protocol.index
                 accepted = self.session.accept_topic_invitation(
                     tree,
                     self._kanban_container().uuid,
                 )
                 if accepted.status != "ok":
                     return {"status": "error", "reason": accepted.reason}
-                self._set_board_auto_adopt(accepted.value, False)
+                if not was_known:
+                    self._set_board_auto_adopt(accepted.value, "always")
                 adopted.append(accepted.value)
             for tree, parent_uuid in fetched:
                 self.session.apply_peer_subtree(address, copy.deepcopy(tree), parent_uuid)
@@ -574,6 +560,20 @@ class KanbanLogic:
 
     def accept_peer_node(self, source_addr: str, node_uuid: str,
                          adopt_absence: bool = False) -> SessionResult:
+        if not adopt_absence:
+            local = self.session.protocol.index.get(node_uuid)
+            peer = self.session.get_cached_peer_subtree(source_addr, node_uuid)
+            local_type = local.data.get("type") if local else None
+            if (local and peer
+                    and local_type in ("kanban_column", "kanban_board")
+                    and peer.data.get("type") == local_type):
+                # A container-level decision applies only to that
+                # container's own fields. Cards/columns below it remain
+                # independent decisions and keep their current versions.
+                return self.session.modify(
+                    node_uuid, peer.data, peer.weights,
+                    revision_origin_identity=peer.revision_origin_identity,
+                )
         return self.session.accept_peer_node(source_addr, node_uuid, adopt_absence)
 
     def set_perspective_state(self, node_uuid: str, state: str) -> SessionResult:
@@ -642,22 +642,29 @@ class KanbanLogic:
     def _adopt_originator_agenda_changes(self, peer_addr: str,
                                           board_uuid: str) -> bool:
         """Make an agenda item's originator authoritative on every peer."""
-        originator_uuid = self._peer_profile_uuid(peer_addr)
+        originator_profile = self._find_peer_user_profile(peer_addr)
+        originator_uuid = self._peer_profile_uuid(peer_addr, originator_profile)
         if not originator_uuid:
             return False
         changed = False
         for event in self.session.analyze_peer_transitions(peer_addr, board_uuid):
-            if event["type"] not in (
-                "peer_made_changes", "local_missing_node", "divergence",
-            ):
+            if event["type"] == "in_agreement":
                 continue
             node_uuid = event.get("node_uuid")
             peer_node = self.session.get_cached_peer_subtree(peer_addr, node_uuid)
-            if not peer_node or peer_node.data.get("type") != "agenda_item":
+            local_node = self.session.protocol.index.get(node_uuid)
+            authority_node = peer_node or local_node
+            if (not authority_node
+                    or authority_node.data.get("type") != "agenda_item"):
                 continue
-            if peer_node.data.get("author") != originator_uuid:
+            if authority_node.data.get("author") != originator_uuid:
                 continue
-            result = self.session.accept_peer_node(peer_addr, node_uuid)
+            # The originator is authoritative even when a revert makes the
+            # generic one-hop hash classifier call the recipient's value
+            # "newer" (local_made_changes). Absence is authoritative too.
+            result = self.session.accept_peer_node(
+                peer_addr, node_uuid, adopt_absence=peer_node is None,
+            )
             changed = changed or result.status == "ok"
         return changed
 
@@ -708,49 +715,28 @@ class KanbanLogic:
             if not self.session.peer_discusses_node(addr, board.uuid):
                 continue
             events.extend(self.session.analyze_peer_transitions(addr, board_uuid))
-        return self._debounce_divergences(events)
+        return self._stage_transition_events(events)
 
-    def _debounce_divergences(self, events: list[dict]) -> list[dict]:
-        # Display-only concern - reconciliation (adopt_incoming_changes)
-        # calls session.analyze_peer_transitions directly, never through
-        # here, so debouncing what the UI shows can never delay or mask
-        # what auto-adopt actually acts on.
-        #
-        # A "divergence" classification can be a genuine conflict, or just
-        # a timing artifact: the single-hop causal model
-        # (Session._classify_content/_classify_move) only recognizes a
-        # clean one-hop relationship as peer_made_changes/local_made_changes -
-        # two rapid local changes landing before the peer's next sync tick
-        # has caught up even once look identical to a real divergence, even
-        # though it resolves itself the moment the peer's cache refreshes
-        # (e.g. once a peer with auto-adopt on catches up and re-publishes).
-        # Rather than flash an alarming "Conflict" label for something
-        # very likely to self-resolve within a sync cycle or two, hold off
-        # reporting it as a real divergence until it's been observed
-        # continuously for a short grace window.
-        now = time.time()
-        still_diverging = set()
+    def _stage_transition_events(self, events: list[dict]) -> list[dict]:
+        # Display-only state staging. A local change is not a confirmed
+        # conflict until the other client has fetched that exact node
+        # revision and still publishes a different one. This is evidence-
+        # based rather than timer-based, so an offline peer remains "in
+        # transition" indefinitely and a live peer resolves immediately.
         out = []
         for event in events:
-            node_uuid = event.get("node_uuid")
-            peer_addr = event.get("peer_addr")
-            if event["type"] != "divergence" or not node_uuid or not peer_addr:
-                out.append(event)
-                continue
-            key = (peer_addr, node_uuid)
-            still_diverging.add(key)
-            first_seen = self._divergence_first_seen.setdefault(key, now)
-            if now - first_seen < self._divergence_debounce_seconds:
-                # Within the grace window - report as in_agreement for now
-                # (nothing worth showing yet), not a lie about the actual
-                # sync state, just a deferred display decision.
-                out.append({**event, "type": "in_agreement"})
+            event_type = event["type"]
+            observed = event.get("peer_observed_local_revision") is True
+            if event_type == "divergence" and not observed:
+                out.append({**event, "type": "in_transition", "original_type": event_type})
+            elif event_type in ("local_made_changes", "peer_missing_node"):
+                out.append({
+                    **event,
+                    "type": "divergence" if observed else "in_transition",
+                    "original_type": event_type,
+                })
             else:
                 out.append(event)
-        # Drop tracking for anything not divergent this round, so a later
-        # divergence on the same node starts its own fresh grace window.
-        for key in set(self._divergence_first_seen) - still_diverging:
-            del self._divergence_first_seen[key]
         return out
 
     def transition_by_node(self, events: list[dict]) -> dict:
@@ -760,6 +746,7 @@ class KanbanLogic:
             "local_missing_node": 4,
             "local_made_changes": 3,
             "peer_missing_node": 3,
+            "in_transition": 1,
             "in_agreement": 0,
         }
         out = {}
@@ -769,13 +756,46 @@ class KanbanLogic:
                 continue
             event_info = {
                 "type": event["type"],
+                "original_type": event.get("original_type"),
                 "peer_addr": event.get("peer_addr"),
+                "origin_identity": event.get("origin_identity"),
+                "local_revision_origin_identity": event.get(
+                    "local_revision_origin_identity",
+                ),
+                "peer_revision_origin_identity": event.get(
+                    "peer_revision_origin_identity",
+                ),
+                "local_state_hash": event.get("local_state_hash"),
+                "peer_state_hash": event.get("peer_state_hash"),
+                "local_revision": event.get("local_revision"),
+                "peer_revision": event.get("peer_revision"),
                 "keep_mine_active": event.get("keep_mine_active"),
+                "peer_observed_local_revision": event.get(
+                    "peer_observed_local_revision", False,
+                ),
                 "priority": priority.get(event["type"], 0),
             }
+            signature = self._transition_event_signature(event_info)
             current = out.get(node_uuid)
             if current:
                 if event["type"] != "in_agreement":
+                    existing = next((
+                        item for item in current.setdefault("events", [])
+                        if self._transition_event_signature(item) == signature
+                    ), None)
+                    if existing:
+                        deliveries = existing.setdefault(
+                            "delivery_peer_addrs",
+                            [existing.get("peer_addr")],
+                        )
+                        if event_info.get("peer_addr") not in deliveries:
+                            deliveries.append(event_info.get("peer_addr"))
+                        if (self._peer_is_revision_origin(event_info)
+                                and not self._peer_is_revision_origin(existing)):
+                            existing["peer_addr"] = event_info.get("peer_addr")
+                            if self._transition_event_signature(current) == signature:
+                                current["peer_addr"] = event_info.get("peer_addr")
+                        continue
                     current.setdefault("events", []).append(dict(event_info))
                 if priority.get(current["type"], 0) >= priority.get(event["type"], 0):
                     continue
@@ -785,6 +805,24 @@ class KanbanLogic:
             if event["type"] != "in_agreement":
                 out[node_uuid]["events"] = [dict(event_info)]
         return out
+
+    @staticmethod
+    def _transition_event_signature(event: dict) -> tuple:
+        return (
+            event.get("type"),
+            event.get("original_type"),
+            event.get("origin_identity"),
+            event.get("local_revision") or event.get("local_state_hash"),
+            event.get("peer_revision") or event.get("peer_state_hash"),
+        )
+
+    def _peer_is_revision_origin(self, event: dict) -> bool:
+        origin = event.get("origin_identity")
+        peer_addr = event.get("peer_addr")
+        return bool(
+            origin and peer_addr
+            and self.session.peer_identity_key.get(peer_addr) == origin
+        )
 
     def columns(self, board: PRSPNode | None = None) -> list[PRSPNode]:
         board = board or self.ensure_board()
@@ -923,6 +961,7 @@ class KanbanLogic:
         return {
             "id": user_id or "",
             "profile_uuid": user_id or "",
+            "identity_key": data.get("identity_key") or "",
             "address": address,
             "name": display_name or "?",
             "picture": data.get("picture") or "",

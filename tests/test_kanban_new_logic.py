@@ -261,6 +261,39 @@ class KanbanNewLogicTests(unittest.TestCase):
             "medium",
         )
 
+    def test_agenda_priority_revert_to_none_follows_its_originator(self):
+        left = self.runtime(8397)
+        right = self.runtime(8398)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        right.logic.set_auto_adopt_mode("never")
+        item = left.logic.create_agenda_item("Radar").value
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        right.logic.board_payload()
+
+        left.logic.set_agenda_item_priority(item.uuid, "high")
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        right.logic.board_payload()
+        self.assertEqual(
+            right.session.protocol.index[item.uuid].data["priority"], "high",
+        )
+
+        left.logic.set_agenda_item_priority(item.uuid, None)
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        self.assertEqual(
+            right.session.analyze_peer_transitions(left.address, item.uuid)[0]["type"],
+            "local_made_changes",
+        )
+        right.logic.board_payload()
+
+        self.assertIsNone(
+            right.session.protocol.index[item.uuid].data["priority"],
+        )
+
     def test_non_originator_cannot_change_agenda_priority(self):
         left = self.runtime(8395)
         right = self.runtime(8396)
@@ -612,7 +645,70 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(adopt.status, "ok")
         self.assertIn(card.uuid, right.session.protocol.index)
 
-    def test_shared_board_defaults_to_auto_adopt_off(self):
+    def test_adopting_column_fields_preserves_changed_cards(self):
+        left = self.runtime(8373)
+        right = self.runtime(8374)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        column = left.logic.columns(board)[0]
+        card = left.logic.create_card(column.uuid, "Original card", "", []).value
+        connect(left, right, board.uuid)
+        right.logic.set_auto_adopt_mode("never")
+
+        left.logic.rename_column(column.uuid, "Renamed column")
+        left.logic.update_card(card.uuid, "Peer card", "", [])
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        right.logic.board_payload()
+
+        adopted = right.logic.accept_peer_node(left.address, column.uuid)
+
+        self.assertEqual(adopted.status, "ok")
+        self.assertEqual(
+            right.session.protocol.index[column.uuid].data["name"],
+            "Renamed column",
+        )
+        self.assertEqual(
+            right.session.protocol.index[card.uuid].data["name"],
+            "Original card",
+        )
+
+    def test_adopting_board_fields_preserves_columns_and_cards(self):
+        left = self.runtime(8375)
+        right = self.runtime(8376)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        column = left.logic.columns(board)[0]
+        card = left.logic.create_card(column.uuid, "Original card", "", []).value
+        connect(left, right, board.uuid)
+        right.logic.set_auto_adopt_mode("never")
+
+        left.logic.rename_board(board.uuid, "Renamed board")
+        left.logic.rename_column(column.uuid, "Peer column")
+        left.logic.update_card(card.uuid, "Peer card", "", [])
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        right.logic.board_payload()
+
+        adopted = right.logic.accept_peer_node(left.address, board.uuid)
+
+        self.assertEqual(adopted.status, "ok")
+        self.assertEqual(
+            right.session.protocol.index[board.uuid].data["name"],
+            "Renamed board",
+        )
+        self.assertNotEqual(
+            right.session.protocol.index[column.uuid].data["name"],
+            "Peer column",
+        )
+        self.assertEqual(
+            right.session.protocol.index[card.uuid].data["name"],
+            "Original card",
+        )
+
+    def test_new_shared_board_defaults_to_auto_adopt_always(self):
         left = self.runtime(8361)
         right = self.runtime(8362)
         client = MemoryHttpClient({left.address: left, right.address: right})
@@ -624,7 +720,22 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertEqual(share["status"], "ok")
         self.assertEqual(right.logic.ensure_board().uuid, board.uuid)
-        self.assertEqual(right.logic.auto_adopt_mode(), "never")
+        self.assertEqual(right.logic.auto_adopt_mode(), "always")
+
+    def test_reconnecting_existing_board_retains_auto_adopt_setting(self):
+        left = self.runtime(8367)
+        right = self.runtime(8368)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        connect(left, right, board.uuid)
+        right.logic.set_auto_adopt_mode("not_member")
+
+        reconnect = connect(left, right, board.uuid)
+
+        self.assertEqual(reconnect["status"], "ok")
+        self.assertEqual(right.logic.auto_adopt_mode(), "not_member")
 
     def test_adopt_peer_absence_deletes_local_card(self):
         left = self.runtime(8344)
@@ -642,7 +753,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         payload = right.logic.board_payload()
         self.assertEqual(
             payload["transition_by_node"][card.uuid]["type"],
-            "peer_missing_node",
+            "in_transition",
         )
         adopt = right.logic.accept_peer_node(
             left.address,
@@ -702,7 +813,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertIn(card.uuid, left.session.protocol.index)
         self.assertEqual(
             payload["transition_by_node"][board.uuid]["type"],
-            "local_made_changes",
+            "in_transition",
         )
 
     def test_transition_by_node_keeps_all_peer_events(self):
@@ -747,6 +858,35 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertTrue(out[node_uuid]["keep_mine_active"])
         self.assertTrue(out[node_uuid]["events"][0]["keep_mine_active"])
+
+    def test_transition_by_node_deduplicates_a_revision_forwarded_by_another_peer(self):
+        runtime = self.runtime(8313)
+        node_uuid = "node-1"
+        addr_a = "http://127.0.0.1:8001"
+        addr_c = "http://127.0.0.1:8003"
+        runtime.session.set_peer_identity_key(addr_a, "identity-a")
+        runtime.session.set_peer_identity_key(addr_c, "identity-c")
+        common = {
+            "node_uuid": node_uuid,
+            "type": "peer_made_changes",
+            "origin_identity": "identity-c",
+            "local_state_hash": "old",
+            "peer_state_hash": "new",
+        }
+
+        out = runtime.logic.transition_by_node([
+            {**common, "peer_addr": addr_a},
+            {**common, "peer_addr": addr_c},
+        ])
+
+        info = out[node_uuid]
+        self.assertEqual(info["origin_identity"], "identity-c")
+        self.assertEqual(info["peer_addr"], addr_c)
+        self.assertEqual(len(info["events"]), 1)
+        self.assertEqual(
+            info["events"][0]["delivery_peer_addrs"],
+            [addr_a, addr_c],
+        )
 
     def test_rename_board_updates_board_list(self):
         runtime = self.runtime(8315)
@@ -1401,66 +1541,47 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(out["node-1"]["priority"], 6)
         self.assertEqual(out["node-1"]["events"][0]["priority"], 6)
 
-    # _debounce_divergences - display-only smoothing for the "divergence"
-    # classification, which the single-hop causal model can report as a
-    # transient timing artifact (two rapid local changes outpacing the
-    # peer's next sync tick) indistinguishable from a real conflict until
-    # it either resolves on its own or persists past a grace window.
+    # _stage_transition_events stages differences by explicit peer
+    # acknowledgement rather than elapsed time.
 
-    def test_debounce_suppresses_divergence_within_grace_window(self):
+    def test_unacknowledged_divergence_is_in_transition(self):
         runtime = self.runtime(8390)
-        runtime.logic._divergence_debounce_seconds = 10.0
         events = [{"type": "divergence", "node_uuid": "n1", "peer_addr": "http://peer"}]
 
-        out = runtime.logic._debounce_divergences(events)
+        out = runtime.logic._stage_transition_events(events)
 
-        self.assertEqual(out[0]["type"], "in_agreement")
+        self.assertEqual(out[0]["type"], "in_transition")
 
-    def test_debounce_shows_divergence_once_grace_window_elapses(self):
+    def test_acknowledged_divergence_is_shown_immediately(self):
         runtime = self.runtime(8391)
-        runtime.logic._divergence_debounce_seconds = 0.02
-        events = [{"type": "divergence", "node_uuid": "n1", "peer_addr": "http://peer"}]
-        runtime.logic._debounce_divergences(events)
-        time.sleep(0.1)
+        events = [{
+            "type": "divergence", "node_uuid": "n1", "peer_addr": "http://peer",
+            "peer_observed_local_revision": True,
+        }]
 
-        out = runtime.logic._debounce_divergences(events)
+        out = runtime.logic._stage_transition_events(events)
 
         self.assertEqual(out[0]["type"], "divergence")
 
-    def test_debounce_restarts_grace_window_after_resolving(self):
+    def test_local_change_stays_in_transition_until_peer_acknowledges(self):
         runtime = self.runtime(8392)
-        runtime.logic._divergence_debounce_seconds = 0.02
-        diverging = [{"type": "divergence", "node_uuid": "n1", "peer_addr": "http://peer"}]
-        resolved = [{"type": "in_agreement", "node_uuid": "n1", "peer_addr": "http://peer"}]
-        runtime.logic._debounce_divergences(diverging)
-        time.sleep(0.1)
-        runtime.logic._debounce_divergences(resolved)  # caught up in between
+        event = {"type": "local_made_changes", "node_uuid": "n1", "peer_addr": "http://peer"}
 
-        out = runtime.logic._debounce_divergences(diverging)  # diverges again
+        waiting = runtime.logic._stage_transition_events([event])
+        confirmed = runtime.logic._stage_transition_events([{
+            **event, "peer_observed_local_revision": True,
+        }])
 
-        self.assertEqual(out[0]["type"], "in_agreement")
+        self.assertEqual(waiting[0]["type"], "in_transition")
+        self.assertEqual(confirmed[0]["type"], "divergence")
 
     def test_debounce_only_applies_to_divergence_type(self):
         runtime = self.runtime(8393)
         events = [{"type": "peer_made_changes", "node_uuid": "n1", "peer_addr": "http://peer"}]
 
-        out = runtime.logic._debounce_divergences(events)
+        out = runtime.logic._stage_transition_events(events)
 
         self.assertEqual(out[0]["type"], "peer_made_changes")
-
-    def test_default_divergence_debounce_uses_slower_configured_sync_interval(self):
-        session = Session("http://a")
-        logic = KanbanLogic(session, {
-            "peer_sync_interval_seconds": 2, "relay_poll_interval_seconds": 7,
-        })
-
-        self.assertEqual(logic._divergence_debounce_seconds, 14.0)
-
-    def test_divergence_debounce_seconds_is_explicitly_configurable(self):
-        session = Session("http://a")
-        logic = KanbanLogic(session, {"divergence_debounce_seconds": 1.5})
-
-        self.assertEqual(logic._divergence_debounce_seconds, 1.5)
 
     @staticmethod
     def runtime(port: int):

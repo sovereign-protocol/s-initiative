@@ -617,6 +617,79 @@ class RelayLogicTests(unittest.TestCase):
 
             self.assertEqual(second, [])
 
+    def test_relay_acknowledgement_confirms_divergence_without_timer(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            kanban_a = KanbanLogic(session_a, {})
+            board_uuid = kanban_a.create_board("Shared").value
+            board_a = kanban_a.ensure_board()
+            card = kanban_a.create_card(
+                kanban_a.columns(board_a)[0].uuid, "Before", "", [],
+            ).value
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a.mark_topics_shared([board_uuid])
+            relay_a.publish_due_topics()
+
+            session_b = Session("addr-b")
+            kanban_b = KanbanLogic(session_b, {})
+            relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
+            relay_b.mark_topics_desired([board_uuid])
+            relay_b.poll_and_apply()
+            kanban_b.set_auto_adopt_mode("never")
+            relay_b.publish_due_topics()
+            relay_a.poll_and_apply()
+
+            kanban_a.update_card(card.uuid, "After", "", [], None)
+            relay_a.publish_due_topics()
+            waiting = kanban_a.transition_by_node(kanban_a.transition_events(board_uuid))
+            self.assertEqual(waiting[card.uuid]["type"], "in_transition")
+
+            relay_b.poll_and_apply()
+            # B's board did not change, but its acknowledgement did, so its
+            # head must be republished immediately with the same snapshot.
+            self.assertIn(board_uuid, relay_b.publish_due_topics())
+            self.assertIn((board_uuid, "B"), relay_a.poll_and_apply())
+
+            confirmed = kanban_a.transition_by_node(kanban_a.transition_events(board_uuid))
+            self.assertEqual(confirmed[card.uuid]["type"], "divergence")
+
+    def test_channel_descriptor_carries_host_poll_interval(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            config = self._relay_config(relay_root, "A", state_dir)
+            config["relay_poll_interval_seconds"] = 7.5
+            relay = RelayLogic(Session("addr-a"), config)
+
+            descriptor = relay.channel_descriptor()
+            accepter = RelayLogic(
+                Session("addr-b"), self._relay_config(relay_root, "B", state_dir),
+            )
+            accepter.adopt_poll_interval_from_descriptor(descriptor)
+
+            self.assertEqual(descriptor["poll_interval_seconds"], 7.5)
+            self.assertEqual(accepter.poll_interval_seconds, 7.5)
+
+    def test_token_adopted_storage_and_interval_survive_restart(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session = Session("addr-b")
+            config = {
+                "relay_state_file": str(Path(state_dir) / "state-b.json"),
+            }
+            descriptor = {
+                "type": "relay", "version": 1, "root": relay_root,
+                "identity": "A", "poll_interval_seconds": 8,
+            }
+            first = RelayLogic(session, config)
+            self.assertTrue(first.adopt_storage_from_descriptor(descriptor))
+            first.adopt_poll_interval_from_descriptor(descriptor)
+            first.mark_topics_desired(["board-1"])
+
+            restarted = RelayLogic(session, config)
+
+            self.assertIsNotNone(restarted.storage)
+            self.assertEqual(str(restarted.storage.root), relay_root)
+            self.assertEqual(restarted.poll_interval_seconds, 8)
+            self.assertEqual(restarted._state["desired"], ["board-1"])
+
     def test_delete_topic_clears_storage_and_local_bookkeeping(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
@@ -852,6 +925,7 @@ class RelayLogicTests(unittest.TestCase):
             "type": "sftp", "version": 1, "host": "example.test",
             "port": 2222, "root": "/relay", "identity": "A",
             "username": "u", "password": "super-secret",
+            "poll_interval_seconds": 3.0,
         })
         # The password IS present now (that's the point); the key passphrase
         # is not (no key is ever embedded).
@@ -1298,7 +1372,7 @@ class RelayLogicTests(unittest.TestCase):
             self.assertIn((board_uuid, "A"), applied)
             kanban_b = KanbanLogic(session_b, {})
             self.assertIn(board_uuid, [b.uuid for b in kanban_b.boards()])
-            self.assertEqual(kanban_b.auto_adopt_mode(session_b.protocol.index[board_uuid]), "never")
+            self.assertEqual(kanban_b.auto_adopt_mode(session_b.protocol.index[board_uuid]), "always")
 
     def test_accept_token_after_hash_already_cached_still_grafts(self):
         # Regression: if a poll already saw+cached this exact hash before

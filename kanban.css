@@ -590,6 +590,28 @@ button.auto-adopt-square {
   right: -8px;
 }
 
+.column.in-transition::after,
+.card.in-transition::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #8c9bab;
+  box-shadow: 0 0 0 2px rgba(140, 155, 171, 0.18);
+}
+
+.column.in-transition::after {
+  top: 5px;
+  right: 5px;
+}
+
+.card.in-transition::after {
+  top: 8px;
+  right: 8px;
+}
+
 /* Ghosts already read as "not really here yet" via the dashed border -
    the badge on top of that is redundant clutter, not extra information. */
 .column.ghost.diff::before,
