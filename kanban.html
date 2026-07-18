@@ -93,6 +93,8 @@
       <section id="board" class="board"></section>
     </main>
 
+    <div id="reactionMenu" class="reaction-menu" role="menu" hidden></div>
+
     <dialog id="cardModal">
       <form method="dialog" id="cardForm">
         <h2 id="cardModalTitle">Card</h2>
@@ -174,32 +176,20 @@
         return true;
       }
 
-      function keepMineActive(node) {
-        // Server-computed: accounts for both the content chain-connectivity
-        // rule and the move carve-out, so the UI never has to re-derive
-        // staleness itself (see BACKLOG.md item 10 for why those can't be
-        // collapsed into one client-side check).
-        return transitionInfo(node.uuid)?.keep_mine_active === true;
-      }
-
       function hasPendingDivergence(node) {
         const info = transitionInfo(node.uuid);
         return !!info && !["in_agreement", "in_transition"].includes(info.type);
       }
 
       function needsManualAdopt(node) {
-        if (!hasPendingDivergence(node) || keepMineActive(node)) return false;
+        if (!hasPendingDivergence(node)) return false;
         const info = transitionInfo(node.uuid);
         const autoResolvableType = info.type === "peer_made_changes" || info.type === "local_missing_node";
         return !autoResolvableType || !autoAdoptAllowsNode(node);
       }
 
-      function needsKeepMineMenu(node) {
-        return hasPendingDivergence(node) && keepMineActive(node);
-      }
-
       function needsReaction(node) {
-        return needsManualAdopt(node) || needsKeepMineMenu(node);
+        return needsManualAdopt(node);
       }
 
       function peerCopyOf(node) {
@@ -1186,14 +1176,14 @@
       function reactionButton(node) {
         const button = document.createElement("button");
         button.type = "button";
-        button.textContent = "React";
         button.setAttribute("aria-label", "React to differences");
         button.className = "react-button";
+        button.textContent = "React";
         const info = transitionInfo(node.uuid);
         if (info) button.title = transitionLabel(info);
         button.onclick = (event) => {
           event.stopPropagation();
-          openReaction(node.uuid);
+          openReactionMenu(button, node.uuid);
         };
         return button;
       }
@@ -1206,7 +1196,7 @@
         return needsReaction(card) ? [reactionButton(card)] : [];
       }
 
-      function openReaction(uuid) {
+      function reactionChoices(uuid) {
         const info = transitionInfo(uuid);
         const contributingEvents = info?.events || (info ? [info] : []);
         const eventByAddr = new Map(contributingEvents.map((event) => [event.peer_addr, event]));
@@ -1218,92 +1208,81 @@
             event: eventByAddr.get(addr),
           }))
           .filter((item) => contributingAddrs.has(item.addr));
-        const localNode = findNode(state.board, uuid);
-        const reactions = peers.map((item, index) => {
-          const changes = eventChangeSummary(item.event, 6) || "Adopt complete peer version";
+        return peers.map((item) => {
+          const action = item.event?.reaction || "adopt";
+          const actor = transitionActorLabel(item.event);
+          const changes = eventChangeSummary(item.event, 6) || "complete peer version";
+          if (action === "rollback") {
+            return {
+              label: `Roll back to my previous version held by ${actor}`,
+              action,
+              peer: item,
+            };
+          }
           return {
-            value: `adopt:${index}`,
-            label: `${changes} (from ${transitionActorLabel(item.event)})`,
-            details: `Adopts the complete version from ${transitionActorLabel(item.event)}.`,
-            action: "adopt",
+            label: `Adopt ${changes} (from ${actor})`,
+            action,
             peer: item,
           };
         });
-        if (localNode) {
-          reactions.push({
-            value: "keep",
-            label: "Keep as is for the moment",
-            details: "Keep your complete current version without asking peers to change theirs.",
-            action: "perspective",
-            state: "kept_mine",
-          });
-          const pushedChanges = localChangeSummary(info, 6) || "your complete current version";
-          reactions.push({
-            value: "push",
-            label: `Push back current changes: ${pushedChanges}`,
-            details: "Keep your complete current version and ask peers to adopt it.",
-            action: "perspective",
-            state: "pushed_back",
-          });
-          if (localNode.perspective_state && localNode.perspective_state !== "none") {
-            reactions.push({
-              value: "clear",
-              label: "Clear current reaction",
-              details: "Remove the current keep or push-back decision.",
-              action: "perspective",
-              state: "none",
-            });
-          }
-        }
+      }
+
+      function closeReactionMenu() {
+        const menu = el("reactionMenu");
+        menu.hidden = true;
+        menu.replaceChildren();
+      }
+
+      function openReactionMenu(anchor, uuid) {
+        const reactions = reactionChoices(uuid);
         if (!reactions.length) return showToast("No reaction available", true);
-        const selectedValue =
-          localNode?.perspective_state === "kept_mine" ? "keep" :
-          localNode?.perspective_state === "pushed_back" ? "push" :
-          reactions[0].value;
-        const selectedReaction = () => reactions.find((item) => item.value === selectedValue) || reactions[0];
-        openSimple(
-          "React to Differences",
-          [
-            {
-              name: "reaction",
-              label: "Reaction",
-              type: "select",
-              value: selectedValue,
-              options: reactions.map((item) => ({
-                value: item.value,
-                label: item.label,
-              })),
-            },
-            {
-              name: "reaction_summary",
-              label: "Effect",
-              type: "display",
-              value: selectedReaction().details,
-            },
-          ],
-          async (form) => {
-            const reaction = reactions.find((item) => item.value === form.get("reaction"));
-            if (!reaction) throw new Error("Reaction no longer available");
-            if (reaction.action === "adopt") {
-              return api("/api/kanban/adopt", {
-                source_addr: reaction.peer.addr,
-                node_uuid: uuid,
-                adopt_absence: reaction.peer.missing,
-              });
-            }
-            return api("/api/kanban/perspective", {
-              node_uuid: uuid,
-              state: reaction.state,
-            });
-          },
-        );
-        const reactionSelect = el("simpleFields").querySelector('select[name="reaction"]');
-        const summary = el("simpleFields").querySelector('[data-display="reaction_summary"]');
-        if (reactionSelect && summary) {
-          reactionSelect.onchange = () => {
-            summary.textContent = reactions.find((item) => item.value === reactionSelect.value)?.details || "";
+        const menu = el("reactionMenu");
+        menu.replaceChildren();
+        for (const reaction of reactions) {
+          const option = document.createElement("button");
+          option.type = "button";
+          option.className = "reaction-menu-option";
+          option.textContent = reaction.label;
+          option.onclick = async (event) => {
+            event.stopPropagation();
+            closeReactionMenu();
+            await applyReaction(uuid, reaction);
           };
+          menu.append(option);
         }
+        menu.hidden = false;
+        const rect = anchor.getBoundingClientRect();
+        const margin = 8;
+        const left = Math.max(margin, Math.min(
+          rect.left, window.innerWidth - menu.offsetWidth - margin,
+        ));
+        let top = rect.bottom + 4;
+        if (top + menu.offsetHeight > window.innerHeight - margin) {
+          top = Math.max(margin, rect.top - menu.offsetHeight - 4);
+        }
+        menu.style.left = `${left}px`;
+        menu.style.top = `${top}px`;
+      }
+
+      document.addEventListener("click", (event) => {
+        if (!event.target.closest("#reactionMenu")) closeReactionMenu();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeReactionMenu();
+      });
+      window.addEventListener("resize", closeReactionMenu);
+      window.addEventListener("scroll", closeReactionMenu, true);
+
+      async function applyReaction(uuid, reaction) {
+        const endpoint = reaction.action === "rollback"
+          ? "/api/kanban/rollback"
+          : "/api/kanban/adopt";
+        await run(() => api(endpoint, {
+          node_uuid: uuid,
+          source_addr: reaction.peer.addr,
+          adopt_absence: reaction.action === "adopt" && reaction.peer.missing,
+          rollback_absence: reaction.action === "rollback" && reaction.peer.missing,
+        }), reaction.action === "rollback" ? "Rolled back" : "Adopted");
       }
 
       function openCard(card, columnUuid) {

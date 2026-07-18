@@ -6,7 +6,6 @@ from pathlib import Path
 import app_server
 from kanban_logic import KanbanLogic
 from protocol import PRSPNode
-from session import Session
 
 
 def connect(host, guest, board_uuid: str | None = None) -> dict:
@@ -133,7 +132,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         result = logic.move_card(first.uuid, doing.uuid, 0)
 
-        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.status, "ok", result.reason)
         self.assertEqual(
             runtime.session.protocol.index[second.uuid].state_hash,
             second_hash_before,
@@ -286,7 +285,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         self.assertEqual(
             right.session.analyze_peer_transitions(left.address, item.uuid)[0]["type"],
-            "local_made_changes",
+            "in_transition",
         )
         right.logic.board_payload()
 
@@ -425,96 +424,6 @@ class KanbanNewLogicTests(unittest.TestCase):
             "Renamed (owned by peer)",
         )
 
-    def test_keep_mine_suppresses_auto_adopt_until_toggled_off(self):
-        left = self.runtime(8373)
-        right = self.runtime(8374)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
-        board = left.logic.ensure_board()
-        connect(left, right)
-        connect(left, right, board.uuid)
-        right.logic.set_auto_adopt_mode("always")
-        column = left.logic.columns(board)[0]
-
-        card = left.logic.create_card(column.uuid, "Original", "", []).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
-        right.logic.board_payload()
-        self.assertEqual(right.session.protocol.index[card.uuid].data["name"], "Original")
-
-        keep_mine_result = right.logic.set_perspective_state(card.uuid, "kept_mine")
-        self.assertEqual(keep_mine_result.status, "ok")
-
-        left.logic.update_card(card.uuid, "Changed by left", "", [])
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
-        right.logic.board_payload()
-
-        self.assertEqual(
-            right.session.protocol.index[card.uuid].data["name"], "Original",
-        )
-
-        # Clearing the keep_mine lets auto-adopt catch up again.
-        right.logic.set_perspective_state(card.uuid, "none")
-        right.logic.board_payload()
-
-        self.assertEqual(
-            right.session.protocol.index[card.uuid].data["name"], "Changed by left",
-        )
-
-    def test_pushed_back_peer_version_is_not_auto_adopted(self):
-        left = self.runtime(8375)
-        right = self.runtime(8376)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
-        board = left.logic.ensure_board()
-        connect(left, right)
-        connect(left, right, board.uuid)
-        right.logic.set_auto_adopt_mode("always")
-        column = left.logic.columns(board)[0]
-
-        card = left.logic.create_card(column.uuid, "Original", "", []).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
-        right.logic.board_payload()
-        self.assertEqual(right.session.protocol.index[card.uuid].data["name"], "Original")
-
-        left.logic.update_card(card.uuid, "Changed by left", "", [])
-        left.logic.set_perspective_state(card.uuid, "pushed_back")
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
-        right.logic.board_payload()
-
-        # Right's auto-adopt (mode "always") would normally pull this
-        # straight in - left's own copy being pushed_back is a courtesy for
-        # an explicit "no", regardless of right's own state.
-        self.assertEqual(
-            right.session.protocol.index[card.uuid].data["name"], "Original",
-        )
-
-    def test_subtree_has_kept_mine_also_counts_pushed_back(self):
-        # _subtree_has_kept_mine/_subtree_has_pushed_back moved into Session
-        # (they're generic - only walk perspective_state) as part of
-        # generalizing adopt_incoming_changes into
-        # Session.reconcile_peer_changes; this guard behavior itself is
-        # unchanged, just relocated.
-        runtime = self.runtime(8377)
-        logic: KanbanLogic = runtime.logic
-        board = logic.ensure_board()
-        column = logic.columns(board)[0]
-        card = logic.create_card(column.uuid, "Task", "", []).value
-
-        self.assertFalse(
-            Session._subtree_has_kept_mine(runtime.session.protocol.index[board.uuid])
-        )
-
-        logic.set_perspective_state(card.uuid, "pushed_back")
-
-        # The whole-board-replace auto-adopt shortcut must be blocked by a
-        # pushed_back node exactly as it already is by a keep-mine one -
-        # both represent an explicit decision to keep this node.
-        self.assertTrue(
-            Session._subtree_has_kept_mine(runtime.session.protocol.index[board.uuid])
-        )
-
     def test_auto_adopt_not_member_skips_any_card_im_on(self):
         left = self.runtime(8371)
         right = self.runtime(8372)
@@ -644,6 +553,31 @@ class KanbanNewLogicTests(unittest.TestCase):
         adopt = right.logic.accept_peer_node(left.address, card.uuid)
         self.assertEqual(adopt.status, "ok")
         self.assertIn(card.uuid, right.session.protocol.index)
+
+    def test_roll_back_restores_my_previous_card_revision(self):
+        runtime = self.runtime(8309)
+        board = runtime.logic.ensure_board()
+        column = runtime.logic.columns(board)[0]
+        card = runtime.logic.create_card(column.uuid, "Original", "", []).value
+        runtime.session.apply_peer_subtree(
+            "http://peer",
+            PRSPNode.from_dict(runtime.session.protocol.index[board.uuid].to_dict()),
+            runtime.session.protocol.root.uuid,
+        )
+        previous = runtime.session.get_cached_peer_subtree("http://peer", card.uuid)
+
+        runtime.logic.update_card(card.uuid, "First", "", [])
+        runtime.logic.update_card(card.uuid, "Second", "", [])
+        changed = runtime.session.protocol.index[card.uuid]
+        self.assertEqual(changed.base_hash, previous.base_hash)
+
+        result = runtime.logic.rollback_peer_node("http://peer", card.uuid)
+
+        self.assertEqual(result.status, "ok", result.reason)
+        rolled_back = runtime.session.protocol.index[card.uuid]
+        self.assertEqual(rolled_back.data["name"], "Original")
+        self.assertEqual(rolled_back.state_hash, previous.state_hash)
+        self.assertEqual(rolled_back.base_hash, previous.base_hash)
 
     def test_adopting_column_fields_preserves_changed_cards(self):
         left = self.runtime(8373)
@@ -811,9 +745,16 @@ class KanbanNewLogicTests(unittest.TestCase):
         payload = left.logic.board_payload()
 
         self.assertIn(card.uuid, left.session.protocol.index)
+        # The new card stays in_transition until the peer observes it; the
+        # board is not re-revisioned by a descendant creation, so it stays
+        # in_agreement (see the node_hash/subtree_hash split).
+        self.assertEqual(
+            payload["transition_by_node"][card.uuid]["type"],
+            "in_transition",
+        )
         self.assertEqual(
             payload["transition_by_node"][board.uuid]["type"],
-            "in_transition",
+            "in_agreement",
         )
 
     def test_transition_by_node_keeps_all_peer_events(self):
@@ -840,24 +781,26 @@ class KanbanNewLogicTests(unittest.TestCase):
             ["http://127.0.0.1:8002", "http://127.0.0.1:8003"],
         )
 
-    def test_transition_by_node_propagates_keep_mine_active(self):
-        # Regression: transition_by_node only used to keep type/peer_addr,
-        # silently dropping keep_mine_active - kanban.html reads it from
-        # exactly this payload, not from analyze_peer_transitions directly.
+    def test_transition_by_node_marks_local_same_origin_target_as_rollback(self):
         runtime = self.runtime(8312)
+        local_identity = runtime.logic.user_profile().data["identity_key"]
         node_uuid = "node-1"
 
         out = runtime.logic.transition_by_node([
             {
                 "node_uuid": node_uuid,
-                "type": "peer_made_changes",
+                "type": "divergence",
+                "original_type": "local_made_changes",
                 "peer_addr": "http://127.0.0.1:8002",
-                "keep_mine_active": True,
+                "local_revision_origin_identity": local_identity,
+                "peer_revision_origin_identity": local_identity,
+                "local_base_hash": "base",
+                "peer_base_hash": "base",
             },
         ])
 
-        self.assertTrue(out[node_uuid]["keep_mine_active"])
-        self.assertTrue(out[node_uuid]["events"][0]["keep_mine_active"])
+        self.assertEqual(out[node_uuid]["reaction"], "rollback")
+        self.assertEqual(out[node_uuid]["events"][0]["reaction"], "rollback")
 
     def test_transition_by_node_deduplicates_a_revision_forwarded_by_another_peer(self):
         runtime = self.runtime(8313)
@@ -1586,8 +1529,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(payload["agenda_items"][0]["data"]["priority"], "high")
 
     def test_transition_by_node_carries_priority_field(self):
-        # Regression guard, matching the earlier keep_mine_active gap: this
-        # field is read directly by kanban.html's discussion list, so its
+        # This field is read directly by kanban.html's discussion list, so its
         # absence would only ever surface as a silent UI bug, not a
         # backend error.
         runtime = self.runtime(8385)
@@ -1599,48 +1541,6 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertEqual(out["node-1"]["priority"], 6)
         self.assertEqual(out["node-1"]["events"][0]["priority"], 6)
-
-    # _stage_transition_events stages differences by explicit peer
-    # acknowledgement rather than elapsed time.
-
-    def test_unacknowledged_divergence_is_in_transition(self):
-        runtime = self.runtime(8390)
-        events = [{"type": "divergence", "node_uuid": "n1", "peer_addr": "http://peer"}]
-
-        out = runtime.logic._stage_transition_events(events)
-
-        self.assertEqual(out[0]["type"], "in_transition")
-
-    def test_acknowledged_divergence_is_shown_immediately(self):
-        runtime = self.runtime(8391)
-        events = [{
-            "type": "divergence", "node_uuid": "n1", "peer_addr": "http://peer",
-            "peer_observed_local_revision": True,
-        }]
-
-        out = runtime.logic._stage_transition_events(events)
-
-        self.assertEqual(out[0]["type"], "divergence")
-
-    def test_local_change_stays_in_transition_until_peer_acknowledges(self):
-        runtime = self.runtime(8392)
-        event = {"type": "local_made_changes", "node_uuid": "n1", "peer_addr": "http://peer"}
-
-        waiting = runtime.logic._stage_transition_events([event])
-        confirmed = runtime.logic._stage_transition_events([{
-            **event, "peer_observed_local_revision": True,
-        }])
-
-        self.assertEqual(waiting[0]["type"], "in_transition")
-        self.assertEqual(confirmed[0]["type"], "divergence")
-
-    def test_debounce_only_applies_to_divergence_type(self):
-        runtime = self.runtime(8393)
-        events = [{"type": "peer_made_changes", "node_uuid": "n1", "peer_addr": "http://peer"}]
-
-        out = runtime.logic._stage_transition_events(events)
-
-        self.assertEqual(out[0]["type"], "peer_made_changes")
 
     @staticmethod
     def runtime(port: int):

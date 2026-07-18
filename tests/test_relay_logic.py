@@ -483,7 +483,7 @@ class RelayManagerTests(unittest.TestCase):
             # Back-compat shims delegate to the primary connection.
             self.assertIs(manager.storage, manager.primary.storage)
 
-    def test_startup_config_refreshes_stale_persisted_target_credentials(self):
+    def test_persisted_target_overrides_legacy_startup_credentials(self):
         session = Session("addr-a")
         session.app_metadata["relay_targets"] = {
             "saved-target": {
@@ -503,14 +503,14 @@ class RelayManagerTests(unittest.TestCase):
 
         manager = RelayManager(session, config)
 
-        self.assertEqual(manager.primary.storage.password, "new-password")
-        self.assertEqual(manager.primary.poll_interval_seconds, 4)
+        self.assertEqual(manager.primary.storage.password, "old-password")
+        self.assertEqual(manager.primary.poll_interval_seconds, 30)
         saved = session.app_metadata["relay_targets"]["saved-target"]
-        self.assertEqual(saved["password"], "new-password")
-        self.assertEqual(saved["poll_interval_seconds"], 4)
-        self.assertTrue(saved["configured"])
+        self.assertEqual(saved["password"], "old-password")
+        self.assertEqual(saved["poll_interval_seconds"], 30)
+        self.assertNotIn("configured", saved)
 
-    def test_startup_primary_keeps_private_key_storage_when_registry_has_password(self):
+    def test_persisted_password_replaces_legacy_startup_private_key(self):
         session = Session("addr-a")
         session.app_metadata["relay_targets"] = {
             "saved-target": {
@@ -527,8 +527,8 @@ class RelayManagerTests(unittest.TestCase):
             "relay_sftp_private_key_path": "current-key.pem",
         })
 
-        self.assertEqual(manager.primary.storage.private_key_path, "current-key.pem")
-        self.assertIsNone(manager.primary.storage.password)
+        self.assertIsNone(manager.primary.storage.private_key_path)
+        self.assertEqual(manager.primary.storage.password, "stale-password")
 
     def test_accepting_same_startup_target_keeps_local_poll_interval(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
@@ -546,11 +546,67 @@ class RelayManagerTests(unittest.TestCase):
 
             self.assertEqual(result.status, "ok")
             self.assertEqual(manager.primary.poll_interval_seconds, 4)
-            configured = next(
-                target for target in manager.list_targets()
-                if target.get("configured")
-            )
-            self.assertEqual(configured["poll_interval_seconds"], 4)
+            saved = manager.list_targets()[0]
+            self.assertEqual(saved["poll_interval_seconds"], 4)
+            self.assertNotIn("configured", saved)
+
+    def test_imported_startup_target_can_be_deleted_and_is_not_recreated(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session = Session("addr-a")
+            config = self._relay_config(relay_root, "A", state_dir)
+            manager = RelayManager(session, config)
+            target_id = manager.list_targets()[0]["id"]
+
+            deleted = manager.delete_target(target_id)
+            restarted = RelayManager(session, config)
+
+            self.assertEqual(deleted.status, "ok")
+            self.assertEqual(restarted.list_targets(), [])
+
+    def test_edit_target_keeps_saved_password_when_field_is_blank(self):
+        session = Session("addr-a")
+        manager = RelayManager(session, {})
+        with patch.object(SftpRelayStorage, "verify_access", return_value=None):
+            target_id = manager.create_target({
+                "name": "Old", "backend": "sftp", "host": "relay.example",
+                "username": "user", "password": "saved-password", "root": "/old",
+            }).value
+            result = manager.update_target(target_id, {
+                "name": "New", "backend": "sftp", "host": "relay.example",
+                "username": "user", "password": "", "root": "/new",
+                "poll_interval_seconds": 7,
+            })
+
+        self.assertEqual(result.status, "ok")
+        record = session.app_metadata["relay_targets"][target_id]
+        self.assertEqual(record["name"], "New")
+        self.assertEqual(record["password"], "saved-password")
+        self.assertEqual(record["root"], "/new")
+        self.assertEqual(record["poll_interval_seconds"], 7)
+
+    def test_edit_target_location_preserves_board_intent(self):
+        with tempfile.TemporaryDirectory() as root_a, tempfile.TemporaryDirectory() as root_b, tempfile.TemporaryDirectory() as state_dir:
+            session = Session("addr-a")
+            board_uuid = KanbanLogic(session, {}).create_board("Board").value
+            manager = RelayManager(session, {"relay_state_directory": state_dir})
+            target_id = manager.create_target({
+                "name": "Old", "backend": "local", "root": root_a,
+            }).value
+            old_connection = manager.connection_for_target(target_id)
+            manager.assign_board_target(board_uuid, target_id)
+            old_connection.mark_topics_desired([board_uuid])
+
+            result = manager.update_target(target_id, {
+                "name": "New", "backend": "local", "root": root_b,
+            })
+            new_connection = manager.connection_for_target(target_id)
+
+            self.assertEqual(result.status, "ok")
+            self.assertIsNot(new_connection, old_connection)
+            self.assertEqual(manager.target_for_board(board_uuid), target_id)
+            self.assertIn(board_uuid, new_connection._state["shared"])
+            self.assertIn(board_uuid, new_connection._state["desired"])
+            self.assertIsNone(old_connection.storage)
 
     def test_same_location_collapses_to_one_connection(self):
         # Two storages pointed at the same root share a fingerprint, so the
@@ -1211,7 +1267,7 @@ class RelayLogicTests(unittest.TestCase):
 
         self.assertEqual(relay_a.storage.host, "ftp.example.com")
 
-    def test_sftp_password_resolves_from_env_var_when_not_in_config(self):
+    def test_sftp_password_does_not_resolve_from_environment(self):
         session_a = Session("addr-a")
         config = {
             "relay_backend": "sftp", "relay_identity": "A",
@@ -1220,9 +1276,9 @@ class RelayLogicTests(unittest.TestCase):
         with patch.dict(os.environ, {"SKANBAN_SFTP_PASSWORD": "from-env"}):
             relay_a = RelayLogic(session_a, config)
 
-        self.assertEqual(relay_a.storage.password, "from-env")
+        self.assertIsNone(relay_a.storage.password)
 
-    def test_sftp_password_resolves_from_file_when_no_config_or_env(self):
+    def test_sftp_password_does_not_resolve_from_file(self):
         session_a = Session("addr-a")
         with tempfile.TemporaryDirectory() as tmp:
             secret_path = Path(tmp) / "password.txt"
@@ -1235,7 +1291,7 @@ class RelayLogicTests(unittest.TestCase):
 
             relay_a = RelayLogic(session_a, config)
 
-        self.assertEqual(relay_a.storage.password, "from-file")
+        self.assertIsNone(relay_a.storage.password)
 
     def test_sftp_backend_without_host_is_unconfigured(self):
         session_a = Session("addr-a")

@@ -21,9 +21,17 @@ class KanbanGuardTests(unittest.TestCase):
         payload = left.logic.board_payload()
 
         self.assertIn(card.uuid, left.session.protocol.index)
+        # The fresh local card is what's in transition until the peer observes
+        # it - not the board. A card creation no longer re-revisions the board
+        # (its content_hash is unchanged; only its subtree_hash moved), so the
+        # board's own transition stays in_agreement.
+        self.assertEqual(
+            payload["transition_by_node"][card.uuid]["type"],
+            "in_transition",
+        )
         self.assertEqual(
             payload["transition_by_node"][board.uuid]["type"],
-            "in_transition",
+            "in_agreement",
         )
 
     @staticmethod

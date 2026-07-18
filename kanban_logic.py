@@ -33,7 +33,7 @@ Contract:
     POST /api/kanban/cards/delete        {card_uuid}
     POST /api/kanban/cards/move          {card_uuid, column_uuid, index}
     POST /api/kanban/adopt               {source_addr, node_uuid, adopt_absence}
-    POST /api/kanban/perspective            {node_uuid, state}  # one of: none, kept_mine, pushed_back
+    POST /api/kanban/rollback            {source_addr, node_uuid}
 """
 
 from __future__ import annotations
@@ -63,6 +63,9 @@ class KanbanLogic:
     def __init__(self, session: Session, config: dict):
         self.session = session
         self.config = config
+        # Revision ownership must exist before the first board/card mutation.
+        # Session.identity bootstraps its own origin without recursion.
+        self.session.identity
 
     def board_payload(self, auto_adopt: bool = True) -> dict:
         board = self.ensure_board()
@@ -587,8 +590,30 @@ class KanbanLogic:
                 )
         return self.session.accept_peer_node(source_addr, node_uuid, adopt_absence)
 
-    def set_perspective_state(self, node_uuid: str, state: str) -> SessionResult:
-        return self.session.set_perspective_state(node_uuid, state)
+    def rollback_peer_node(self, source_addr: str,
+                           node_uuid: str,
+                           rollback_absence: bool = False) -> SessionResult:
+        target = self.session.validate_rollback_target(
+            source_addr, node_uuid, rollback_absence,
+        )
+        if target.status != "ok":
+            return target
+        if rollback_absence:
+            return self.session.rollback_peer_node(
+                source_addr, node_uuid, rollback_absence=True,
+            )
+        local = self.session.protocol.index.get(node_uuid)
+        peer = target.value
+        local_type = local.data.get("type") if local else None
+        if (local and local_type in ("kanban_column", "kanban_board")
+                and peer.data.get("type") == local_type):
+            # Roll back only this container's own fields. Descendant cards
+            # and columns remain independent revision decisions.
+            return self.session.modify(
+                node_uuid, peer.data, peer.weights,
+                revision_origin_identity=peer.revision_origin_identity,
+            )
+        return self.session.rollback_peer_node(source_addr, node_uuid)
 
     def adopt_incoming_changes(self, board: PRSPNode | None = None) -> bool:
         board = board or self.ensure_board()
@@ -733,7 +758,7 @@ class KanbanLogic:
                     )
                 )
                 events.append(event)
-        return self._stage_transition_events(events)
+        return events
 
     def describe_peer_changes(self, peer_addr: str,
                               node_uuid: str | None) -> list[dict]:
@@ -977,28 +1002,6 @@ class KanbanLogic:
                     return name
         return str(participant)[:8]
 
-    def _stage_transition_events(self, events: list[dict]) -> list[dict]:
-        # Display-only state staging. A local change is not a confirmed
-        # conflict until the other client has fetched that exact node
-        # revision and still publishes a different one. This is evidence-
-        # based rather than timer-based, so an offline peer remains "in
-        # transition" indefinitely and a live peer resolves immediately.
-        out = []
-        for event in events:
-            event_type = event["type"]
-            observed = event.get("peer_observed_local_revision") is True
-            if event_type == "divergence" and not observed:
-                out.append({**event, "type": "in_transition", "original_type": event_type})
-            elif event_type in ("local_made_changes", "peer_missing_node"):
-                out.append({
-                    **event,
-                    "type": "divergence" if observed else "in_transition",
-                    "original_type": event_type,
-                })
-            else:
-                out.append(event)
-        return out
-
     def transition_by_node(self, events: list[dict]) -> dict:
         priority = {
             "divergence": 6,
@@ -1027,10 +1030,12 @@ class KanbanLogic:
                 ),
                 "local_state_hash": event.get("local_state_hash"),
                 "peer_state_hash": event.get("peer_state_hash"),
+                "local_base_hash": event.get("local_base_hash"),
+                "peer_base_hash": event.get("peer_base_hash"),
                 "local_revision": event.get("local_revision"),
                 "peer_revision": event.get("peer_revision"),
                 "changes": event.get("changes") or [],
-                "keep_mine_active": event.get("keep_mine_active"),
+                "reaction": self._reaction_for_event(event),
                 "peer_observed_local_revision": event.get(
                     "peer_observed_local_revision", False,
                 ),
@@ -1067,11 +1072,30 @@ class KanbanLogic:
                 out[node_uuid]["events"] = [dict(event_info)]
         return out
 
+    def _reaction_for_event(self, event: dict) -> str:
+        local_identity = self.session._local_revision_origin()
+        local_origin = event.get("local_revision_origin_identity")
+        peer_origin = event.get("peer_revision_origin_identity")
+        original_type = event.get("original_type") or event.get("type")
+        same_local_wave = (
+            peer_origin == local_identity
+            and event.get("local_base_hash") == event.get("peer_base_hash")
+        )
+        if (local_identity and local_origin == local_identity
+                and (same_local_wave or original_type == "peer_missing_node")):
+            return "rollback"
+        return "adopt"
+
     @staticmethod
     def _transition_event_signature(event: dict) -> tuple:
+        # Key on the pre-staging (logical) type, not the staged `type`:
+        # staging splits one situation into divergence/in_transition per the
+        # per-peer "observed" flag, so keying on `type` would show the same
+        # target revision held by two peers as two entries. original_type is
+        # the same for both, so they dedupe into one (with both peers in
+        # delivery_peer_addrs).
         return (
-            event.get("type"),
-            event.get("original_type"),
+            event.get("original_type") or event.get("type"),
             event.get("origin_identity"),
             event.get("local_revision") or event.get("local_state_hash"),
             event.get("peer_revision") or event.get("peer_state_hash"),
@@ -1415,11 +1439,12 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
             bool(data.get("adopt_absence")),
         ))
 
-    async def api_perspective(request: Request):
+    async def api_rollback(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.set_perspective_state(
+        return await _json_result(runtime, logic.rollback_peer_node(
+            data["source_addr"],
             data["node_uuid"],
-            data["state"],
+            bool(data.get("rollback_absence")),
         ))
 
     async def api_create_agenda_item(request: Request):
@@ -1460,7 +1485,7 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
         Route("/api/kanban/cards/delete", api_delete_card, methods=["POST"]),
         Route("/api/kanban/cards/move", api_move_card, methods=["POST"]),
         Route("/api/kanban/adopt", api_adopt, methods=["POST"]),
-        Route("/api/kanban/perspective", api_perspective, methods=["POST"]),
+        Route("/api/kanban/rollback", api_rollback, methods=["POST"]),
         Route("/api/kanban/agenda/create", api_create_agenda_item, methods=["POST"]),
         Route("/api/kanban/agenda/delete", api_delete_agenda_item, methods=["POST"]),
         Route("/api/kanban/agenda/set_priority", api_set_agenda_item_priority, methods=["POST"]),
