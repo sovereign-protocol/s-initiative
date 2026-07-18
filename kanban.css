@@ -458,6 +458,32 @@ button.auto-adopt-square {
   white-space: pre-wrap;
 }
 
+.perspective-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0.25rem 0 0.4rem;
+}
+
+.perspective-option {
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--muted);
+}
+
+.perspective-option.active {
+  border-color: var(--teal);
+  background: var(--teal-soft);
+  color: var(--teal);
+  font-weight: 700;
+}
+
+.perspective-meta {
+  margin: 0 0 0.55rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .discussion-name {
   flex: 1;
   min-width: 0;
@@ -491,6 +517,12 @@ button.auto-adopt-square {
   gap: 12px;
   align-items: flex-start;
   margin-bottom: 12px;
+}
+
+.peer-target-control {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.8rem;
 }
 
 .peer-graph-you {

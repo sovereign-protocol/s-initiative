@@ -70,13 +70,14 @@ class KanbanLogic:
             self.adopt_all_incoming_changes()
             board = self.ensure_board()
         events = self.transition_events(board.uuid)
+        relay_manager = self.config.get("_relay_manager")
         return {
             "address": self.session.address,
             "board": board.to_dict(),
             "boards": [item.to_dict() for item in self.boards()],
             "user_profile": self.user_profile().to_dict(),
             "users": self.users(),
-            "network": self._network_info_with_relay_liveness(),
+            "network": self._network_info_with_relay_liveness(board.uuid),
             "peers": {
                 addr: tree.to_dict()
                 for addr, tree in sorted(self.session.peer_perspectives.items())
@@ -85,9 +86,11 @@ class KanbanLogic:
             "transition_events": events,
             "transition_by_node": self.transition_by_node(events),
             "agenda_items": [item.to_dict() for item in self.agenda_items(board)],
+            "relay_targets": relay_manager.list_targets() if relay_manager else [],
+            "relay_target_id": relay_manager.target_for_board(board.uuid) if relay_manager else None,
         }
 
-    def _network_info_with_relay_liveness(self) -> dict:
+    def _network_info_with_relay_liveness(self, board_uuid: str | None = None) -> dict:
         # Relay peers have no http reachability signal, so peer_status
         # always shows them "online, last_seen: never" - a stopped peer
         # looked permanently alive (review U-7). The relay layer already
@@ -97,13 +100,18 @@ class KanbanLogic:
         # accept_connect_token's (relay stashes itself in the shared
         # config dict); absent relay config, the payload is unchanged.
         info = self.session.get_network_info()
-        relay_logic = self.config.get("_relay_logic_instance")
-        if relay_logic is None or not getattr(relay_logic, "storage", None):
+        relay_manager = self.config.get("_relay_manager")
+        if relay_manager is None:
             return info
         for addr, peer_info in (info.get("peers") or {}).items():
             if addr.startswith("relay:"):
-                peer_info["relay_liveness"] = relay_logic.peer_liveness(
-                    addr.split(":", 1)[1],
+                peer_id = addr.split(":", 1)[1]
+                # Prefer the liveness reported by the board's own target; with
+                # no board context, let the manager pick the freshest record
+                # across every connection that knows this identity.
+                peer_info["relay_liveness"] = relay_manager.peer_liveness(
+                    peer_id,
+                    relay_manager.target_for_board(board_uuid) if board_uuid else None,
                 )
         return info
 
@@ -232,6 +240,9 @@ class KanbanLogic:
         board = self.session.protocol.index.get(board_uuid)
         if not board or board.data.get("type") != "kanban_board":
             return SessionResult("error", reason="board not found")
+        relay_manager = self.config.get("_relay_manager")
+        if relay_manager:
+            relay_manager.assign_board_target(board_uuid, None)
         result = self.session.delete(board.uuid)
         if result.status != "ok":
             return result
@@ -264,9 +275,9 @@ class KanbanLogic:
         # has no other shrink path (review R-3). Done before the peer check
         # below: a board shared via token but never yet accepted by anyone
         # has no peers, yet its relay publishing still has to stop.
-        relay_logic = self.config.get("_relay_logic_instance")
-        if relay_logic is not None:
-            relay_logic.unmark_topics_shared([board.uuid])
+        relay_manager = self.config.get("_relay_manager")
+        if relay_manager is not None:
+            relay_manager.assign_board_target(board.uuid, None)
         board_peers = [
             peer for peer, topics in sorted(self.session.peer_topic_sets.items())
             if board.uuid in topics

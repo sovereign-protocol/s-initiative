@@ -96,6 +96,8 @@
     <dialog id="cardModal">
       <form method="dialog" id="cardForm">
         <h2 id="cardModalTitle">Card</h2>
+        <div id="cardPerspectiveSwitcher" class="perspective-switcher"></div>
+        <p id="cardPerspectiveMeta" class="perspective-meta"></p>
         <label>Name<input id="cardName" /></label>
         <label>Description<textarea id="cardDescription" rows="5"></textarea></label>
         <label>Owner<select id="cardOwner"></select></label>
@@ -104,7 +106,7 @@
         <menu>
           <button id="deleteCardBtn" type="button" class="danger">Delete</button>
           <button type="button" id="cancelCardBtn">Cancel</button>
-          <button type="submit" class="primary">Save</button>
+          <button type="submit" id="saveCardBtn" class="primary">Save</button>
         </menu>
       </form>
     </dialog>
@@ -139,6 +141,10 @@
       let modalColumn = null;
       let modalParticipants = [];
       let modalOwner = null;
+      let modalPerspectiveKey = null;
+      let modalPerspectiveOptions = [];
+      let modalLocalDraft = null;
+      let modalReadOnlyPerspective = false;
 
       const AUTO_ADOPT_MODES = ["always", "not_owner", "not_member", "never"];
       const AUTO_ADOPT_LABELS = {
@@ -384,6 +390,37 @@
         graph.append(peerList);
         fields.append(graph);
 
+        const targetControl = document.createElement("label");
+        targetControl.className = "peer-target-control";
+        targetControl.textContent = "Relay target for this board";
+        const targetSelect = document.createElement("select");
+        const unassigned = document.createElement("option");
+        unassigned.value = "";
+        unassigned.textContent = "Not assigned";
+        targetSelect.append(unassigned);
+        for (const target of state.relay_targets || []) {
+          const option = document.createElement("option");
+          option.value = target.id;
+          option.textContent = target.name;
+          targetSelect.append(option);
+        }
+        targetSelect.value = state.relay_target_id || "";
+        targetSelect.onchange = async () => {
+          try {
+            await api("/api/relay/boards/assign", {
+              board_uuid: state.board.uuid,
+              target_id: targetSelect.value || null,
+            });
+            await loadBoard();
+            showToast(targetSelect.value ? "Relay target assigned" : "Relay target removed");
+            el("simpleModal").close();
+          } catch (error) {
+            showToast(error.message, true);
+          }
+        };
+        targetControl.append(targetSelect);
+        fields.append(targetControl);
+
         // 2) Share/connect right here - the share modal never needed
         // overview context (board uuid/name and three same-server
         // endpoints), so no page switch for the common case. The overview
@@ -393,11 +430,16 @@
         const copyBtn = document.createElement("button");
         copyBtn.type = "button";
         copyBtn.textContent = "Copy share token";
+        copyBtn.disabled = !targetSelect.value;
+        copyBtn.title = targetSelect.value
+          ? "Copy a token for this board and relay target"
+          : "Assign a relay target first";
         copyBtn.onclick = async () => {
           try {
-            const token = await api(
-              `/api/connect_token?topic_uuids=${encodeURIComponent(state.board.uuid)}`,
-            );
+            const token = await api("/api/connect_token", {
+              target_id: targetSelect.value,
+              board_uuids: [state.board.uuid],
+            });
             await navigator.clipboard.writeText(btoa(JSON.stringify(token)));
             showToast("Token copied");
           } catch (error) {
@@ -737,6 +779,7 @@
         for (const user of pickerCandidates()) {
           const button = document.createElement("button");
           button.type = "button";
+          button.disabled = modalReadOnlyPerspective;
           button.className = "user-choice";
           if (modalParticipants.includes(user.id)) button.classList.add("selected");
           const avatar = document.createElement("span");
@@ -779,6 +822,7 @@
         }
         select.value = modalParticipants.includes(modalOwner) ? modalOwner : "";
         modalOwner = select.value || null;
+        select.disabled = modalReadOnlyPerspective;
       }
 
       async function loadBoard() {
@@ -1265,25 +1309,118 @@
       function openCard(card, columnUuid) {
         modalCard = card;
         modalColumn = columnUuid;
-        el("cardModalTitle").textContent = card ? "Edit Card" : "Add Card";
-        el("cardName").value = card ? card.data.name || "" : "";
-        el("cardDescription").value = card ? card.data.description || "" : "";
-        modalParticipants =
-          card && Array.isArray(card.data.participants)
-            ? [...card.data.participants]
-            : [];
-        modalOwner = card ? card.data.owner || null : null;
-        renderUserPicker("participantPicker");
-        renderOwnerSelect();
+        // Do not capture the values left in the dialog by the previously
+        // opened card as this card's draft during the initial render.
+        modalPerspectiveKey = null;
+        modalPerspectiveOptions = card ? cardPerspectiveOptions(card) : [];
+        modalLocalDraft = {
+          name: card?.data.name || "",
+          description: card?.data.description || "",
+          participants: Array.isArray(card?.data.participants) ? [...card.data.participants] : [],
+          owner: card?.data.owner || null,
+        };
+        renderCardPerspective("local");
         el("cardOwner").onchange = () => {
           modalOwner = el("cardOwner").value || null;
         };
-        el("deleteCardBtn").style.display = card ? "inline-block" : "none";
         el("cardModal").showModal();
+      }
+
+      function cardPerspectiveOptions(card) {
+        const options = [{
+          key: "local",
+          label: "Mine",
+          node: card,
+          columnLabel: columnNameFor(state.board, card.parent_uuid),
+          absent: false,
+        }];
+        const events = (transitionInfo(card.uuid)?.events || [transitionInfo(card.uuid)])
+          .filter((event) => event && event.type !== "in_agreement");
+        const seen = new Set();
+        for (const event of events) {
+          const revision = event.peer_revision || `${event.peer_addr}:missing`;
+          if (seen.has(revision)) continue;
+          seen.add(revision);
+          const root = state.peers?.[event.peer_addr];
+          const peerNode = root ? findNode(root, card.uuid) : null;
+          options.push({
+            key: `peer:${options.length}`,
+            label: transitionActorLabel(event),
+            node: peerNode,
+            columnLabel: peerNode ? columnNameFor(root, peerNode.parent_uuid) : "",
+            absent: !peerNode || peerNode.deleted,
+          });
+        }
+        return options;
+      }
+
+      function columnNameFor(root, columnUuid) {
+        const column = root && columnUuid ? findNode(root, columnUuid) : null;
+        return column?.data?.name || "Unknown column";
+      }
+
+      function captureLocalCardDraft() {
+        if (modalPerspectiveKey !== "local") return;
+        modalLocalDraft = {
+          name: el("cardName").value,
+          description: el("cardDescription").value,
+          participants: [...modalParticipants],
+          owner: modalOwner,
+        };
+      }
+
+      function renderCardPerspective(key) {
+        captureLocalCardDraft();
+        modalPerspectiveKey = key;
+        const perspective = modalPerspectiveOptions.find((item) => item.key === key);
+        const isLocal = !modalCard || !perspective || perspective.key === "local";
+        modalReadOnlyPerspective = !isLocal;
+        let data;
+        if (isLocal) {
+          data = modalLocalDraft || { name: "", description: "", participants: [], owner: null };
+        } else if (perspective.absent) {
+          data = { name: "", description: "", participants: [], owner: null };
+        } else {
+          data = perspective.node.data;
+        }
+        el("cardModalTitle").textContent = !modalCard
+          ? "Add Card"
+          : isLocal ? "Edit Card — My Perspective" : `Card — ${perspective.label}'s Perspective`;
+        el("cardName").value = data.name || "";
+        el("cardDescription").value = data.description || "";
+        el("cardName").disabled = modalReadOnlyPerspective || perspective?.absent;
+        el("cardDescription").disabled = modalReadOnlyPerspective || perspective?.absent;
+        modalParticipants = Array.isArray(data.participants) ? [...data.participants] : [];
+        modalOwner = data.owner || null;
+        renderUserPicker("participantPicker");
+        renderOwnerSelect();
+        const meta = el("cardPerspectiveMeta");
+        meta.textContent = perspective?.absent
+          ? `This card is absent from ${perspective.label}'s perspective.`
+          : `Column: ${perspective?.columnLabel || columnNameFor(state.board, modalColumn)}`;
+        el("saveCardBtn").style.display = isLocal ? "" : "none";
+        el("deleteCardBtn").style.display = modalCard && isLocal ? "inline-block" : "none";
+        renderCardPerspectiveSwitcher();
+      }
+
+      function renderCardPerspectiveSwitcher() {
+        const switcher = el("cardPerspectiveSwitcher");
+        switcher.replaceChildren();
+        switcher.style.display = modalPerspectiveOptions.length > 1 ? "flex" : "none";
+        for (const perspective of modalPerspectiveOptions) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = perspective.label;
+          button.className = "perspective-option";
+          if (perspective.key === modalPerspectiveKey) button.classList.add("active");
+          button.onclick = () => renderCardPerspective(perspective.key);
+          switcher.append(button);
+        }
       }
 
       el("cardForm").onsubmit = async (event) => {
         event.preventDefault();
+        if (modalReadOnlyPerspective) return;
         const payload = {
           name: el("cardName").value,
           description: el("cardDescription").value,

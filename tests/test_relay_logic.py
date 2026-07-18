@@ -10,7 +10,9 @@ from unittest.mock import patch
 
 from kanban_logic import KanbanLogic
 from protocol import PRSPNode
-from relay_logic import RelayLogic, RelayManager, _relay_fingerprint, channel_descriptor
+from relay_logic import (
+    RelayLogic, RelayManager, RelayTiming, _relay_fingerprint, channel_descriptor,
+)
 from relay_storage import LocalFolderRelayStorage, SftpRelayStorage
 from session import Session
 
@@ -148,6 +150,16 @@ def _sftp_storage_with_fake(fake: FakeSftpClient) -> SftpRelayStorage:
 
 
 class LocalFolderRelayStorageTests(unittest.TestCase):
+    def test_timing_probe_returns_mtime_and_leaves_no_file(self):
+        with tempfile.TemporaryDirectory() as root:
+            storage = LocalFolderRelayStorage(root)
+
+            mtime, roundtrip = storage.timing_probe()
+
+            self.assertIsInstance(mtime, float)
+            self.assertGreaterEqual(roundtrip, 0.0)
+            self.assertEqual(list(Path(root).glob(".s-kanban-timing-*")), [])
+
     def test_write_then_read_round_trips_head_and_snapshot(self):
         with tempfile.TemporaryDirectory() as root:
             storage = LocalFolderRelayStorage(root)
@@ -243,6 +255,16 @@ class LocalFolderRelayStorageTests(unittest.TestCase):
 
 
 class SftpRelayStorageTests(unittest.TestCase):
+    def test_timing_probe_returns_server_mtime_and_cleans_up(self):
+        fake = FakeSftpClient()
+        storage = _sftp_storage_with_fake(fake)
+
+        mtime, roundtrip = storage.timing_probe()
+
+        self.assertIsInstance(mtime, float)
+        self.assertGreaterEqual(roundtrip, 0.0)
+        self.assertFalse(any(".s-kanban-timing-" in path for path in fake.files))
+
     def test_verify_access_writes_and_removes_probe(self):
         fake = FakeSftpClient()
         storage = _sftp_storage_with_fake(fake)
@@ -490,8 +512,148 @@ class RelayManagerTests(unittest.TestCase):
             manager.primary.storage.read_presence_with_mtime = lambda peer_id: (None, None)
             self.assertEqual(manager.peer_liveness("ghost")["state"], "unknown")
 
+    def test_manager_peer_liveness_prefers_alive_over_stale_across_targets(self):
+        session = Session("addr-a")
+        manager = RelayManager(session, {})
+        stale = types.SimpleNamespace(peer_liveness=lambda _peer: {
+            "state": "stale", "last_seen_seconds_ago": 600,
+        })
+        alive = types.SimpleNamespace(peer_liveness=lambda _peer: {
+            "state": "alive", "last_seen_seconds_ago": 2,
+        })
+        manager.connections = {"old": stale, "current": alive}
+
+        self.assertEqual(manager.peer_liveness("A")["state"], "alive")
+
+    def test_registry_builds_distinct_connections_and_dedupes_same_fingerprint(self):
+        with tempfile.TemporaryDirectory() as root_a, tempfile.TemporaryDirectory() as root_b, tempfile.TemporaryDirectory() as state_dir:
+            session = Session("addr-a")
+            manager = RelayManager(session, {"relay_state_directory": state_dir})
+
+            target_a = manager.create_target({
+                "name": "A", "backend": "local", "root": root_a,
+            }).value
+            target_b = manager.create_target({
+                "name": "B", "backend": "local", "root": root_b,
+            }).value
+            target_a2 = manager.create_target({
+                "name": "A duplicate", "backend": "local", "root": root_a,
+            }).value
+
+            configured = [conn for conn in manager.all_connections() if conn.storage]
+            self.assertEqual(len(configured), 2)
+            self.assertIs(manager.connection_for_target(target_a), manager.connection_for_target(target_a2))
+            self.assertIsNot(manager.connection_for_target(target_a), manager.connection_for_target(target_b))
+
+    def test_board_assignments_scope_each_connection_and_unassign_stops_publishing(self):
+        with tempfile.TemporaryDirectory() as root_a, tempfile.TemporaryDirectory() as root_b, tempfile.TemporaryDirectory() as state_dir:
+            session = Session("addr-a")
+            kanban = KanbanLogic(session, {})
+            board_a = kanban.create_board("A board").value
+            board_b = kanban.create_board("B board").value
+            manager = RelayManager(session, {"relay_state_directory": state_dir})
+            target_a = manager.create_target({"name": "A", "backend": "local", "root": root_a}).value
+            target_b = manager.create_target({"name": "B", "backend": "local", "root": root_b}).value
+
+            manager.assign_board_target(board_a, target_a)
+            manager.assign_board_target(board_b, target_b)
+
+            identity = session.identity.uuid
+            self.assertEqual(manager.connection_for_target(target_a).relay_topic_uuids(), [board_a, identity])
+            self.assertEqual(manager.connection_for_target(target_b).relay_topic_uuids(), [board_b, identity])
+
+            manager.connection_for_target(target_a).mark_topics_desired([board_a])
+            manager.assign_board_target(board_a, None)
+            self.assertEqual(manager.connection_for_target(target_a).relay_topic_uuids(), [identity])
+            self.assertNotIn(board_a, manager.connection_for_target(target_a)._state["desired"])
+
+    def test_target_registry_keeps_sftp_password_local_but_hides_it_from_listing(self):
+        session = Session("addr-a")
+        with tempfile.TemporaryDirectory() as state_dir:
+            manager = RelayManager(session, {"relay_state_directory": state_dir})
+            with patch.object(SftpRelayStorage, "verify_access", return_value=None):
+                target_id = manager.create_target({
+                    "name": "Company", "backend": "sftp", "host": "sftp.example",
+                    "username": "kanban", "password": "secret", "root": "/boards",
+                }).value
+
+        self.assertEqual(session.app_metadata["relay_targets"][target_id]["password"], "secret")
+        listed = next(item for item in manager.list_targets() if item["id"] == target_id)
+        self.assertNotIn("password", listed)
+        self.assertTrue(listed["has_password"])
+
 
 class RelayLogicTests(unittest.TestCase):
+    def test_timing_model_schedules_after_peer_poll_and_relay_work(self):
+        timing = RelayTiming(timestamp_resolution_seconds=0.0)
+        timing.observe_server_clock(
+            10.0, 100.0, 10.1, 100.1, 100.05, roundtrip_seconds=0.1,
+        )
+        timing.observe_cycle(0.4)
+        timing.observe_peer_presence("B", 99.0, 3.0)
+
+        delay = timing.response_check_delay(
+            3.0, published_server_time=100.0, local_wall=100.1,
+        )
+
+        # B's next phase is relay time 102.0; allow its 0.4s cycle plus
+        # 0.05s clock uncertainty before looking for the response.
+        self.assertAlmostEqual(delay, 2.35, places=6)
+
+    def test_timing_model_uses_stable_period_for_stale_peer(self):
+        timing = RelayTiming(timestamp_resolution_seconds=0.0)
+        timing.observe_server_clock(
+            10.0, 100.0, 10.0, 100.0, 100.0, roundtrip_seconds=0.1,
+        )
+        timing.observe_peer_presence("offline", 50.0, 3.0)
+
+        self.assertEqual(
+            timing.response_check_delay(3.0, published_server_time=100.0, local_wall=100.0),
+            3.0,
+        )
+
+    def test_calibrate_timing_exposes_diagnostics_without_probe_artifacts(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            relay = RelayLogic(
+                Session("addr-a"), self._relay_config(relay_root, "A", state_dir),
+            )
+
+            timing = relay.calibrate_timing(3)
+
+            self.assertTrue(timing["calibrated"])
+            self.assertEqual(timing["samples"], 3)
+            self.assertIsNotNone(timing["roundtrip_ms"])
+            self.assertIsNotNone(timing["server_clock_offset_ms"])
+            self.assertEqual(list(Path(relay_root).glob(".s-kanban-timing-*")), [])
+
+    def test_state_save_retries_transient_windows_replace_denial(self):
+        with tempfile.TemporaryDirectory() as state_dir:
+            state_path = Path(state_dir) / "relay-state.json"
+            logic = RelayLogic(Session("addr-a"), {
+                "relay_identity": "A",
+                "relay_state_file": str(state_path),
+            })
+            logic._state["desired"] = ["topic-1"]
+            real_replace = os.replace
+            attempts = 0
+
+            def transient_denial(source, destination):
+                nonlocal attempts
+                attempts += 1
+                if attempts < 3:
+                    raise PermissionError(5, "Access denied", str(destination))
+                return real_replace(source, destination)
+
+            with patch("relay_logic.os.replace", side_effect=transient_denial), \
+                    patch("relay_logic.time.sleep"):
+                logic._save_state()
+
+            self.assertEqual(attempts, 3)
+            self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))["desired"], [
+                "topic-1",
+            ])
+            self.assertEqual(list(Path(state_dir).glob("*.tmp")), [])
+
     def _relay_config(self, relay_root: str, identity: str, state_dir: str) -> dict:
         return {
             "relay_root": relay_root,
@@ -515,6 +677,39 @@ class RelayLogicTests(unittest.TestCase):
             relay_a.write_presence()
 
             self.assertIsInstance(relay_a._own_presence_mtime, float)
+
+    def test_scoped_poll_ignores_unrelated_topic_on_same_storage_root(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            kanban_a = KanbanLogic(session_a, {})
+            wanted = kanban_a.create_board("Wanted").value
+            unrelated = kanban_a.create_board("Unrelated").value
+            relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
+            relay_a.set_scoped_topics({wanted, unrelated})
+            relay_a.publish_due_topics()
+
+            session_b = Session("addr-b")
+            relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
+            relay_b.set_scoped_topics({wanted})
+            relay_b.mark_topics_desired([wanted])
+
+            applied = relay_b.poll_and_apply()
+
+            self.assertIn((wanted, "A"), applied)
+            self.assertFalse(any(topic == unrelated for topic, _peer in applied))
+            self.assertIsNone(session_b.get_cached_peer_subtree("relay:A", unrelated))
+
+    def test_scoped_connection_ignores_relay_peers_from_other_targets(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session = Session("addr-a")
+            relay = RelayLogic(session, self._relay_config(relay_root, "A", state_dir))
+            relay.set_scoped_topics({"board-current"})
+            session.peer_topic_sets["relay:B"] = {"board-other"}
+
+            self.assertFalse(relay.has_active_relationship())
+
+            session.peer_topic_sets["relay:B"].add("board-current")
+            self.assertTrue(relay.has_active_relationship())
 
     def test_peer_liveness_unknown_before_write_presence_ever_ran(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
@@ -1102,8 +1297,9 @@ class RelayLogicTests(unittest.TestCase):
             session = Session("addr-a")
             config = self._relay_config(relay_root, "A", state_dir)
             kanban = KanbanLogic(session, config)
-            relay = RelayLogic(session, config)
-            config["_relay_logic_instance"] = relay
+            manager = RelayManager(session, config)
+            config["_relay_manager"] = manager
+            relay = manager.primary
             # A relay peer with a cached perspective + a stubbed liveness.
             bob = PRSPNode({"type": "kanban_board", "name": "Bob board"})
             bob.refresh_hashes()
@@ -1138,20 +1334,25 @@ class RelayLogicTests(unittest.TestCase):
 
     def test_unshare_board_unmarks_relay_shared(self):
         # The kanban unshare hook: even with no peers yet (token issued,
-        # never accepted), unsharing must stop relay publishing the board.
+        # never accepted), unsharing must unassign the board from its target
+        # and stop relay publishing it.
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
             config = self._relay_config(relay_root, "A", state_dir)
             kanban_a = KanbanLogic(session_a, config)
             board_uuid = kanban_a.create_board("Shared Board").value
-            relay_a = RelayLogic(session_a, config)
-            config["_relay_logic_instance"] = relay_a
-            relay_a.mark_topics_shared([board_uuid])
+            manager = RelayManager(session_a, config)
+            config["_relay_manager"] = manager
+            target_id = manager.list_targets()[0]["id"]
+            manager.assign_board_target(board_uuid, target_id)
+            connection = manager.connection_for_target(target_id)
+            self.assertIn(board_uuid, connection._state["shared"])
 
             result = kanban_a.unshare_board(runtime=None, board_uuid=board_uuid)
 
             self.assertEqual(result["status"], "ok")
-            self.assertEqual(relay_a._state["shared"], [])
+            self.assertEqual(connection._state["shared"], [])
+            self.assertIsNone(manager.target_for_board(board_uuid))
 
     def test_delete_topic_clears_shared_too(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
@@ -1240,15 +1441,14 @@ class RelayLogicTests(unittest.TestCase):
             self.assertIn((board_uuid, "A"), applied)
             self.assertIsNotNone(session_b2.peer_perspectives.get("relay:A"))
 
-    def test_module_channel_descriptor_hook_delegates_to_stashed_instance(self):
-        # This is the shape app_server.py's collect_channel_descriptors
-        # actually calls - a module-level function taking (runtime, config),
-        # delegating to whichever instance create_logic already stashed.
+    def test_module_channel_descriptor_hook_delegates_to_stashed_manager(self):
+        # The module-level hook app_server calls, taking (runtime, config) and
+        # delegating to whichever RelayManager create_logic already stashed.
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
             config = self._relay_config(relay_root, "A", state_dir)
-            relay_a = RelayLogic(session_a, config)
-            config["_relay_logic_instance"] = relay_a
+            manager = RelayManager(session_a, config)
+            config["_relay_manager"] = manager
 
             descriptor = channel_descriptor(runtime=None, config=config)
 
