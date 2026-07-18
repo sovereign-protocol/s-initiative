@@ -483,6 +483,75 @@ class RelayManagerTests(unittest.TestCase):
             # Back-compat shims delegate to the primary connection.
             self.assertIs(manager.storage, manager.primary.storage)
 
+    def test_startup_config_refreshes_stale_persisted_target_credentials(self):
+        session = Session("addr-a")
+        session.app_metadata["relay_targets"] = {
+            "saved-target": {
+                "name": "Configured relay", "backend": "sftp",
+                "host": "relay.example", "port": 22, "username": "user",
+                "root": "/boards", "password": "old-password",
+                "poll_interval_seconds": 30, "configured": True,
+            },
+        }
+        config = {
+            "relay_backend": "sftp", "relay_identity": "A",
+            "relay_sftp_host": "relay.example", "relay_sftp_port": 22,
+            "relay_sftp_username": "user", "relay_sftp_root": "/boards",
+            "relay_sftp_password": "new-password",
+            "relay_poll_interval_seconds": 4,
+        }
+
+        manager = RelayManager(session, config)
+
+        self.assertEqual(manager.primary.storage.password, "new-password")
+        self.assertEqual(manager.primary.poll_interval_seconds, 4)
+        saved = session.app_metadata["relay_targets"]["saved-target"]
+        self.assertEqual(saved["password"], "new-password")
+        self.assertEqual(saved["poll_interval_seconds"], 4)
+        self.assertTrue(saved["configured"])
+
+    def test_startup_primary_keeps_private_key_storage_when_registry_has_password(self):
+        session = Session("addr-a")
+        session.app_metadata["relay_targets"] = {
+            "saved-target": {
+                "name": "Configured relay", "backend": "sftp",
+                "host": "relay.example", "port": 22, "username": "user",
+                "root": "/boards", "password": "stale-password",
+                "poll_interval_seconds": 3, "configured": True,
+            },
+        }
+        manager = RelayManager(session, {
+            "relay_backend": "sftp", "relay_identity": "A",
+            "relay_sftp_host": "relay.example", "relay_sftp_port": 22,
+            "relay_sftp_username": "user", "relay_sftp_root": "/boards",
+            "relay_sftp_private_key_path": "current-key.pem",
+        })
+
+        self.assertEqual(manager.primary.storage.private_key_path, "current-key.pem")
+        self.assertIsNone(manager.primary.storage.password)
+
+    def test_accepting_same_startup_target_keeps_local_poll_interval(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session = Session("addr-a")
+            board_uuid = KanbanLogic(session, {}).create_board("Board").value
+            manager = RelayManager(session, {
+                **self._relay_config(relay_root, "A", state_dir),
+                "relay_poll_interval_seconds": 4,
+            })
+
+            result = manager.accept_descriptor({
+                "type": "relay", "version": 1, "root": relay_root,
+                "identity": "B", "poll_interval_seconds": 30,
+            }, [board_uuid])
+
+            self.assertEqual(result.status, "ok")
+            self.assertEqual(manager.primary.poll_interval_seconds, 4)
+            configured = next(
+                target for target in manager.list_targets()
+                if target.get("configured")
+            )
+            self.assertEqual(configured["poll_interval_seconds"], 4)
+
     def test_same_location_collapses_to_one_connection(self):
         # Two storages pointed at the same root share a fingerprint, so the
         # manager would key them to one connection (natural dedup).
@@ -566,6 +635,40 @@ class RelayManagerTests(unittest.TestCase):
             manager.assign_board_target(board_a, None)
             self.assertEqual(manager.connection_for_target(target_a).relay_topic_uuids(), [identity])
             self.assertNotIn(board_a, manager.connection_for_target(target_a)._state["desired"])
+
+    def test_accepting_board_on_new_target_cleans_previous_target_intent(self):
+        with tempfile.TemporaryDirectory() as root_a, tempfile.TemporaryDirectory() as root_b, tempfile.TemporaryDirectory() as state_dir:
+            session = Session("addr-a")
+            board_uuid = KanbanLogic(session, {}).create_board("Board").value
+            manager = RelayManager(session, {"relay_state_directory": state_dir})
+            target_a = manager.create_target({
+                "name": "Old", "backend": "local", "root": root_a,
+            }).value
+            old_connection = manager.connection_for_target(target_a)
+            manager.assign_board_target(board_uuid, target_a)
+            old_connection.mark_topics_desired([board_uuid])
+
+            result = manager.accept_descriptor({
+                "type": "relay", "version": 1, "root": root_b,
+                "identity": "B", "poll_interval_seconds": 3,
+            }, [board_uuid, "profile-b"], "profile-b")
+
+            self.assertEqual(result.status, "ok")
+            self.assertNotEqual(manager.target_for_board(board_uuid), target_a)
+            self.assertNotIn(board_uuid, old_connection._state["shared"])
+            self.assertNotIn(board_uuid, old_connection._state["desired"])
+
+    def test_session_protocol_lock_is_shared_by_every_relay_connection(self):
+        with tempfile.TemporaryDirectory() as root_a, tempfile.TemporaryDirectory() as root_b, tempfile.TemporaryDirectory() as state_dir:
+            session = Session("addr-a")
+            manager = RelayManager(session, {"relay_state_directory": state_dir})
+            manager.create_target({"name": "A", "backend": "local", "root": root_a})
+            manager.create_target({"name": "B", "backend": "local", "root": root_b})
+
+            self.assertTrue(all(
+                connection._session_lock is session.lock
+                for connection in manager.all_connections()
+            ))
 
     def test_target_registry_keeps_sftp_password_local_but_hides_it_from_listing(self):
         session = Session("addr-a")
