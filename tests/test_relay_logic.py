@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from kanban_logic import KanbanLogic
 from protocol import PRSPNode
-from relay_logic import RelayLogic, channel_descriptor
+from relay_logic import RelayLogic, RelayManager, _relay_fingerprint, channel_descriptor
 from relay_storage import LocalFolderRelayStorage, SftpRelayStorage
 from session import Session
 
@@ -439,6 +439,56 @@ class SftpRelayStorageTests(unittest.TestCase):
         second_mtime = storage.write_presence("A", {"poll_interval_seconds": 3})
 
         self.assertGreater(second_mtime, first_mtime)
+
+
+class RelayManagerTests(unittest.TestCase):
+    def _relay_config(self, relay_root: str, identity: str, state_dir: str) -> dict:
+        return {
+            "relay_root": relay_root,
+            "relay_identity": identity,
+            "relay_state_file": str(Path(state_dir) / f"state-{identity}.json"),
+        }
+
+    def test_manager_holds_the_implicit_connection_keyed_by_fingerprint(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session = Session("addr-a")
+            config = self._relay_config(relay_root, "A", state_dir)
+            manager = RelayManager(session, config)
+
+            self.assertEqual(len(manager.all_connections()), 1)
+            self.assertIs(manager.all_connections()[0], manager.primary)
+            self.assertIn(_relay_fingerprint(manager.primary.storage), manager.connections)
+            # Back-compat shims delegate to the primary connection.
+            self.assertIs(manager.storage, manager.primary.storage)
+
+    def test_same_location_collapses_to_one_connection(self):
+        # Two storages pointed at the same root share a fingerprint, so the
+        # manager would key them to one connection (natural dedup).
+        with tempfile.TemporaryDirectory() as relay_root:
+            a = LocalFolderRelayStorage(relay_root)
+            b = LocalFolderRelayStorage(relay_root)
+            self.assertEqual(_relay_fingerprint(a), _relay_fingerprint(b))
+
+    def test_different_locations_have_distinct_fingerprints(self):
+        with tempfile.TemporaryDirectory() as root_a, tempfile.TemporaryDirectory() as root_b:
+            self.assertNotEqual(
+                _relay_fingerprint(LocalFolderRelayStorage(root_a)),
+                _relay_fingerprint(LocalFolderRelayStorage(root_b)),
+            )
+
+    def test_manager_peer_liveness_prefers_the_connection_that_knows_the_peer(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session = Session("addr-a")
+            manager = RelayManager(session, self._relay_config(relay_root, "A", state_dir))
+            manager.primary._own_presence_mtime = 100.0
+            manager.primary.storage.read_presence_with_mtime = lambda peer_id: (
+                {"poll_interval_seconds": 3}, 99.0,
+            )
+            self.assertEqual(manager.peer_liveness("B")["state"], "alive")
+            self.assertEqual(manager.peer_liveness("never-seen")["state"], "alive")  # single conn answers
+            # A peer no connection has a presence file for stays unknown.
+            manager.primary.storage.read_presence_with_mtime = lambda peer_id: (None, None)
+            self.assertEqual(manager.peer_liveness("ghost")["state"], "unknown")
 
 
 class RelayLogicTests(unittest.TestCase):
