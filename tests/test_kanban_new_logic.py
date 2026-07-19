@@ -1096,9 +1096,10 @@ class KanbanNewLogicTests(unittest.TestCase):
         board = left.logic.create_board("Glow").value
         connect(left, right, board)
 
-        unshare = left.logic.unshare_board(left, board)
+        unshare = left.logic.unshare_board(board)
+        left.channel_manager.execute_effects(unshare.effects)
 
-        self.assertEqual(unshare["status"], "ok")
+        self.assertEqual(unshare.status, "ok")
         self.assertNotIn(right.address, left.session.members)
         self.assertNotIn(left.address, right.session.members)
 
@@ -1113,9 +1114,10 @@ class KanbanNewLogicTests(unittest.TestCase):
         connect(left, right, first)
         connect(left, right, second)
 
-        unshare = left.logic.unshare_board(left, first)
+        unshare = left.logic.unshare_board(first)
+        left.channel_manager.execute_effects(unshare.effects)
 
-        self.assertEqual(unshare["status"], "ok")
+        self.assertEqual(unshare.status, "ok")
         self.assertIn(right.address, left.session.members)
         self.assertIn(left.address, right.session.members)
         self.assertNotIn(first, left.session.peer_topic_sets[right.address])
@@ -1137,9 +1139,10 @@ class KanbanNewLogicTests(unittest.TestCase):
         connect(left, middle, board)
         connect(left, right, board)
 
-        unshare = left.logic.unshare_board(left, board)
+        unshare = left.logic.unshare_board(board)
+        left.channel_manager.execute_effects(unshare.effects)
 
-        self.assertEqual(unshare["status"], "ok")
+        self.assertEqual(unshare.status, "ok")
         self.assertNotIn(middle.address, left.session.members)
         self.assertNotIn(right.address, left.session.members)
         self.assertNotIn(left.address, middle.session.members)

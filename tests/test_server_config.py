@@ -24,7 +24,7 @@ class ServerConfigTests(unittest.TestCase):
     def test_existing_app_config_file_is_loaded(self):
         config = app_server.load_config(None, "kanban")
 
-        self.assertEqual(config["app_module"], "s_kanban.logic")
+        self.assertEqual(config["app_module"], "s_kanban.application")
         self.assertEqual(config["ui_file"], "kanban.html")
         self.assertEqual(config["css_file"], "kanban.css")
 

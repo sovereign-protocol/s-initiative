@@ -40,20 +40,13 @@ Contract:
 
 from __future__ import annotations
 
-import asyncio
 import copy
 from typing import Any
 
-from sovereign.application import (
-    ApplicationInstance, ApplicationManifest, ApplicationServices,
-)
 from sovereign.protocol import ProtocolNode
 from sovereign.blob_store import avatar_attachment
 from sovereign.session import Session, SessionResult
 from sovereign.topic_registry import ApplicationRegistration
-from starlette.requests import Request
-from starlette.responses import JSONResponse
-from starlette.routing import Route
 
 
 DEFAULT_COLUMNS = ["To Do", "Doing", "Done"]
@@ -65,16 +58,6 @@ AGENDA_PRIORITIES = ("high", "medium", "low")
 # Priority is optional (None/"" means "not set") - unset sorts below every
 # explicit priority rather than defaulting to "medium".
 AGENDA_PRIORITY_RANK = {"high": 3, "medium": 2, "low": 1}
-
-
-APPLICATION_MANIFEST = ApplicationManifest(
-    application_id=KANBAN_APPLICATION_ID,
-    display_name=KANBAN_APP_NAME,
-    data_schema_version=1,
-    asset_package="s_kanban.assets",
-    ui_file="kanban.html",
-    css_file="kanban.css",
-)
 
 
 class KanbanLogic:
@@ -312,10 +295,10 @@ class KanbanLogic:
             )
         return self.session.get_node(board.uuid) or board
 
-    def unshare_board(self, runtime, board_uuid: str | None = None) -> dict:
+    def unshare_board(self, board_uuid: str | None = None) -> SessionResult:
         board = self.session.protocol.index.get(board_uuid) if board_uuid else self.ensure_board()
         if not board or board.data.get("type") != "kanban_board":
-            return {"status": "error", "reason": "board not found"}
+            return SessionResult("error", reason="board not found")
         # Detach the board before the peer check: token creation may already
         # have armed channel publication even when nobody accepted it yet.
         channel_manager = self._channel_manager()
@@ -326,8 +309,9 @@ class KanbanLogic:
             if board.uuid in topics
         ]
         if not board_peers:
-            return {"status": "ok", "topic_uuids": []}
-        deliveries = runtime.channel_manager.leave_topic(board.uuid)
+            return SessionResult("ok", value={"topic_uuids": []})
+        leave_result = self.session.leave_topic(board.uuid)
+        effects = list(leave_result.effects)
         removed_topics = {board.uuid}
         any_board_remaining = any(
             self._is_kanban_board_topic(self.session.protocol.index.get(topic_uuid))
@@ -341,16 +325,12 @@ class KanbanLogic:
                 for topic_uuid in topics
             })
             removed_topics.update(profile_topics)
-            deliveries.extend(runtime.channel_manager.disconnect())
-        errors = [
-            {"effect_type": item.effect_type, "target": item.target, "reason": item.reason}
-            for item in deliveries
-            if not item.ok
-        ]
-        payload = {"status": "ok", "topic_uuids": sorted(removed_topics)}
-        if errors:
-            payload["delivery_errors"] = errors
-        return payload
+            effects.extend(self.session.disconnect().effects)
+        return SessionResult(
+            "ok",
+            value={"topic_uuids": sorted(removed_topics)},
+            effects=effects,
+        )
 
     def user_profile(self) -> ProtocolNode:
         return self.session.identity
@@ -1274,222 +1254,3 @@ def create_logic(session: Session, config: dict) -> KanbanLogic:
     logic = KanbanLogic(session, config)
     session.register_application(logic.application_registration())
     return logic
-
-
-def create_application(services: ApplicationServices) -> ApplicationInstance:
-    logic = KanbanLogic(
-        services.session,
-        dict(services.settings),
-        services.channel_manager,
-    )
-    return ApplicationInstance(
-        manifest=APPLICATION_MANIFEST,
-        logic=logic,
-        registration=logic.application_registration(),
-        controllers=tuple(build_routes(logic, services, dict(services.settings))),
-    )
-
-
-def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
-    async def api_board(request: Request):
-        result = await asyncio.to_thread(logic.on_peer_update)
-        if result.value:
-            await asyncio.to_thread(runtime.channel_manager.execute_effects, result.effects)
-            runtime.notify_change()
-        return JSONResponse(logic.board_payload(auto_adopt=False))
-
-    async def api_auto_adopt(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.set_auto_adopt_mode(data.get("mode", "always")))
-
-    async def api_create_board(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.create_board(data.get("name", "Kanban Board")))
-
-    async def api_select_board(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.select_board(data["board_uuid"]))
-
-    async def api_rename_board(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.rename_board(
-            data["board_uuid"],
-            data.get("name", "Kanban Board"),
-        ))
-
-    async def api_set_board_objective(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.set_board_objective(
-            data["board_uuid"],
-            data.get("objective", ""),
-        ))
-
-    async def api_copy_board(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.copy_board(data["board_uuid"]))
-
-    async def api_delete_board(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.delete_board(data["board_uuid"]))
-
-    async def api_unshare_board(request: Request):
-        data = await request.json()
-        result = await asyncio.to_thread(
-            logic.unshare_board,
-            runtime,
-            data.get("board_uuid"),
-        )
-        status = 200 if result.get("status") == "ok" else 409
-        if status == 200:
-            runtime.notify_change()
-        return JSONResponse(result, status_code=status)
-
-    async def api_create_column(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.create_column(data.get("name", "Column")))
-
-    async def api_rename_column(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.rename_column(data["column_uuid"], data.get("name", "Column")))
-
-    async def api_delete_column(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.delete_column(data["column_uuid"]))
-
-    async def api_move_column(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.move_column(data["column_uuid"], int(data.get("index", 0))))
-
-    async def api_create_card(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.create_card(
-            data["column_uuid"],
-            data.get("name", "Card"),
-            data.get("description", ""),
-            _participants(data.get("participants")),
-            data.get("owner"),
-        ))
-
-    async def api_update_card(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.update_card(
-            data["card_uuid"],
-            data.get("name", "Card"),
-            data.get("description", ""),
-            _participants(data.get("participants")),
-            data.get("owner"),
-            expected_state_hash=data.get("expected_state_hash"),
-        ))
-
-    async def api_delete_card(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.delete_card(data["card_uuid"]))
-
-    async def api_move_card(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.move_card(
-            data["card_uuid"],
-            data["column_uuid"],
-            int(data.get("index", 0)),
-        ))
-
-    async def api_create_card_comment(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.create_card_comment(
-            data["card_uuid"],
-            data.get("text", ""),
-        ))
-
-    async def api_delete_card_comment(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.delete_card_comment(data["comment_uuid"]))
-
-    async def api_adopt(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.accept_peer_node(
-            data["source_addr"],
-            data["node_uuid"],
-            bool(data.get("adopt_absence")),
-        ))
-
-    async def api_rollback(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.rollback_peer_node(
-            data["source_addr"],
-            data["node_uuid"],
-            bool(data.get("rollback_absence")),
-        ))
-
-    async def api_create_agenda_item(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.create_agenda_item(
-            data.get("text", ""),
-            data.get("priority"),
-        ))
-
-    async def api_delete_agenda_item(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.delete_agenda_item(data["item_uuid"]))
-
-    async def api_set_agenda_item_priority(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.set_agenda_item_priority(
-            data["item_uuid"],
-            data.get("priority"),
-        ))
-
-    return [
-        Route("/api/kanban/board", api_board),
-        Route("/api/kanban/auto_adopt", api_auto_adopt, methods=["POST"]),
-        Route("/api/kanban/boards/create", api_create_board, methods=["POST"]),
-        Route("/api/kanban/boards/select", api_select_board, methods=["POST"]),
-        Route("/api/kanban/boards/rename", api_rename_board, methods=["POST"]),
-        Route("/api/kanban/boards/set_objective", api_set_board_objective, methods=["POST"]),
-        Route("/api/kanban/boards/copy", api_copy_board, methods=["POST"]),
-        Route("/api/kanban/boards/delete", api_delete_board, methods=["POST"]),
-        Route("/api/kanban/boards/unshare", api_unshare_board, methods=["POST"]),
-        Route("/api/kanban/columns/create", api_create_column, methods=["POST"]),
-        Route("/api/kanban/columns/rename", api_rename_column, methods=["POST"]),
-        Route("/api/kanban/columns/delete", api_delete_column, methods=["POST"]),
-        Route("/api/kanban/columns/move", api_move_column, methods=["POST"]),
-        Route("/api/kanban/cards/create", api_create_card, methods=["POST"]),
-        Route("/api/kanban/cards/update", api_update_card, methods=["POST"]),
-        Route("/api/kanban/cards/delete", api_delete_card, methods=["POST"]),
-        Route("/api/kanban/cards/move", api_move_card, methods=["POST"]),
-        Route("/api/kanban/cards/comments/create", api_create_card_comment, methods=["POST"]),
-        Route("/api/kanban/cards/comments/delete", api_delete_card_comment, methods=["POST"]),
-        Route("/api/kanban/adopt", api_adopt, methods=["POST"]),
-        Route("/api/kanban/rollback", api_rollback, methods=["POST"]),
-        Route("/api/kanban/agenda/create", api_create_agenda_item, methods=["POST"]),
-        Route("/api/kanban/agenda/delete", api_delete_agenda_item, methods=["POST"]),
-        Route("/api/kanban/agenda/set_priority", api_set_agenda_item_priority, methods=["POST"]),
-    ]
-
-
-async def _json_result(runtime, result: SessionResult) -> JSONResponse:
-    if result.status != "ok":
-        return JSONResponse({"status": "error", "reason": result.reason}, status_code=409)
-    deliveries = await asyncio.to_thread(
-        runtime.channel_manager.execute_effects, result.effects,
-    )
-    runtime.notify_change()
-    payload: dict[str, Any] = {"status": "ok"}
-    if hasattr(result.value, "to_dict"):
-        payload["value"] = result.value.to_dict()
-    elif result.value is not None:
-        payload["value"] = result.value
-    errors = [item for item in deliveries if not item.ok]
-    if errors:
-        payload["delivery_errors"] = [
-            {"effect_type": item.effect_type, "target": item.target, "reason": item.reason}
-            for item in errors
-        ]
-    return JSONResponse(payload)
-
-
-def _participants(value) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return [item.strip() for item in str(value).split(",") if item.strip()]

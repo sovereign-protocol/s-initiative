@@ -1711,9 +1711,9 @@ class RelayLogicTests(unittest.TestCase):
             connection = manager.connection_for_target(target_id)
             self.assertIn(board_uuid, connection._state["shared"])
 
-            result = kanban_a.unshare_board(runtime=None, board_uuid=board_uuid)
+            result = kanban_a.unshare_board(board_uuid=board_uuid)
 
-            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result.status, "ok")
             self.assertEqual(connection._state["shared"], [])
             self.assertIsNone(manager.target_for_topic(board_uuid))
 

@@ -95,7 +95,7 @@ class ServerIntegrationTests(unittest.TestCase):
             configs = []
             for port in (port_a, port_b):
                 config = {
-                    "app_module": "s_kanban.logic",
+                    "app_module": "s_kanban.application",
                     "ui_file": "kanban.html",
                     "css_file": "kanban.css",
                     "storage_file": str(tmp_path / f"kanban_{port}.json"),
@@ -182,7 +182,7 @@ class ServerIntegrationTests(unittest.TestCase):
             configs = []
             for port in (port_a, port_b):
                 config = {
-                    "app_module": "s_kanban.logic",
+                    "app_module": "s_kanban.application",
                     "ui_file": "kanban.html",
                     "css_file": "kanban.css",
                     "storage_file": str(tmp_path / f"kanban_{port}.json"),
@@ -264,7 +264,7 @@ class ServerIntegrationTests(unittest.TestCase):
             configs = []
             for port in (port_a, port_b):
                 config = {
-                    "app_module": "s_kanban.logic",
+                    "app_module": "s_kanban.application",
                     "ui_file": "kanban.html",
                     "css_file": "kanban.css",
                     "storage_file": str(tmp_path / f"kanban_{port}.json"),
@@ -384,7 +384,7 @@ class ServerIntegrationTests(unittest.TestCase):
             configs = {}
             for port in (port_a, port_b, port_c):
                 config = {
-                    "app_module": "s_kanban.logic",
+                    "app_module": "s_kanban.application",
                     "ui_file": "kanban.html",
                     "css_file": "kanban.css",
                     "storage_file": str(tmp_path / f"kanban_{port}.json"),
