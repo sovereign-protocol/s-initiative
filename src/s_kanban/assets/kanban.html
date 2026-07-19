@@ -487,7 +487,7 @@
           let token;
           try {
             token = JSON.parse(atob(tokenInput.value.trim()));
-            if (token.version !== 1 || !Array.isArray(token.topic_uuids) || !token.topic_uuids.length) {
+            if (token.token_version !== 1 || !Array.isArray(token.topic_uuids) || !token.topic_uuids.length) {
               throw new Error("Invalid or unrecognized token");
             }
           } catch (err) {
