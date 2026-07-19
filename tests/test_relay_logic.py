@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sovereign.blob_store import BlobStore
+from sovereign.profile import CoreProfileService
 from s_kanban.logic import KanbanLogic
 from sovereign.protocol import ProtocolNode
 from sovereign.relay_logic import (
@@ -725,8 +726,14 @@ class RelayManagerTests(unittest.TestCase):
             manager.assign_topic_target(board_b, target_b)
 
             identity = session.identity.uuid
-            self.assertEqual(manager.connection_for_target(target_a).relay_topic_uuids(), [board_a, identity])
-            self.assertEqual(manager.connection_for_target(target_b).relay_topic_uuids(), [board_b, identity])
+            self.assertEqual(
+                set(manager.connection_for_target(target_a).relay_topic_uuids()),
+                {board_a, identity},
+            )
+            self.assertEqual(
+                set(manager.connection_for_target(target_b).relay_topic_uuids()),
+                {board_b, identity},
+            )
 
             manager.connection_for_target(target_a).mark_topics_desired([board_a])
             manager.assign_topic_target(board_a, None)
@@ -892,7 +899,7 @@ class RelayLogicTests(unittest.TestCase):
             store_a = BlobStore(blobs_a)
             data = b"GIF89a-avatar"
             blob_id = store_a.write_blob(data)
-            KanbanLogic(session_a, {}).set_user_profile_avatar({
+            CoreProfileService(session_a).set_avatar({
                 "id": "avatar-1", "role": "avatar", "blob_id": blob_id,
                 "name": "avatar.gif", "size": len(data), "mime": "image/gif",
             })
@@ -1813,7 +1820,7 @@ class RelayLogicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
             kanban_a = KanbanLogic(session_a, {})
-            kanban_a.set_user_profile("Ann", "")
+            session_a.set_identity("Ann", "")
             board_uuid = kanban_a.create_board("Shared Board").value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
@@ -2054,7 +2061,7 @@ class RelayLogicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
             kanban_a = KanbanLogic(session_a, {})
-            kanban_a.set_user_profile("Ann", "")
+            session_a.set_identity("Ann", "")
             board_uuid = kanban_a.create_board("Shared Board").value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
@@ -2095,7 +2102,7 @@ class RelayLogicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
             kanban_a = KanbanLogic(session_a, {})
-            kanban_a.set_user_profile("Ann", "")
+            session_a.set_identity("Ann", "")
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()  # identity only so far, no board yet
 
@@ -2129,7 +2136,7 @@ class RelayLogicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
             kanban_a = KanbanLogic(session_a, {})
-            kanban_a.set_user_profile("Ann", "")
+            session_a.set_identity("Ann", "")
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
 
@@ -2145,7 +2152,7 @@ class RelayLogicTests(unittest.TestCase):
             self.assertNotIn("relay:A", session_b.peer_topic_sets)
 
             session_b.remove_peer("http://addr-a-direct")
-            kanban_a.set_user_profile("Ann Renamed", "")
+            session_a.set_identity("Ann Renamed", "")
             relay_a.publish_due_topics()
             relay_b.poll_and_apply()
 

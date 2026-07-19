@@ -1967,10 +1967,10 @@
         event.preventDefault();
         const file = el("profilePictureFile").files[0];
         const succeeded = await run(async () => {
-          await api("/api/kanban/profile", {name: el("profileName").value});
+          await api("/api/core/profile", {name: el("profileName").value});
           if (file) {
             const uploaded = await uploadBlob(file);
-            await api("/api/kanban/profile/avatar", {
+            await api("/api/core/profile/avatar", {
               attachment: {
                 id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${file.name}`,
                 role: "avatar",
@@ -1986,8 +1986,8 @@
       };
       el("removeProfilePictureBtn").onclick = async () => {
         const succeeded = await run(async () => {
-          await api("/api/kanban/profile", {name: el("profileName").value});
-          await api("/api/kanban/profile/avatar", {remove: true});
+          await api("/api/core/profile", {name: el("profileName").value});
+          await api("/api/core/profile/avatar", {remove: true});
         }, "Profile picture removed");
         if (succeeded) el("profileModal").close();
       };

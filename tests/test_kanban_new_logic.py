@@ -876,8 +876,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         client = MemoryHttpClient({left.address: left, right.address: right})
         left.adapter.http = client
         right.adapter.http = client
-        left.logic.set_user_profile("Alice")
-        right.logic.set_user_profile("Bob")
+        left.profile.set_profile("Alice")
+        right.profile.set_profile("Bob")
         alice = left.logic.user_profile().uuid
         bob = right.logic.user_profile().uuid
         board = left.logic.ensure_board()
@@ -942,7 +942,7 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_user_profile_is_single_shared_topic(self):
         runtime = self.runtime(8316)
 
-        result = runtime.logic.set_user_profile("Alice", "https://example.test/a.png")
+        result = runtime.profile.set_profile("Alice", "https://example.test/a.png")
 
         self.assertEqual(result.status, "ok")
         profile = runtime.logic.user_profile()
@@ -956,9 +956,9 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_profile_avatar_is_a_blob_reference_and_remove_clears_legacy_url(self):
         runtime = self.runtime(8390)
         blob_id = "sha256:" + "a" * 64
-        runtime.logic.set_user_profile("Alice", "https://example.test/legacy.png")
+        runtime.profile.set_profile("Alice", "https://example.test/legacy.png")
 
-        attached = runtime.logic.set_user_profile_avatar({
+        attached = runtime.profile.set_avatar({
             "id": "avatar-1", "role": "avatar", "blob_id": blob_id,
             "name": "alice.png", "size": 123, "mime": "image/png",
         })
@@ -967,7 +967,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(runtime.logic.users()[0]["picture"], f"/api/blob/{blob_id}")
         self.assertEqual(runtime.logic.user_profile().data["picture"], "")
 
-        removed = runtime.logic.set_user_profile_avatar(None)
+        removed = runtime.profile.set_avatar(None)
 
         self.assertEqual(removed.status, "ok")
         self.assertEqual(runtime.logic.users()[0]["picture"], "")
@@ -979,7 +979,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         client = MemoryHttpClient({left.address: left, right.address: right})
         left.adapter.http = client
         right.adapter.http = client
-        left.logic.set_user_profile("Alice", "")
+        left.profile.set_profile("Alice", "")
 
         board = left.logic.ensure_board()
         invite = connect(left, right, board.uuid)
@@ -1000,7 +1000,7 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_user_profile_does_not_reuse_peer_identity(self):
         left = self.runtime(8331)
         right = self.runtime(8332)
-        left.logic.set_user_profile("Alice", "")
+        left.profile.set_profile("Alice", "")
         peer_identity = ProtocolNode.from_dict(left.logic.user_profile().to_dict())
         right.session.apply_peer_subtree(
             left.address,
@@ -1020,7 +1020,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.http = client
         right.adapter.http = client
         left.logic.ensure_board()
-        left.logic.set_user_profile("Alice", "")
+        left.profile.set_profile("Alice", "")
 
         board = left.logic.ensure_board()
         result = connect(left, right, board.uuid)
@@ -1190,7 +1190,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         first.adapter.http = client
         middle.adapter.http = client
         third.adapter.http = client
-        first.logic.set_user_profile("Alice", "https://example.test/a.png")
+        first.profile.set_profile("Alice", "https://example.test/a.png")
         shared_board = first.logic.ensure_board()
         connect(first, middle)
         connect(first, middle, shared_board.uuid)
@@ -1215,9 +1215,9 @@ class KanbanNewLogicTests(unittest.TestCase):
         first.adapter.http = client
         middle.adapter.http = client
         third.adapter.http = client
-        first.logic.set_user_profile("Alice", "")
-        middle.logic.set_user_profile("Bob", "")
-        third.logic.set_user_profile("Cynthia", "")
+        first.profile.set_profile("Alice", "")
+        middle.profile.set_profile("Bob", "")
+        third.profile.set_profile("Cynthia", "")
         shared_board = first.logic.ensure_board()
 
         connect(first, middle, shared_board.uuid)
@@ -1239,14 +1239,14 @@ class KanbanNewLogicTests(unittest.TestCase):
             {},
         ).value
 
-        result = right.logic.join_discussion(right, left.address, other.uuid)
+        result = right.adapter.join_discussion(left.address, other.uuid)
 
         self.assertEqual(result["status"], "error")
-        self.assertIn("board topics", result["reason"])
+        self.assertIn("no active application accepts", result["reason"])
 
     def test_first_participant_is_owner(self):
         runtime = self.runtime(8317)
-        runtime.logic.set_user_profile("Alice", "")
+        runtime.profile.set_profile("Alice", "")
         board = runtime.logic.ensure_board()
         column = runtime.logic.columns(board)[0]
 
@@ -1360,7 +1360,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         })
         for runtime in (left, middle, right):
             runtime.adapter.http = client
-            runtime.logic.set_user_profile(runtime.address, "")
+            runtime.profile.set_profile(runtime.address, "")
         board = left.logic.ensure_board()
         connect(left, middle, board.uuid)
         connect(left, right, board.uuid)

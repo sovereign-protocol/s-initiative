@@ -45,9 +45,7 @@ import copy
 from typing import Any
 
 from sovereign.protocol import ProtocolNode
-from sovereign.blob_store import (
-    SAFE_IMAGE_MIMES, avatar_attachment, canonical_attachments, is_valid_image,
-)
+from sovereign.blob_store import avatar_attachment
 from sovereign.session import Session, SessionResult
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -250,9 +248,11 @@ class KanbanLogic:
         # join) into our own board list. A genuinely new shared board starts
         # fully collaborative; reconnecting an existing board never reaches
         # this path and therefore retains its local per-board setting.
+        was_known = subtree.uuid in self.session.protocol.index
         accepted = self.session.accept_topic_invitation(subtree, self._kanban_container().uuid)
         if accepted.status == "ok":
-            self._set_board_auto_adopt(accepted.value, "always")
+            if not was_known:
+                self._set_board_auto_adopt(accepted.value, "always")
             self._remember_board(accepted.value)
         return accepted
 
@@ -364,148 +364,8 @@ class KanbanLogic:
             payload["delivery_errors"] = errors
         return payload
 
-    def join_discussion(self, runtime, address: str,
-                        topic_uuid: str | None = None,
-                        topic_uuids: list[str] | None = None) -> dict:
-        topic_uuids = runtime.adapter._topic_uuids(topic_uuid, topic_uuids)
-        if not topic_uuids:
-            return {"status": "error", "reason": "topic_uuid is required"}
-        try:
-            address = address.rstrip("/")
-            fetched = []
-            for uuid in topic_uuids:
-                payload = runtime.adapter.fetch_subtree(address, uuid)
-                tree = runtime.adapter._decode_wire_subtree(payload, address)
-                fetched.append((tree, payload.get("parent_uuid")))
-            board_topics = [item for item in fetched if self._is_kanban_board_topic(item[0])]
-            user_topics = [item for item in fetched if self._is_shared_user_topic(item[0])]
-            accepted_count = len(board_topics) + len(user_topics)
-            if accepted_count != len(fetched) or accepted_count == 0:
-                return {
-                    "status": "error",
-                    "reason": "S-Kanban accepts only board topics and shared user profiles",
-                }
-            response_topic_uuids = list(topic_uuids)
-            peer_fetch_topics = [tree.uuid for tree, _ in fetched]
-            own_profile_uuid = self.user_profile().uuid
-            if own_profile_uuid not in response_topic_uuids:
-                response_topic_uuids.append(own_profile_uuid)
-            start = self.session.start_discussion(own_profile_uuid)
-            if start.status != "ok":
-                return {"status": "error", "reason": start.reason}
-
-            adopted = []
-            for tree, _parent_uuid in board_topics:
-                was_known = tree.uuid in self.session.protocol.index
-                accepted = self.session.accept_topic_invitation(
-                    tree,
-                    self._kanban_container().uuid,
-                )
-                if accepted.status != "ok":
-                    return {"status": "error", "reason": accepted.reason}
-                if not was_known:
-                    self._set_board_auto_adopt(accepted.value, "always")
-                adopted.append(accepted.value)
-            for tree, parent_uuid in fetched:
-                self.session.apply_peer_subtree(address, copy.deepcopy(tree), parent_uuid)
-
-            response = runtime.adapter.http.post_json(
-                runtime.adapter._url(address, "/p2p/join"),
-                {
-                    "from_addr": self.session.address,
-                    "topic_uuid": response_topic_uuids[0],
-                    "topic_uuids": response_topic_uuids,
-                    "pull_topic_uuids": [
-                        *(tree.uuid for tree, _ in board_topics),
-                        own_profile_uuid,
-                    ],
-                    "topic_members": self.session.topic_members_by_topic(response_topic_uuids),
-                },
-                timeout=10,
-            )
-            if response.get("status") != "ok":
-                return response
-        except Exception as exc:
-            return {"status": "error", "reason": str(exc)}
-
-        topic_members = self.session.topic_members_from_map(
-            response.get("topic_members") or {}, response_topic_uuids,
-        )
-        indirect_board_members: dict[str, set[str]] = {}
-        board_topic_uuids = {tree.uuid for tree, _ in board_topics}
-        for topic, members in topic_members.items():
-            for member in members:
-                if member == self.session.address:
-                    continue
-                already_known = topic in self.session.peer_topic_sets.get(member, set())
-                self.session.add_peer(
-                    member,
-                    topic,
-                    fetch_from_peer=member != address or topic in peer_fetch_topics,
-                )
-                if (
-                    topic in board_topic_uuids
-                    and member != address
-                    and not already_known
-                ):
-                    indirect_board_members.setdefault(member, set()).add(topic)
-        if address != self.session.address:
-            self._set_peer_owned_topics(address, peer_fetch_topics)
-        for member, topics in sorted(indirect_board_members.items()):
-            runtime.adapter.invite_to_discuss(
-                member,
-                topic_uuids=[*sorted(topics), own_profile_uuid],
-            )
-        for topic in response_topic_uuids:
-            runtime.adapter.execute_effects(self.session.sync_effects(topic))
-        return {
-            "status": "ok",
-            "members": sorted({
-                member
-                for members in topic_members.values()
-                for member in members
-            }),
-            "topic_uuids": response_topic_uuids,
-            "adopted_root_uuid": adopted[0] if adopted else None,
-            "adopted_root_uuids": adopted,
-            "topic_members": {
-                topic: sorted(members)
-                for topic, members in sorted(topic_members.items())
-            },
-        }
-
-    def _set_peer_owned_topics(self, address: str, topic_uuids: list[str]) -> None:
-        current = set(self.session.fetch_topic_uuids(address))
-        current.discard(self.user_profile().uuid)
-        current.update(topic_uuids)
-        self.session.set_peer_fetch_topics(address, current)
-
     def user_profile(self) -> ProtocolNode:
         return self.session.identity
-
-    def set_user_profile(self, name: str, picture: str | None = None) -> SessionResult:
-        return self.session.set_identity(name, picture)
-
-    def set_user_profile_avatar(self, reference: dict | None) -> SessionResult:
-        profile = self.user_profile()
-        data = dict(profile.data)
-        attachments = [
-            item for item in canonical_attachments(data.get("attachments"))
-            if item["role"] != "avatar"
-        ]
-        if reference is not None:
-            normalized = canonical_attachments([reference])
-            if not normalized or normalized[0]["role"] != "avatar":
-                return SessionResult("error", reason="invalid avatar reference")
-            if normalized[0]["mime"] not in SAFE_IMAGE_MIMES:
-                return SessionResult("error", reason="unsupported avatar image type")
-            attachments.append(normalized[0])
-            data["picture"] = ""
-        else:
-            # Also removes a legacy profile URL during the blob cutover.
-            data["picture"] = ""
-        data["attachments"] = canonical_attachments(attachments)
-        return self.session.modify(profile.uuid, data, profile.weights)
 
     def users(self) -> list[dict]:
         users = [self._user_info(self.session.address, self.user_profile())]
@@ -1480,39 +1340,6 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
             runtime.notify_change()
         return JSONResponse(result, status_code=status)
 
-    async def api_profile(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.set_user_profile(
-            data.get("name", ""),
-            data.get("picture") if "picture" in data else None,
-        ))
-
-    async def api_profile_avatar(request: Request):
-        data = await request.json()
-        reference = None if data.get("remove") else data.get("attachment")
-        if reference is not None:
-            normalized = canonical_attachments([reference])
-            if not normalized:
-                return JSONResponse(
-                    {"status": "error", "reason": "invalid attachment"}, status_code=400,
-                )
-            reference = normalized[0]
-            blob_data = runtime.blob_store.read_blob(reference["blob_id"])
-            if blob_data is None:
-                return JSONResponse(
-                    {"status": "error", "reason": "uploaded blob not found"},
-                    status_code=409,
-                )
-            if not is_valid_image(blob_data, reference["mime"]):
-                return JSONResponse(
-                    {"status": "error", "reason": "invalid image data"}, status_code=400,
-                )
-            reference["size"] = len(blob_data)
-        response = await _json_result(runtime, logic.set_user_profile_avatar(reference))
-        if response.status_code < 400:
-            runtime.collect_local_blobs()
-        return response
-
     async def api_create_column(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.create_column(data.get("name", "Column")))
@@ -1616,8 +1443,6 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
         Route("/api/kanban/boards/set_objective", api_set_board_objective, methods=["POST"]),
         Route("/api/kanban/boards/copy", api_copy_board, methods=["POST"]),
         Route("/api/kanban/boards/delete", api_delete_board, methods=["POST"]),
-        Route("/api/kanban/profile", api_profile, methods=["POST"]),
-        Route("/api/kanban/profile/avatar", api_profile_avatar, methods=["POST"]),
         Route("/api/kanban/boards/unshare", api_unshare_board, methods=["POST"]),
         Route("/api/kanban/columns/create", api_create_column, methods=["POST"]),
         Route("/api/kanban/columns/rename", api_rename_column, methods=["POST"]),
