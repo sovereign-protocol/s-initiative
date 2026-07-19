@@ -1000,3 +1000,52 @@ menu button {
   body.side-panel-open main { margin-left: min(280px, 82vw); }
   .column { flex-basis: min(280px, calc(100vw - 38px)); }
 }
+
+.card-comments {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.card-comments-title {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.comment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+}
+.comment {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.comment-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.comment-author { font-weight: 600; font-size: 13px; }
+.comment-time { color: var(--muted); font-size: 12px; }
+.comment-delete {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.comment-delete:hover { color: var(--text); background: none; }
+.comment-text { white-space: pre-wrap; word-break: break-word; font-size: 14px; }
+.comment-empty { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
+.comment-add { display: flex; gap: 8px; align-items: flex-start; }
+.comment-add textarea { flex: 1; resize: vertical; }

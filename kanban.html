@@ -105,6 +105,14 @@
         <label>Owner<select id="cardOwner"></select></label>
         <label>Members</label>
         <div id="participantPicker" class="user-picker"></div>
+        <div id="cardComments" class="card-comments">
+          <h3 class="card-comments-title">Activity</h3>
+          <div id="cardCommentList" class="comment-list"></div>
+          <div class="comment-add">
+            <textarea id="cardCommentInput" rows="2" placeholder="Add a comment…"></textarea>
+            <button type="button" id="addCommentBtn" class="primary">Comment</button>
+          </div>
+        </div>
         <menu>
           <button id="deleteCardBtn" type="button" class="danger">Delete</button>
           <button type="button" id="cancelCardBtn">Cancel</button>
@@ -1380,6 +1388,94 @@
         el("saveCardBtn").style.display = isLocal ? "" : "none";
         el("deleteCardBtn").style.display = modalCard && isLocal ? "inline-block" : "none";
         renderCardPerspectiveSwitcher();
+        renderCardComments();
+      }
+
+      function formatCommentTime(iso) {
+        if (!iso) return "";
+        const then = new Date(iso);
+        if (Number.isNaN(then.getTime())) return "";
+        const seconds = Math.floor((Date.now() - then.getTime()) / 1000);
+        if (seconds < 60) return "just now";
+        if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+        if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+        return then.toLocaleString();
+      }
+
+      function renderCardComments() {
+        const section = el("cardComments");
+        // Comments live on the real card, so show them only for an existing
+        // card in the local ("Mine") perspective - not while adding a card or
+        // viewing a peer's version.
+        if (!modalCard || modalPerspectiveKey !== "local") {
+          section.style.display = "none";
+          return;
+        }
+        section.style.display = "block";
+        const list = el("cardCommentList");
+        list.replaceChildren();
+        const myId = state.user_profile?.uuid;
+        const comments = (state.comments_by_card || {})[modalCard.uuid] || [];
+        if (!comments.length) {
+          const empty = document.createElement("p");
+          empty.className = "comment-empty";
+          empty.textContent = "No comments yet.";
+          list.append(empty);
+        }
+        for (const comment of comments) {
+          const item = document.createElement("div");
+          item.className = "comment";
+          const head = document.createElement("div");
+          head.className = "comment-head";
+          const author = document.createElement("span");
+          author.className = "comment-author";
+          author.textContent = comment.author_label || "Unknown";
+          const when = document.createElement("span");
+          when.className = "comment-time";
+          when.textContent = formatCommentTime(comment.created_at);
+          head.append(author, when);
+          if (comment.author && comment.author === myId) {
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.className = "comment-delete";
+            remove.textContent = "Delete";
+            remove.onclick = () => deleteComment(comment.uuid);
+            head.append(remove);
+          }
+          const body = document.createElement("div");
+          body.className = "comment-text";
+          body.textContent = comment.text;
+          item.append(head, body);
+          list.append(item);
+        }
+      }
+
+      async function addComment() {
+        if (!modalCard) return;
+        const input = el("cardCommentInput");
+        const text = input.value.trim();
+        if (!text) return;
+        try {
+          await api("/api/kanban/cards/comments/create", {
+            card_uuid: modalCard.uuid,
+            text,
+          });
+          input.value = "";
+          await loadBoard();
+          renderCardComments();
+        } catch (error) {
+          showToast(error.message, true);
+        }
+      }
+
+      async function deleteComment(commentUuid) {
+        try {
+          await api("/api/kanban/cards/comments/delete", { comment_uuid: commentUuid });
+          await loadBoard();
+          renderCardComments();
+        } catch (error) {
+          showToast(error.message, true);
+        }
       }
 
       function renderCardPerspectiveSwitcher() {
@@ -1441,6 +1537,7 @@
         });
       };
       el("cancelCardBtn").onclick = () => el("cardModal").close();
+      el("addCommentBtn").onclick = addComment;
 
       function setModalFooterMode(mode) {
         const done = mode === "done";
