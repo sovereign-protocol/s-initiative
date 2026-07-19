@@ -1377,7 +1377,7 @@ class RelayLogicTests(unittest.TestCase):
         # current, same as any board.
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            session_a.set_identity("Ann", picture="", email="ann@example.com")
+            session_a.set_identity("Ann", picture="")
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
 
@@ -1391,7 +1391,7 @@ class RelayLogicTests(unittest.TestCase):
 
             # A changes their name well after the initial exchange - no new
             # token, just the ordinary poll loop.
-            session_a.set_identity("Annabelle", picture="", email="ann@example.com")
+            session_a.set_identity("Annabelle", picture="")
             relay_a.publish_due_topics()
             relay_b.poll_and_apply()
 
