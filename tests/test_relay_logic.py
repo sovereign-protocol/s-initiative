@@ -189,7 +189,7 @@ class LocalFolderRelayStorageTests(unittest.TestCase):
 
             self.assertIsInstance(mtime, float)
             self.assertGreaterEqual(roundtrip, 0.0)
-            self.assertEqual(list(Path(root).glob(".s-kanban-timing-*")), [])
+            self.assertEqual(list(Path(root).glob(".sovereign-timing-*")), [])
 
     def test_write_then_read_round_trips_head_and_snapshot(self):
         with tempfile.TemporaryDirectory() as root:
@@ -314,7 +314,7 @@ class SftpRelayStorageTests(unittest.TestCase):
 
         self.assertIsInstance(mtime, float)
         self.assertGreaterEqual(roundtrip, 0.0)
-        self.assertFalse(any(".s-kanban-timing-" in path for path in fake.files))
+        self.assertFalse(any(".sovereign-timing-" in path for path in fake.files))
 
     def test_verify_access_writes_and_removes_probe(self):
         fake = FakeSftpClient()
@@ -322,7 +322,7 @@ class SftpRelayStorageTests(unittest.TestCase):
 
         storage.verify_access()
 
-        self.assertFalse(any(".s-kanban-probe-" in path for path in fake.files))
+        self.assertFalse(any(".sovereign-probe-" in path for path in fake.files))
 
     def test_authentication_failure_is_not_retried(self):
         import paramiko
@@ -984,7 +984,7 @@ class RelayLogicTests(unittest.TestCase):
             self.assertEqual(timing["samples"], 3)
             self.assertIsNotNone(timing["roundtrip_ms"])
             self.assertIsNotNone(timing["server_clock_offset_ms"])
-            self.assertEqual(list(Path(relay_root).glob(".s-kanban-timing-*")), [])
+            self.assertEqual(list(Path(relay_root).glob(".sovereign-timing-*")), [])
 
     def test_state_save_retries_transient_windows_replace_denial(self):
         with tempfile.TemporaryDirectory() as state_dir:

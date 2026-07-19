@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from sovereign.application import application_result_view, json_value
+from sovereign import application_result_view, json_value
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route

@@ -3,7 +3,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from sovereign import app_server
+import app_server
 from sovereign.session import Session
 
 

@@ -3,7 +3,7 @@ import time
 import unittest
 from pathlib import Path
 
-from sovereign import app_server
+import app_server
 from s_kanban.logic import KanbanLogic
 from sovereign.protocol import ProtocolNode
 from sovereign.session import Session

@@ -1,10 +1,12 @@
 """S-Kanban manifest and host wiring."""
 
-from sovereign.application import (
-    ApplicationInstance, ApplicationManifest, ApplicationServices,
+from sovereign import (
+    ApplicationFacade, ApplicationInstance, ApplicationManifest,
+    ApplicationServices,
 )
 
 from .controller import build_routes
+from .facade import KANBAN_FACADE_API_VERSION, KanbanFacade
 from .logic import KanbanLogic
 
 
@@ -29,4 +31,9 @@ def create_application(services: ApplicationServices) -> ApplicationInstance:
         logic=logic,
         registration=logic.application_registration(),
         controllers=tuple(build_routes(logic, services, dict(services.settings))),
+        facade=ApplicationFacade(
+            application_id=APPLICATION_MANIFEST.application_id,
+            facade_api_version=KANBAN_FACADE_API_VERSION,
+            api=KanbanFacade(logic),
+        ),
     )

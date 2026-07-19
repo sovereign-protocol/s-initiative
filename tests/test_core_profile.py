@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sovereign import app_server
+import app_server
 from sovereign.protocol import protocol_tree_envelope
 from sovereign.session import Session
 from sovereign.transport import HttpTransportAdapter

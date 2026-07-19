@@ -43,10 +43,10 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from sovereign.protocol import ProtocolNode
-from sovereign.blob_store import avatar_attachment
-from sovereign.session import Session, SessionResult
-from sovereign.topic_registry import ApplicationRegistration
+from sovereign import (
+    ApplicationRegistration, ProtocolNode, Session, SessionResult,
+    avatar_attachment,
+)
 
 
 DEFAULT_COLUMNS = ["To Do", "Doing", "Done"]
