@@ -3,10 +3,10 @@ import time
 import unittest
 from pathlib import Path
 
-import app_server
-from kanban_logic import KanbanLogic
-from protocol import ProtocolNode
-from session import Session
+from sovereign import app_server
+from s_kanban.logic import KanbanLogic
+from sovereign.protocol import ProtocolNode
+from sovereign.session import Session
 
 
 def connect(host, guest, board_uuid: str | None = None) -> dict:

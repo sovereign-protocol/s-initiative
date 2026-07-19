@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import app_server
+from sovereign import app_server
 from tests.test_kanban_new_logic import MemoryHttpClient, connect
 
 

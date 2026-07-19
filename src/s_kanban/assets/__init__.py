@@ -1,0 +1,1 @@
+"""S-Kanban browser assets."""

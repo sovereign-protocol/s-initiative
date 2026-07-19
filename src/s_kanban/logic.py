@@ -44,11 +44,11 @@ import asyncio
 import copy
 from typing import Any
 
-from protocol import ProtocolNode
-from blob_store import (
+from sovereign.protocol import ProtocolNode
+from sovereign.blob_store import (
     SAFE_IMAGE_MIMES, avatar_attachment, canonical_attachments, is_valid_image,
 )
-from session import Session, SessionResult
+from sovereign.session import Session, SessionResult
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route

@@ -9,14 +9,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from blob_store import BlobStore
-from kanban_logic import KanbanLogic
-from protocol import ProtocolNode
-from relay_logic import (
+from sovereign.blob_store import BlobStore
+from s_kanban.logic import KanbanLogic
+from sovereign.protocol import ProtocolNode
+from sovereign.relay_logic import (
     RelayLogic, RelayManager, RelayTiming, _relay_fingerprint, channel_descriptor,
 )
-from relay_storage import LocalFolderRelayStorage, SftpRelayStorage
-from session import Session
+from sovereign.relay_storage import LocalFolderRelayStorage, SftpRelayStorage
+from sovereign.session import Session
 
 
 class FakeSftpFile:
@@ -990,8 +990,8 @@ class RelayLogicTests(unittest.TestCase):
                     raise PermissionError(5, "Access denied", str(destination))
                 return real_replace(source, destination)
 
-            with patch("relay_logic.os.replace", side_effect=transient_denial), \
-                    patch("relay_logic.time.sleep"):
+            with patch("sovereign.relay_logic.os.replace", side_effect=transient_denial), \
+                    patch("sovereign.relay_logic.time.sleep"):
                 logic._save_state()
 
             self.assertEqual(attempts, 3)
