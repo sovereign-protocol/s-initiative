@@ -32,6 +32,8 @@ Contract:
     POST /api/kanban/cards/update        {card_uuid, name, description, participants, owner}
     POST /api/kanban/cards/delete        {card_uuid}
     POST /api/kanban/cards/move          {card_uuid, column_uuid, index}
+    POST /api/kanban/cards/comments/create {card_uuid, text}
+    POST /api/kanban/cards/comments/delete {comment_uuid}
     POST /api/kanban/adopt               {source_addr, node_uuid, adopt_absence}
     POST /api/kanban/rollback            {source_addr, node_uuid}
 """
@@ -89,9 +91,34 @@ class KanbanLogic:
             "transition_events": events,
             "transition_by_node": self.transition_by_node(events),
             "agenda_items": [item.to_dict() for item in self.agenda_items(board)],
+            "comments_by_card": self._comments_by_card(board),
             "relay_targets": relay_manager.list_targets() if relay_manager else [],
             "relay_target_id": relay_manager.target_for_board(board.uuid) if relay_manager else None,
         }
+
+    def _comments_by_card(self, board: PRSPNode) -> dict:
+        # UI-friendly view of card comments: resolved author labels, sorted by
+        # time, keyed by card uuid. The comments also live in the board tree as
+        # card children, so they sync via the board topic - this is just the
+        # convenient shape for the card modal.
+        names = {user["id"]: user["name"] for user in self.users() if user.get("id")}
+        out = {}
+        for column in self.columns(board):
+            for card in self.cards(column):
+                comments = self.card_comments(card)
+                if not comments:
+                    continue
+                out[card.uuid] = [
+                    {
+                        "uuid": comment.uuid,
+                        "text": comment.data.get("text", ""),
+                        "author": comment.data.get("author"),
+                        "author_label": names.get(comment.data.get("author"), ""),
+                        "created_at": comment.created_at,
+                    }
+                    for comment in comments
+                ]
+        return out
 
     def _network_info_with_relay_liveness(self, board_uuid: str | None = None) -> dict:
         # Relay peers have no http reachability signal, so peer_status
@@ -550,6 +577,41 @@ class KanbanLogic:
             return SessionResult("error", reason="card not found")
         return self.session.delete(card.uuid)
 
+    def create_card_comment(self, card_uuid: str, text: str) -> SessionResult:
+        # A comment is an immutable child node of the card (the agenda_item
+        # pattern): concurrent comments set-union merge, and appending one
+        # touches only the card's subtree hash, not its own content revision.
+        card = self._node(card_uuid, "kanban_card")
+        if not card:
+            return SessionResult("error", reason="card not found")
+        text = (text or "").strip()
+        if not text:
+            return SessionResult("error", reason="comment text is required")
+        return self.session.create_child(
+            card.uuid,
+            {
+                "type": "card_comment",
+                "text": text,
+                "author": self.user_profile().uuid,
+            },
+            {},
+        )
+
+    def card_comments(self, card: PRSPNode) -> list[PRSPNode]:
+        return sorted(
+            [child for child in card.live_children()
+             if child.data.get("type") == "card_comment"],
+            key=lambda node: node.created_at,
+        )
+
+    def delete_card_comment(self, comment_uuid: str) -> SessionResult:
+        comment = self._node(comment_uuid, "card_comment")
+        if not comment:
+            return SessionResult("error", reason="comment not found")
+        if comment.data.get("author") != self.user_profile().uuid:
+            return SessionResult("error", reason="only the author can delete a comment")
+        return self.session.delete(comment.uuid)
+
     def move_card(self, card_uuid: str, column_uuid: str, index: int) -> SessionResult:
         card = self._node(card_uuid, "kanban_card")
         column = self._node(column_uuid, "kanban_column")
@@ -591,9 +653,14 @@ class KanbanLogic:
         mode = self.auto_adopt_mode(board)
 
         def eligible(node: PRSPNode, event_type: str) -> bool:
-            is_card = node.data.get("type") == "kanban_card"
-            if is_card:
+            node_type = node.data.get("type")
+            if node_type == "kanban_card":
                 return self._auto_adopt_allows_node(mode, node)
+            if node_type == "card_comment":
+                # Comments are additive and author-stamped - always adopt one
+                # (including a brand-new one) so a peer's note appears under any
+                # auto-adopt mode, the way agenda items follow their author.
+                return True
             # Known consequence (review S-6/K-4): in not_owner/not_member,
             # a peer's brand-new column is ineligible here, and reconcile
             # walks events uuid-sorted rather than parents-first, so its
@@ -1418,6 +1485,17 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
             int(data.get("index", 0)),
         ))
 
+    async def api_create_card_comment(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.create_card_comment(
+            data["card_uuid"],
+            data.get("text", ""),
+        ))
+
+    async def api_delete_card_comment(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.delete_card_comment(data["comment_uuid"]))
+
     async def api_adopt(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.accept_peer_node(
@@ -1471,6 +1549,8 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
         Route("/api/kanban/cards/update", api_update_card, methods=["POST"]),
         Route("/api/kanban/cards/delete", api_delete_card, methods=["POST"]),
         Route("/api/kanban/cards/move", api_move_card, methods=["POST"]),
+        Route("/api/kanban/cards/comments/create", api_create_card_comment, methods=["POST"]),
+        Route("/api/kanban/cards/comments/delete", api_delete_card_comment, methods=["POST"]),
         Route("/api/kanban/adopt", api_adopt, methods=["POST"]),
         Route("/api/kanban/rollback", api_rollback, methods=["POST"]),
         Route("/api/kanban/agenda/create", api_create_agenda_item, methods=["POST"]),
