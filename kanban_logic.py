@@ -44,7 +44,7 @@ import asyncio
 import copy
 from typing import Any
 
-from protocol import PRSPNode
+from protocol import ProtocolNode
 from blob_store import (
     SAFE_IMAGE_MIMES, avatar_attachment, canonical_attachments, is_valid_image,
 )
@@ -121,7 +121,7 @@ class KanbanLogic:
             "relay_target_id": relay_manager.target_for_topic(board.uuid) if relay_manager else None,
         }
 
-    def _comments_by_card(self, board: PRSPNode) -> dict:
+    def _comments_by_card(self, board: ProtocolNode) -> dict:
         # UI-friendly view of card comments: resolved author labels, sorted by
         # time, keyed by card uuid. The comments also live in the board tree as
         # card children, so they sync via the board topic - this is just the
@@ -170,7 +170,7 @@ class KanbanLogic:
                 )
         return info
 
-    def auto_adopt_mode(self, board: PRSPNode | None = None) -> str:
+    def auto_adopt_mode(self, board: ProtocolNode | None = None) -> str:
         board = board or self.ensure_board()
         values = self._metadata().get("auto_adopt_by_board", {})
         if isinstance(values, dict) and board.uuid in values:
@@ -197,7 +197,7 @@ class KanbanLogic:
             return value
         return "always"
 
-    def ensure_board(self) -> PRSPNode:
+    def ensure_board(self) -> ProtocolNode:
         remembered_uuid = self._metadata().get("selected_board_uuid")
         explicit = bool(self._metadata().get("board_selection_explicit"))
         remembered = self.session.protocol.index.get(remembered_uuid) if remembered_uuid else None
@@ -222,7 +222,7 @@ class KanbanLogic:
         self._remember_board(board.uuid)
         return board
 
-    def boards(self) -> list[PRSPNode]:
+    def boards(self) -> list[ProtocolNode]:
         containers = self._kanban_containers()
         boards = []
         for container in containers:
@@ -245,7 +245,7 @@ class KanbanLogic:
         self._remember_board(board.uuid, explicit=True)
         return SessionResult("ok", value=board.uuid)
 
-    def accept_relay_board(self, subtree: PRSPNode) -> SessionResult:
+    def accept_relay_board(self, subtree: ProtocolNode) -> SessionResult:
         # Grafts a board first discovered via the relay (not a live P2P
         # join) into our own board list. A genuinely new shared board starts
         # fully collaborative; reconnecting an existing board never reaches
@@ -306,7 +306,7 @@ class KanbanLogic:
             self._remember_board(remaining[0].uuid)
         return result
 
-    def _create_board_node(self, name: str) -> PRSPNode:
+    def _create_board_node(self, name: str) -> ProtocolNode:
         container = self._kanban_container()
         board = self.session.create_child(
             container.uuid,
@@ -375,7 +375,7 @@ class KanbanLogic:
             fetched = []
             for uuid in topic_uuids:
                 payload = runtime.adapter.fetch_subtree(address, uuid)
-                tree = runtime.adapter._decode_wire_subtree(payload["subtree"], address)
+                tree = runtime.adapter._decode_wire_subtree(payload, address)
                 fetched.append((tree, payload.get("parent_uuid")))
             board_topics = [item for item in fetched if self._is_kanban_board_topic(item[0])]
             user_topics = [item for item in fetched if self._is_shared_user_topic(item[0])]
@@ -480,7 +480,7 @@ class KanbanLogic:
         current.update(topic_uuids)
         self.session.set_peer_fetch_topics(address, current)
 
-    def user_profile(self) -> PRSPNode:
+    def user_profile(self) -> ProtocolNode:
         return self.session.identity
 
     def set_user_profile(self, name: str, picture: str | None = None) -> SessionResult:
@@ -643,7 +643,7 @@ class KanbanLogic:
             {},
         )
 
-    def card_comments(self, card: PRSPNode) -> list[PRSPNode]:
+    def card_comments(self, card: ProtocolNode) -> list[ProtocolNode]:
         return sorted(
             [child for child in card.live_children()
              if child.data.get("type") == "card_comment"],
@@ -694,11 +694,11 @@ class KanbanLogic:
             source_addr, node_uuid, rollback_absence,
         )
 
-    def adopt_incoming_changes(self, board: PRSPNode | None = None) -> bool:
+    def adopt_incoming_changes(self, board: ProtocolNode | None = None) -> bool:
         board = board or self.ensure_board()
         mode = self.auto_adopt_mode(board)
 
-        def eligible(node: PRSPNode, event_type: str) -> bool:
+        def eligible(node: ProtocolNode, event_type: str) -> bool:
             node_type = node.data.get("type")
             if node_type == "kanban_card":
                 return self._auto_adopt_allows_node(mode, node)
@@ -735,7 +735,7 @@ class KanbanLogic:
             if mode == "never":
                 continue
 
-            def source_eligible(node: PRSPNode, event_type: str) -> bool:
+            def source_eligible(node: ProtocolNode, event_type: str) -> bool:
                 # Agenda changes are handled above using author authority;
                 # never accept a forwarded/stale copy from another peer.
                 if node.data.get("type") == "agenda_item":
@@ -790,7 +790,7 @@ class KanbanLogic:
             changed = changed or result.status == "ok"
         return changed
 
-    def _auto_adopt_allows_node(self, mode: str, node: PRSPNode | None) -> bool:
+    def _auto_adopt_allows_node(self, mode: str, node: ProtocolNode | None) -> bool:
         if mode == "always":
             return True
         if mode == "never":
@@ -804,7 +804,7 @@ class KanbanLogic:
             return my_id not in (node.data.get("participants") or [])
         return True
 
-    def _has_protected_descendant(self, mode: str, node: PRSPNode) -> bool:
+    def _has_protected_descendant(self, mode: str, node: ProtocolNode) -> bool:
         # True if any live card under `node` is one this mode keeps (an owned
         # card under not_owner, a joined card under not_member) - i.e. adopting
         # a deletion of `node` would remove a card the policy protects.
@@ -1078,7 +1078,7 @@ class KanbanLogic:
         return changes
 
     @staticmethod
-    def _node_display_name(node: PRSPNode | None) -> str:
+    def _node_display_name(node: ProtocolNode | None) -> str:
         if not node:
             return "Unknown"
         return str(node.data.get("name") or node.data.get("text") or "Untitled")
@@ -1122,11 +1122,11 @@ class KanbanLogic:
                 "original_type": event.get("original_type"),
                 "peer_addr": event.get("peer_addr"),
                 "origin_identity": event.get("origin_identity"),
-                "local_revision_origin_identity": event.get(
-                    "local_revision_origin_identity",
+                "local_revision_origin": event.get(
+                    "local_revision_origin",
                 ),
-                "peer_revision_origin_identity": event.get(
-                    "peer_revision_origin_identity",
+                "peer_revision_origin": event.get(
+                    "peer_revision_origin",
                 ),
                 "local_state_hash": event.get("local_state_hash"),
                 "peer_state_hash": event.get("peer_state_hash"),
@@ -1174,8 +1174,8 @@ class KanbanLogic:
 
     def _reaction_for_event(self, event: dict) -> str:
         local_identity = self.session._local_revision_origin()
-        local_origin = event.get("local_revision_origin_identity")
-        peer_origin = event.get("peer_revision_origin_identity")
+        local_origin = event.get("local_revision_origin")
+        peer_origin = event.get("peer_revision_origin")
         original_type = event.get("original_type") or event.get("type")
         same_local_wave = (
             peer_origin == local_identity
@@ -1209,20 +1209,20 @@ class KanbanLogic:
             and self.session.peer_identity_key.get(peer_addr) == origin
         )
 
-    def columns(self, board: PRSPNode | None = None) -> list[PRSPNode]:
+    def columns(self, board: ProtocolNode | None = None) -> list[ProtocolNode]:
         board = board or self.ensure_board()
         return sorted(
             [child for child in board.live_children() if child.data.get("type") == "kanban_column"],
             key=lambda node: (float(node.data.get("order", 0)), node.created_at),
         )
 
-    def cards(self, column: PRSPNode) -> list[PRSPNode]:
+    def cards(self, column: ProtocolNode) -> list[ProtocolNode]:
         return sorted(
             [child for child in column.live_children() if child.data.get("type") == "kanban_card"],
             key=lambda node: (float(node.data.get("order", 0)), node.created_at),
         )
 
-    def agenda_items(self, board: PRSPNode | None = None) -> list[PRSPNode]:
+    def agenda_items(self, board: ProtocolNode | None = None) -> list[ProtocolNode]:
         board = board or self.ensure_board()
         return sorted(
             [child for child in board.live_children() if child.data.get("type") == "agenda_item"],
@@ -1275,7 +1275,7 @@ class KanbanLogic:
             return None
         return (low + high) / 2.0
 
-    def _place_in_order(self, moved: PRSPNode, siblings: list[PRSPNode],
+    def _place_in_order(self, moved: ProtocolNode, siblings: list[ProtocolNode],
                         index: int) -> SessionResult:
         index = max(0, min(index, len(siblings)))
         low = float(siblings[index - 1].data.get("order", 0)) if index > 0 else None
@@ -1289,7 +1289,7 @@ class KanbanLogic:
         data["order"] = new_order
         return self.session.modify(moved.uuid, data, moved.weights)
 
-    def _reorder(self, nodes: list[PRSPNode]) -> SessionResult:
+    def _reorder(self, nodes: list[ProtocolNode]) -> SessionResult:
         effects = []
         for order, node in enumerate(nodes):
             if node.data.get("order") == order:
@@ -1302,7 +1302,7 @@ class KanbanLogic:
             effects.extend(result.effects)
         return SessionResult("ok", value=True, effects=effects)
 
-    def _node(self, uuid: str, node_type: str) -> PRSPNode | None:
+    def _node(self, uuid: str, node_type: str) -> ProtocolNode | None:
         node = self.session.protocol.index.get(uuid)
         if node and node.data.get("type") == node_type:
             return node
@@ -1318,10 +1318,10 @@ class KanbanLogic:
         apps = self.session.app_metadata.setdefault("apps", {})
         return apps.setdefault(KANBAN_APP_NAME, {})
 
-    def _kanban_container(self) -> PRSPNode:
+    def _kanban_container(self) -> ProtocolNode:
         return self._folder(self._apps_folder(), KANBAN_APP_NAME, "kanban_app")
 
-    def _kanban_containers(self) -> list[PRSPNode]:
+    def _kanban_containers(self) -> list[ProtocolNode]:
         active = [
             self.session.protocol.index[uuid]
             for uuid in sorted(self.session.active_topic_uuids)
@@ -1332,10 +1332,10 @@ class KanbanLogic:
             return active
         return [self._kanban_container()]
 
-    def _apps_folder(self) -> PRSPNode:
+    def _apps_folder(self) -> ProtocolNode:
         return self._folder(self.session.protocol.root, "apps")
 
-    def _user_info(self, fallback_addr: str, profile: PRSPNode | None,
+    def _user_info(self, fallback_addr: str, profile: ProtocolNode | None,
                    profile_uuid: str | None = None) -> dict:
         data = profile.data if profile else {}
         address = fallback_addr
@@ -1357,10 +1357,10 @@ class KanbanLogic:
             "picture_blob_id": avatar["blob_id"] if avatar else "",
         }
 
-    def _find_peer_user_profile(self, address: str) -> PRSPNode | None:
+    def _find_peer_user_profile(self, address: str) -> ProtocolNode | None:
         return self.session.peer_identity(address)
 
-    def _peer_profile_uuid(self, address: str, profile: PRSPNode | None = None) -> str:
+    def _peer_profile_uuid(self, address: str, profile: ProtocolNode | None = None) -> str:
         if profile:
             return profile.uuid
         for topic_uuid in self.session.fetch_topic_uuids(address):
@@ -1379,8 +1379,8 @@ class KanbanLogic:
         # as if it were their identity.
         return ""
 
-    def _folder(self, parent: PRSPNode, name: str,
-                node_type: str = "folder") -> PRSPNode:
+    def _folder(self, parent: ProtocolNode, name: str,
+                node_type: str = "folder") -> ProtocolNode:
         for child in parent.children:
             if child.data.get("name") == name and child.data.get("type") in ("folder", node_type):
                 return child
@@ -1391,7 +1391,7 @@ class KanbanLogic:
         ).value
         return created
 
-    def _boards_under(self, root: PRSPNode) -> list[PRSPNode]:
+    def _boards_under(self, root: ProtocolNode) -> list[ProtocolNode]:
         out = []
         if root.data.get("type") == "kanban_board":
             out.append(root)
@@ -1399,7 +1399,7 @@ class KanbanLogic:
             out.extend(self._boards_under(child))
         return out
 
-    def _is_kanban_app_topic(self, node: PRSPNode | None) -> bool:
+    def _is_kanban_app_topic(self, node: ProtocolNode | None) -> bool:
         if not node:
             return False
         return (
@@ -1407,12 +1407,12 @@ class KanbanLogic:
             and node.data.get("name") == KANBAN_APP_NAME
         )
 
-    def _is_kanban_board_topic(self, node: PRSPNode | None) -> bool:
+    def _is_kanban_board_topic(self, node: ProtocolNode | None) -> bool:
         if not node:
             return False
         return node.data.get("type") == "kanban_board"
 
-    def _is_shared_user_topic(self, node: PRSPNode | None) -> bool:
+    def _is_shared_user_topic(self, node: ProtocolNode | None) -> bool:
         return self.session.is_identity_node(node)
 
     def _is_active_discussion_node(self, node_uuid: str) -> bool:

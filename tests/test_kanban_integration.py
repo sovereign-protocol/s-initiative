@@ -310,7 +310,7 @@ class ServerIntegrationTests(unittest.TestCase):
                 )
                 card_uuid = create["value"]["uuid"]
                 raw_b = request_json(
-                    "GET", f"http://127.0.0.1:{port_b}/api/prsp"
+                    "GET", f"http://127.0.0.1:{port_b}/api/protocol"
                 )
                 self.assertEqual(find_card_parent(raw_b, "Moved Card"), source_uuid)
                 request_json(
@@ -323,7 +323,7 @@ class ServerIntegrationTests(unittest.TestCase):
                     },
                 )
                 raw_b = request_json(
-                    "GET", f"http://127.0.0.1:{port_b}/api/prsp"
+                    "GET", f"http://127.0.0.1:{port_b}/api/protocol"
                 )
                 self.assertEqual(find_card_parent(raw_b, "Moved Card"), target_uuid)
 

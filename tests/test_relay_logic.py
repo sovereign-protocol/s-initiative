@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from blob_store import BlobStore
 from kanban_logic import KanbanLogic
-from protocol import PRSPNode
+from protocol import ProtocolNode
 from relay_logic import (
     RelayLogic, RelayManager, RelayTiming, _relay_fingerprint, channel_descriptor,
 )
@@ -581,7 +581,7 @@ class RelayManagerTests(unittest.TestCase):
             })
 
             result = manager.accept_descriptor({
-                "type": "relay", "version": 1, "root": relay_root,
+                "type": "relay", "descriptor_version": 1, "root": relay_root,
                 "identity": "B", "poll_interval_seconds": 30,
             }, [board_uuid])
 
@@ -746,7 +746,7 @@ class RelayManagerTests(unittest.TestCase):
             old_connection.mark_topics_desired([board_uuid])
 
             result = manager.accept_descriptor({
-                "type": "relay", "version": 1, "root": root_b,
+                "type": "relay", "descriptor_version": 1, "root": root_b,
                 "identity": "B", "poll_interval_seconds": 3,
             }, [board_uuid, "profile-b"], "profile-b")
 
@@ -1266,7 +1266,7 @@ class RelayLogicTests(unittest.TestCase):
                 "relay_state_file": str(Path(state_dir) / "state-b.json"),
             }
             descriptor = {
-                "type": "relay", "version": 1, "root": relay_root,
+                "type": "relay", "descriptor_version": 1, "root": relay_root,
                 "identity": "A", "poll_interval_seconds": 8,
             }
             first = RelayLogic(session, config)
@@ -1417,7 +1417,7 @@ class RelayLogicTests(unittest.TestCase):
             descriptor = relay_a.channel_descriptor()
 
             self.assertEqual(descriptor["type"], "relay")
-            self.assertEqual(descriptor["version"], 1)
+            self.assertEqual(descriptor["descriptor_version"], 1)
             self.assertEqual(descriptor["identity"], "A")
             self.assertEqual(descriptor["root"], str(relay_a.storage.root))
 
@@ -1513,7 +1513,7 @@ class RelayLogicTests(unittest.TestCase):
         descriptor = relay_a.channel_descriptor()
 
         self.assertEqual(descriptor, {
-            "type": "sftp", "version": 1, "host": "example.test",
+            "type": "sftp", "descriptor_version": 1, "host": "example.test",
             "port": 2222, "root": "/relay", "identity": "A",
             "username": "u", "password": "super-secret",
             "poll_interval_seconds": 3.0,
@@ -1531,7 +1531,7 @@ class RelayLogicTests(unittest.TestCase):
         boot_state_path = relay_b._state_path
 
         adopted = relay_b.adopt_storage_from_descriptor({
-            "type": "sftp", "version": 1, "host": "example.test",
+            "type": "sftp", "descriptor_version": 1, "host": "example.test",
             "port": 2222, "root": "/relay", "identity": "A",
             "username": "u", "password": "super-secret",
         })
@@ -1552,7 +1552,7 @@ class RelayLogicTests(unittest.TestCase):
         relay_b = RelayLogic(session_b, {})
         with tempfile.TemporaryDirectory() as root:
             adopted = relay_b.adopt_storage_from_descriptor({
-                "type": "relay", "version": 1, "root": root, "identity": "A",
+                "type": "relay", "descriptor_version": 1, "root": root, "identity": "A",
             })
             self.assertTrue(adopted)
             self.assertIsInstance(relay_b.storage, LocalFolderRelayStorage)
@@ -1565,7 +1565,7 @@ class RelayLogicTests(unittest.TestCase):
             self.assertIsNotNone(existing)
 
             adopted = relay_b.adopt_storage_from_descriptor({
-                "type": "sftp", "version": 1, "host": "other.test",
+                "type": "sftp", "descriptor_version": 1, "host": "other.test",
                 "port": 22, "root": "/elsewhere", "identity": "A",
                 "username": "u", "password": "p",
             })
@@ -1647,7 +1647,7 @@ class RelayLogicTests(unittest.TestCase):
             config["_relay_manager"] = manager
             relay = manager.primary
             # A relay peer with a cached perspective + a stubbed liveness.
-            bob = PRSPNode({"type": "kanban_board", "name": "Bob board"})
+            bob = ProtocolNode({"type": "kanban_board", "name": "Bob board"})
             bob.refresh_hashes()
             session.apply_peer_subtree("relay:B", bob, None)
             relay._own_presence_mtime = 100.0
@@ -1838,10 +1838,10 @@ class RelayLogicTests(unittest.TestCase):
         kanban = KanbanLogic(session, {})
         # Two peers whose content is cached but whose identity isn't - a
         # board subtree carries no identity_key, so both resolve to id "".
-        board_b = PRSPNode({"type": "kanban_board", "name": "B board"})
+        board_b = ProtocolNode({"type": "kanban_board", "name": "B board"})
         board_b.refresh_hashes()
         session.apply_peer_subtree("relay:B", board_b, None)
-        board_c = PRSPNode({"type": "kanban_board", "name": "C board"})
+        board_c = ProtocolNode({"type": "kanban_board", "name": "C board"})
         board_c.refresh_hashes()
         session.apply_peer_subtree("relay:C", board_c, None)
 

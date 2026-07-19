@@ -5,7 +5,7 @@ from pathlib import Path
 
 import app_server
 from kanban_logic import KanbanLogic
-from protocol import PRSPNode
+from protocol import ProtocolNode
 from session import Session
 
 
@@ -25,7 +25,7 @@ def connect(host, guest, board_uuid: str | None = None) -> dict:
         guest,
         identity=host.session.identity.to_dict(),
         topic_uuids=topic_uuids,
-        channels=[{"type": "http", "version": 1, "address": host.address}],
+        channels=[{"type": "http", "descriptor_version": 1, "address": host.address}],
     )
 
 
@@ -242,12 +242,12 @@ class KanbanNewLogicTests(unittest.TestCase):
         right_payload = right.session.get_subtree(board.uuid)
         left.session.apply_peer_subtree(
             right.address,
-            PRSPNode.from_dict(right_payload["subtree"]),
+            ProtocolNode.from_dict(right_payload["subtree"]),
             right_payload["parent_uuid"],
         )
         right.session.apply_peer_subtree(
             left.address,
-            PRSPNode.from_dict(left_payload["subtree"]),
+            ProtocolNode.from_dict(left_payload["subtree"]),
             left_payload["parent_uuid"],
         )
 
@@ -382,7 +382,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         payload = right.session.get_subtree(board.uuid)
         left.session.apply_peer_subtree(
             right.address,
-            PRSPNode.from_dict(payload["subtree"]),
+            ProtocolNode.from_dict(payload["subtree"]),
             payload["parent_uuid"],
         )
         left.logic.board_payload()
@@ -565,7 +565,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         for runtime in (left, right):
             for node_uuid in runtime.session.protocol.index:
                 subtree = runtime.session.get_subtree(node_uuid)
-                PRSPNode.from_dict(subtree["subtree"])
+                ProtocolNode.from_dict(subtree["subtree"])
 
     def test_auto_adopt_off_keeps_difference_until_adopt(self):
         left = self.runtime(8305)
@@ -600,7 +600,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         card = runtime.logic.create_card(column.uuid, "Original", "", []).value
         runtime.session.apply_peer_subtree(
             "http://peer",
-            PRSPNode.from_dict(runtime.session.protocol.index[board.uuid].to_dict()),
+            ProtocolNode.from_dict(runtime.session.protocol.index[board.uuid].to_dict()),
             runtime.session.protocol.root.uuid,
         )
         previous = runtime.session.get_cached_peer_subtree("http://peer", card.uuid)
@@ -753,7 +753,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.logic.set_auto_adopt_mode("never")
 
         left.logic.move_card(card.uuid, second.uuid, 0)
-        PRSPNode.from_dict(left.session.protocol.root.to_dict())
+        ProtocolNode.from_dict(left.session.protocol.root.to_dict())
         left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         payload = right.logic.board_payload()
 
@@ -767,7 +767,7 @@ class KanbanNewLogicTests(unittest.TestCase):
             right.session.protocol.index[card.uuid].parent_uuid,
             second.uuid,
         )
-        PRSPNode.from_dict(right.session.protocol.root.to_dict())
+        ProtocolNode.from_dict(right.session.protocol.root.to_dict())
 
     def test_transition_event_prevents_stale_peer_rollback(self):
         left = self.runtime(8307)
@@ -831,8 +831,8 @@ class KanbanNewLogicTests(unittest.TestCase):
                 "type": "divergence",
                 "original_type": "local_made_changes",
                 "peer_addr": "http://127.0.0.1:8002",
-                "local_revision_origin_identity": local_identity,
-                "peer_revision_origin_identity": local_identity,
+                "local_revision_origin": local_identity,
+                "peer_revision_origin": local_identity,
                 "local_base_hash": "base",
                 "peer_base_hash": "base",
             },
@@ -1001,7 +1001,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         left = self.runtime(8331)
         right = self.runtime(8332)
         left.logic.set_user_profile("Alice", "")
-        peer_identity = PRSPNode.from_dict(left.logic.user_profile().to_dict())
+        peer_identity = ProtocolNode.from_dict(left.logic.user_profile().to_dict())
         right.session.apply_peer_subtree(
             left.address,
             peer_identity,
