@@ -411,16 +411,16 @@
         unassigned.value = "";
         unassigned.textContent = "Not assigned";
         targetSelect.append(unassigned);
-        for (const target of state.relay_targets || []) {
+        for (const target of state.channel_targets || []) {
           const option = document.createElement("option");
           option.value = target.id;
           option.textContent = target.name;
           targetSelect.append(option);
         }
-        targetSelect.value = state.relay_target_id || "";
+        targetSelect.value = state.channel_target_id || "";
         targetSelect.onchange = async () => {
           try {
-            await api("/api/relay/topics/assign", {
+            await api("/api/channels/mailbox/topics/assign", {
               topic_uuid: state.board.uuid,
               target_id: targetSelect.value || null,
             });
@@ -450,7 +450,7 @@
         copyBtn.onclick = async () => {
           try {
             const token = await api("/api/connect_token", {
-              target_id: targetSelect.value,
+              channel_options: { mailbox: { target_id: targetSelect.value } },
               topic_uuids: [state.board.uuid],
             });
             await navigator.clipboard.writeText(btoa(JSON.stringify(token)));
@@ -515,11 +515,11 @@
 
       function peerPresence(addr) {
         // One presence answer per peer: relay peers get real liveness from
-        // presence-file mtimes (server-attached relay_liveness) - their
+        // presence-file mtimes (server-attached channel_liveness) - their
         // http-shaped peer_status is always "online, never seen", which
         // made a stopped relay peer look permanently alive. Direct peers
         // keep the http status.
-        const relayLive = state.network?.peers?.[addr]?.relay_liveness;
+        const relayLive = state.network?.peers?.[addr]?.channel_liveness;
         if (relayLive) {
           if (relayLive.state === "alive") {
             const ago = Math.max(0, Math.round(relayLive.last_seen_seconds_ago || 0));

@@ -79,43 +79,27 @@ APPLICATION_MANIFEST = ApplicationManifest(
 
 class KanbanLogic:
     def __init__(self, session: Session, config: dict | None = None,
-                 relay_manager=None):
+                 channel_manager=None):
         self.session = session
         self.config = config or {}
-        self.relay_manager = relay_manager
+        self.channel_manager = channel_manager
         # Revision ownership must exist before the first board/card mutation.
         # Session.identity bootstraps its own origin without recursion.
         self.session.identity
-        self._migrate_legacy_relay_assignments()
 
     def application_registration(self) -> ApplicationRegistration:
         return ApplicationRegistration(
             KANBAN_APPLICATION_ID,
             frozenset({"kanban_board"}),
             self.boards,
-            self.accept_relay_board,
+            self.accept_board_invitation,
             assignment_scoped=True,
             mount_invitation=True,
             on_peer_update=self.on_peer_update,
         )
 
-    def _relay_manager(self):
-        return self.relay_manager or self.config.get("_relay_manager")
-
-    def _migrate_legacy_relay_assignments(self) -> None:
-        """Move the former app-owned board map into transport-owned topic state."""
-        apps = self.session.app_metadata.get("apps")
-        metadata = apps.get(KANBAN_APP_NAME) if isinstance(apps, dict) else None
-        legacy = metadata.pop("board_target", None) if isinstance(metadata, dict) else None
-        if not isinstance(legacy, dict) or not legacy:
-            return
-        current = self.session.app_metadata.setdefault("relay_topic_targets", {})
-        if not isinstance(current, dict):
-            current = {}
-            self.session.app_metadata["relay_topic_targets"] = current
-        for topic_uuid, target_id in legacy.items():
-            if topic_uuid and target_id:
-                current.setdefault(str(topic_uuid), str(target_id))
+    def _channel_manager(self):
+        return self.channel_manager
 
     def board_payload(self, auto_adopt: bool = True) -> dict:
         board = self.ensure_board()
@@ -123,14 +107,14 @@ class KanbanLogic:
             self.adopt_all_incoming_changes()
             board = self.ensure_board()
         events = self.transition_events(board.uuid)
-        relay_manager = self._relay_manager()
+        channel_manager = self._channel_manager()
         return {
             "address": self.session.address,
             "board": board.to_dict(),
             "boards": [item.to_dict() for item in self.boards()],
             "user_profile": self.user_profile().to_dict(),
             "users": self.users(),
-            "network": self._network_info_with_relay_liveness(board.uuid),
+            "network": self._network_info(board.uuid),
             "peers": {
                 addr: tree.to_dict()
                 for addr, tree in sorted(self.session.peer_perspectives.items())
@@ -140,8 +124,8 @@ class KanbanLogic:
             "transition_by_node": self.transition_by_node(events),
             "agenda_items": [item.to_dict() for item in self.agenda_items(board)],
             "comments_by_card": self._comments_by_card(board),
-            "relay_targets": relay_manager.list_targets() if relay_manager else [],
-            "relay_target_id": relay_manager.target_for_topic(board.uuid) if relay_manager else None,
+            "channel_targets": channel_manager.list_targets() if channel_manager else [],
+            "channel_target_id": channel_manager.target_for_topic(board.uuid) if channel_manager else None,
         }
 
     def _comments_by_card(self, board: ProtocolNode) -> dict:
@@ -168,30 +152,12 @@ class KanbanLogic:
                 ]
         return out
 
-    def _network_info_with_relay_liveness(self, board_uuid: str | None = None) -> dict:
-        # Relay peers have no http reachability signal, so peer_status
-        # always shows them "online, last_seen: never" - a stopped peer
-        # looked permanently alive (review U-7). The relay layer already
-        # computes real liveness from presence-file mtimes
-        # (RelayLogic.peer_liveness); attach it per relay peer so the UI
-        # can show stale/unknown honestly. The instance access mirrors
-        # accept_connect_token's (relay stashes itself in the shared
-        # config dict); absent relay config, the payload is unchanged.
-        info = self.session.get_network_info()
-        relay_manager = self._relay_manager()
-        if relay_manager is None:
-            return info
-        for addr, peer_info in (info.get("peers") or {}).items():
-            if addr.startswith("relay:"):
-                peer_id = addr.split(":", 1)[1]
-                # Prefer the liveness reported by the board's own target; with
-                # no board context, let the manager pick the freshest record
-                # across every connection that knows this identity.
-                peer_info["relay_liveness"] = relay_manager.peer_liveness(
-                    peer_id,
-                    relay_manager.target_for_topic(board_uuid) if board_uuid else None,
-                )
-        return info
+    def _network_info(self, board_uuid: str | None = None) -> dict:
+        channel_manager = self._channel_manager()
+        return (
+            channel_manager.network_info(board_uuid)
+            if channel_manager else self.session.get_network_info()
+        )
 
     def auto_adopt_mode(self, board: ProtocolNode | None = None) -> str:
         board = board or self.ensure_board()
@@ -268,9 +234,9 @@ class KanbanLogic:
         self._remember_board(board.uuid, explicit=True)
         return SessionResult("ok", value=board.uuid)
 
-    def accept_relay_board(self, subtree: ProtocolNode) -> SessionResult:
-        # Grafts a board first discovered via the relay (not a live P2P
-        # join) into our own board list. A genuinely new shared board starts
+    def accept_board_invitation(self, subtree: ProtocolNode) -> SessionResult:
+        # Grafts a board first discovered through any channel into our own
+        # board list. A genuinely new shared board starts
         # fully collaborative; reconnecting an existing board never reaches
         # this path and therefore retains its local per-board setting.
         was_known = subtree.uuid in self.session.protocol.index
@@ -320,9 +286,9 @@ class KanbanLogic:
         board = self.session.protocol.index.get(board_uuid)
         if not board or board.data.get("type") != "kanban_board":
             return SessionResult("error", reason="board not found")
-        relay_manager = self._relay_manager()
-        if relay_manager:
-            relay_manager.assign_topic_target(board_uuid, None)
+        channel_manager = self._channel_manager()
+        if channel_manager:
+            channel_manager.assign_topic_target(board_uuid, None)
         result = self.session.delete(board.uuid)
         if result.status != "ok":
             return result
@@ -350,21 +316,18 @@ class KanbanLogic:
         board = self.session.protocol.index.get(board_uuid) if board_uuid else self.ensure_board()
         if not board or board.data.get("type") != "kanban_board":
             return {"status": "error", "reason": "board not found"}
-        # Unsharing must also unmark the board in relay's `shared` intent,
-        # or relay keeps publishing it (and stays armed) forever - `shared`
-        # has no other shrink path (review R-3). Done before the peer check
-        # below: a board shared via token but never yet accepted by anyone
-        # has no peers, yet its relay publishing still has to stop.
-        relay_manager = self._relay_manager()
-        if relay_manager is not None:
-            relay_manager.assign_topic_target(board.uuid, None)
+        # Detach the board before the peer check: token creation may already
+        # have armed channel publication even when nobody accepted it yet.
+        channel_manager = self._channel_manager()
+        if channel_manager is not None:
+            channel_manager.assign_topic_target(board.uuid, None)
         board_peers = [
             peer for peer, topics in sorted(self.session.peer_topic_sets.items())
             if board.uuid in topics
         ]
         if not board_peers:
             return {"status": "ok", "topic_uuids": []}
-        deliveries = runtime.adapter.leave_topic(board.uuid)
+        deliveries = runtime.channel_manager.leave_topic(board.uuid)
         removed_topics = {board.uuid}
         any_board_remaining = any(
             self._is_kanban_board_topic(self.session.protocol.index.get(topic_uuid))
@@ -378,7 +341,7 @@ class KanbanLogic:
                 for topic_uuid in topics
             })
             removed_topics.update(profile_topics)
-            deliveries.extend(runtime.adapter.disconnect())
+            deliveries.extend(runtime.channel_manager.disconnect())
         errors = [
             {"effect_type": item.effect_type, "target": item.target, "reason": item.reason}
             for item in deliveries
@@ -396,7 +359,7 @@ class KanbanLogic:
         users = [self._user_info(self.session.address, self.user_profile())]
         # Union with peer_perspectives, not just members - a relay-only
         # peer (e.g. "relay:B") never goes through add_peer (deliberately;
-        # see Session.note_relay_peer_topic), so it would never appear here
+        # see Session.note_indirect_peer_topic), so it would never appear here
         # if this only looked at members. Their identity is still visible
         # via the ordinary peer_perspectives cache, same as any HTTP peer's.
         addrs = (self.session.members | set(self.session.peer_perspectives)) - {self.session.address}
@@ -1255,7 +1218,7 @@ class KanbanLogic:
         # No "assume it's the profile if it's not a board we recognize"
         # fallback here on purpose: that used to be safe when a peer's only
         # ever-fetched topics were exactly one board plus one profile
-        # (join_discussion's own accept-time guarantee), but relay now
+        # (join_discussion's own accept-time guarantee), but an indirect channel now
         # tracks every topic a peer publishes via peer_topic_sets - a board
         # this side never grafted locally has no entry in
         # self.session.protocol.index either, so "not a board" and "is the
@@ -1308,7 +1271,7 @@ class KanbanLogic:
 
 
 def create_logic(session: Session, config: dict) -> KanbanLogic:
-    logic = KanbanLogic(session, config, config.get("_relay_manager"))
+    logic = KanbanLogic(session, config)
     session.register_application(logic.application_registration())
     return logic
 
@@ -1317,7 +1280,7 @@ def create_application(services: ApplicationServices) -> ApplicationInstance:
     logic = KanbanLogic(
         services.session,
         dict(services.settings),
-        services.relay_manager,
+        services.channel_manager,
     )
     return ApplicationInstance(
         manifest=APPLICATION_MANIFEST,
@@ -1331,7 +1294,7 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
     async def api_board(request: Request):
         result = await asyncio.to_thread(logic.on_peer_update)
         if result.value:
-            await asyncio.to_thread(runtime.adapter.execute_effects, result.effects)
+            await asyncio.to_thread(runtime.channel_manager.execute_effects, result.effects)
             runtime.notify_change()
         return JSONResponse(logic.board_payload(auto_adopt=False))
 
@@ -1506,7 +1469,9 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
 async def _json_result(runtime, result: SessionResult) -> JSONResponse:
     if result.status != "ok":
         return JSONResponse({"status": "error", "reason": result.reason}, status_code=409)
-    deliveries = await asyncio.to_thread(runtime.adapter.execute_effects, result.effects)
+    deliveries = await asyncio.to_thread(
+        runtime.channel_manager.execute_effects, result.effects,
+    )
     runtime.notify_change()
     payload: dict[str, Any] = {"status": "ok"}
     if hasattr(result.value, "to_dict"):

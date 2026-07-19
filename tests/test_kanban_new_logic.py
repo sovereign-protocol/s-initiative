@@ -21,12 +21,14 @@ def connect(host, guest, board_uuid: str | None = None) -> dict:
     topic_uuids = [profile_uuid] if board_uuid is None else [board_uuid, profile_uuid]
     for topic_uuid in topic_uuids:
         host.session.start_discussion(topic_uuid)
-    return app_server.accept_connect_token(
-        guest,
-        identity=host.session.identity.to_dict(),
-        topic_uuids=topic_uuids,
-        channels=[{"type": "http", "descriptor_version": 1, "address": host.address}],
+    result = guest.channel_manager.accept_invitation(
+        host.session.identity.to_dict(),
+        topic_uuids,
+        [{"type": "http", "descriptor_version": 1, "address": host.address}],
     )
+    return result.value if result.ok else {
+        "status": "error", "reason": result.reason,
+    }
 
 
 class MemoryHttpClient:
@@ -1461,20 +1463,6 @@ class KanbanNewLogicTests(unittest.TestCase):
             runtime.session.app_metadata["apps"]["kanban"]["selected_board_uuid"],
             board.uuid,
         )
-
-    def test_legacy_board_target_assignments_migrate_to_generic_topics(self):
-        session = Session("addr-a")
-        session.app_metadata = {
-            "apps": {"S-Kanban": {"board_target": {"board-1": "target-1"}}},
-        }
-
-        KanbanLogic(session, {})
-
-        self.assertEqual(
-            session.app_metadata["relay_topic_targets"],
-            {"board-1": "target-1"},
-        )
-        self.assertNotIn("board_target", session.app_metadata["apps"]["S-Kanban"])
 
     def test_auto_adopt_is_local_app_metadata(self):
         runtime = self.runtime(8360)

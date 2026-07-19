@@ -10,6 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sovereign.blob_store import BlobStore
+from sovereign.channel import ChannelManager
+from sovereign.mailbox_channel import MailboxChannel
 from sovereign.profile import CoreProfileService
 from s_kanban.logic import KanbanLogic as _KanbanLogic
 from sovereign.protocol import ProtocolNode
@@ -20,9 +22,9 @@ from sovereign.relay_storage import LocalFolderRelayStorage, SftpRelayStorage
 from sovereign.session import Session
 
 
-def KanbanLogic(session, config):
+def KanbanLogic(session, config, channel_manager=None):
     """Construct registered app logic without a full ApplicationHost."""
-    logic = _KanbanLogic(session, config)
+    logic = _KanbanLogic(session, config, channel_manager)
     session.register_application(logic.application_registration())
     return logic
 
@@ -1654,14 +1656,16 @@ class RelayLogicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session = Session("addr-a")
             config = self._relay_config(relay_root, "A", state_dir)
-            kanban = KanbanLogic(session, config)
             manager = RelayManager(session, config)
-            config["_relay_manager"] = manager
+            channels = ChannelManager(session)
+            channels.register(MailboxChannel(manager))
+            kanban = KanbanLogic(session, config, channels)
             relay = manager.primary
             # A relay peer with a cached perspective + a stubbed liveness.
             bob = ProtocolNode({"type": "kanban_board", "name": "Bob board"})
             bob.refresh_hashes()
             session.apply_peer_subtree("relay:B", bob, None)
+            session.note_peer_channel("relay:B", "mailbox")
             relay._own_presence_mtime = 100.0
             relay.storage.read_presence_with_mtime = lambda peer_id: (
                 {"poll_interval_seconds": 3}, 99.0,
@@ -1670,8 +1674,8 @@ class RelayLogicTests(unittest.TestCase):
             payload = kanban.board_payload(auto_adopt=False)
 
             peer = payload["network"]["peers"]["relay:B"]
-            self.assertIn("relay_liveness", peer)
-            self.assertEqual(peer["relay_liveness"]["state"], "alive")
+            self.assertIn("channel_liveness", peer)
+            self.assertEqual(peer["channel_liveness"]["state"], "alive")
 
     def test_unmark_topics_shared_disarms_relay(self):
         # Review R-3: `shared` had no shrink path - unsharing a board never
@@ -1697,10 +1701,11 @@ class RelayLogicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
             config = self._relay_config(relay_root, "A", state_dir)
-            kanban_a = KanbanLogic(session_a, config)
-            board_uuid = kanban_a.create_board("Shared Board").value
             manager = RelayManager(session_a, config)
-            config["_relay_manager"] = manager
+            channels = ChannelManager(session_a)
+            channels.register(MailboxChannel(manager))
+            kanban_a = KanbanLogic(session_a, config, channels)
+            board_uuid = kanban_a.create_board("Shared Board").value
             target_id = manager.list_targets()[0]["id"]
             manager.assign_topic_target(board_uuid, target_id)
             connection = manager.connection_for_target(target_id)
@@ -1801,7 +1806,7 @@ class RelayLogicTests(unittest.TestCase):
 
     def test_users_includes_relay_only_peer_via_peer_perspectives(self):
         # kanban_logic.users() used to only look at session.members, which
-        # a relay-only peer ("relay:A") never joins - note_relay_peer_topic
+        # a relay-only peer ("relay:A") never joins - note_indirect_peer_topic
         # deliberately keeps relay peers out of the live-connection
         # machinery (add_peer), so they'd never show up here at all without
         # also unioning in peer_perspectives, where their cached identity
@@ -1932,7 +1937,7 @@ class RelayLogicTests(unittest.TestCase):
             self.assertTrue(relay2.has_active_relationship())
 
             session3 = Session("addr-c")
-            session3.note_relay_peer_topic("relay:D", "board-1")  # a relay peer exists
+            session3.note_indirect_peer_topic("relay:D", "board-1")  # an indirect peer exists
             relay3 = RelayLogic(session3, self._relay_config(relay_root, "C", state_dir))
             self.assertTrue(relay3.has_active_relationship())
 
