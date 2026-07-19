@@ -54,7 +54,7 @@ def connect_over_http(host_port: int, guest_port: int, board_uuid: str) -> dict:
     token = request_json(
         "POST",
         f"http://127.0.0.1:{host_port}/api/connect_token",
-        {"board_uuids": [board_uuid]},
+        {"topic_uuids": [board_uuid]},
         timeout=20,
     )
     return request_json(

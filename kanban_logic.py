@@ -71,6 +71,28 @@ class KanbanLogic:
         # Revision ownership must exist before the first board/card mutation.
         # Session.identity bootstraps its own origin without recursion.
         self.session.identity
+        self._migrate_legacy_relay_assignments()
+        self.session.shared_topics.register(
+            KANBAN_APP_NAME,
+            {"kanban_board"},
+            self.boards,
+            self.accept_relay_board,
+        )
+
+    def _migrate_legacy_relay_assignments(self) -> None:
+        """Move the former app-owned board map into transport-owned topic state."""
+        apps = self.session.app_metadata.get("apps")
+        metadata = apps.get(KANBAN_APP_NAME) if isinstance(apps, dict) else None
+        legacy = metadata.pop("board_target", None) if isinstance(metadata, dict) else None
+        if not isinstance(legacy, dict) or not legacy:
+            return
+        current = self.session.app_metadata.setdefault("relay_topic_targets", {})
+        if not isinstance(current, dict):
+            current = {}
+            self.session.app_metadata["relay_topic_targets"] = current
+        for topic_uuid, target_id in legacy.items():
+            if topic_uuid and target_id:
+                current.setdefault(str(topic_uuid), str(target_id))
 
     def board_payload(self, auto_adopt: bool = True) -> dict:
         board = self.ensure_board()
@@ -96,7 +118,7 @@ class KanbanLogic:
             "agenda_items": [item.to_dict() for item in self.agenda_items(board)],
             "comments_by_card": self._comments_by_card(board),
             "relay_targets": relay_manager.list_targets() if relay_manager else [],
-            "relay_target_id": relay_manager.target_for_board(board.uuid) if relay_manager else None,
+            "relay_target_id": relay_manager.target_for_topic(board.uuid) if relay_manager else None,
         }
 
     def _comments_by_card(self, board: PRSPNode) -> dict:
@@ -144,7 +166,7 @@ class KanbanLogic:
                 # across every connection that knows this identity.
                 peer_info["relay_liveness"] = relay_manager.peer_liveness(
                     peer_id,
-                    relay_manager.target_for_board(board_uuid) if board_uuid else None,
+                    relay_manager.target_for_topic(board_uuid) if board_uuid else None,
                 )
         return info
 
@@ -275,7 +297,7 @@ class KanbanLogic:
             return SessionResult("error", reason="board not found")
         relay_manager = self.config.get("_relay_manager")
         if relay_manager:
-            relay_manager.assign_board_target(board_uuid, None)
+            relay_manager.assign_topic_target(board_uuid, None)
         result = self.session.delete(board.uuid)
         if result.status != "ok":
             return result
@@ -310,7 +332,7 @@ class KanbanLogic:
         # has no peers, yet its relay publishing still has to stop.
         relay_manager = self.config.get("_relay_manager")
         if relay_manager is not None:
-            relay_manager.assign_board_target(board.uuid, None)
+            relay_manager.assign_topic_target(board.uuid, None)
         board_peers = [
             peer for peer, topics in sorted(self.session.peer_topic_sets.items())
             if board.uuid in topics

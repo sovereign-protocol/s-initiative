@@ -634,7 +634,7 @@ class RelayManagerTests(unittest.TestCase):
                 "name": "Old", "backend": "local", "root": root_a,
             }).value
             old_connection = manager.connection_for_target(target_id)
-            manager.assign_board_target(board_uuid, target_id)
+            manager.assign_topic_target(board_uuid, target_id)
             old_connection.mark_topics_desired([board_uuid])
 
             result = manager.update_target(target_id, {
@@ -644,7 +644,7 @@ class RelayManagerTests(unittest.TestCase):
 
             self.assertEqual(result.status, "ok")
             self.assertIsNot(new_connection, old_connection)
-            self.assertEqual(manager.target_for_board(board_uuid), target_id)
+            self.assertEqual(manager.target_for_topic(board_uuid), target_id)
             self.assertIn(board_uuid, new_connection._state["shared"])
             self.assertIn(board_uuid, new_connection._state["desired"])
             self.assertIsNone(old_connection.storage)
@@ -721,15 +721,15 @@ class RelayManagerTests(unittest.TestCase):
             target_a = manager.create_target({"name": "A", "backend": "local", "root": root_a}).value
             target_b = manager.create_target({"name": "B", "backend": "local", "root": root_b}).value
 
-            manager.assign_board_target(board_a, target_a)
-            manager.assign_board_target(board_b, target_b)
+            manager.assign_topic_target(board_a, target_a)
+            manager.assign_topic_target(board_b, target_b)
 
             identity = session.identity.uuid
             self.assertEqual(manager.connection_for_target(target_a).relay_topic_uuids(), [board_a, identity])
             self.assertEqual(manager.connection_for_target(target_b).relay_topic_uuids(), [board_b, identity])
 
             manager.connection_for_target(target_a).mark_topics_desired([board_a])
-            manager.assign_board_target(board_a, None)
+            manager.assign_topic_target(board_a, None)
             self.assertEqual(manager.connection_for_target(target_a).relay_topic_uuids(), [identity])
             self.assertNotIn(board_a, manager.connection_for_target(target_a)._state["desired"])
 
@@ -742,7 +742,7 @@ class RelayManagerTests(unittest.TestCase):
                 "name": "Old", "backend": "local", "root": root_a,
             }).value
             old_connection = manager.connection_for_target(target_a)
-            manager.assign_board_target(board_uuid, target_a)
+            manager.assign_topic_target(board_uuid, target_a)
             old_connection.mark_topics_desired([board_uuid])
 
             result = manager.accept_descriptor({
@@ -751,7 +751,7 @@ class RelayManagerTests(unittest.TestCase):
             }, [board_uuid, "profile-b"], "profile-b")
 
             self.assertEqual(result.status, "ok")
-            self.assertNotEqual(manager.target_for_board(board_uuid), target_a)
+            self.assertNotEqual(manager.target_for_topic(board_uuid), target_a)
             self.assertNotIn(board_uuid, old_connection._state["shared"])
             self.assertNotIn(board_uuid, old_connection._state["desired"])
 
@@ -784,6 +784,105 @@ class RelayManagerTests(unittest.TestCase):
 
 
 class RelayLogicTests(unittest.TestCase):
+    def test_relay_syncs_an_application_topic_without_knowing_the_application(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            folder_a = session_a.create_child(
+                session_a.protocol.root.uuid, {"type": "agreement_folder"}, {},
+            ).value
+            agreement = session_a.create_child(
+                folder_a.uuid, {"type": "agreement", "title": "Terms"}, {},
+            ).value
+            clause = session_a.create_child(
+                agreement.uuid, {"type": "clause", "text": "First version"}, {},
+            ).value
+            session_a.shared_topics.register(
+                "test-agreement",
+                {"agreement"},
+                lambda: [agreement.uuid],
+                lambda tree: session_a.accept_topic_invitation(tree, folder_a.uuid),
+            )
+            relay_a = RelayLogic(
+                session_a, self._relay_config(relay_root, "A", state_dir),
+            )
+            relay_a.publish_due_topics()
+
+            session_b = Session("addr-b")
+            folder_b = session_b.create_child(
+                session_b.protocol.root.uuid, {"type": "agreement_folder"}, {},
+            ).value
+            session_b.shared_topics.register(
+                "test-agreement",
+                {"agreement"},
+                lambda: [
+                    child.uuid for child in session_b.protocol.index[folder_b.uuid].children
+                    if child.data.get("type") == "agreement"
+                ],
+                lambda tree: session_b.accept_topic_invitation(tree, folder_b.uuid),
+            )
+            relay_b = RelayLogic(
+                session_b, self._relay_config(relay_root, "B", state_dir),
+            )
+            relay_b.mark_topics_desired([agreement.uuid])
+
+            self.assertIn((agreement.uuid, "A"), relay_b.poll_and_apply())
+            self.assertEqual(
+                session_b.protocol.index[agreement.uuid].parent_uuid, folder_b.uuid,
+            )
+            self.assertEqual(session_b.protocol.index[clause.uuid].data["text"], "First version")
+
+            session_a.modify(
+                clause.uuid, {"type": "clause", "text": "Revised by A"}, {},
+            )
+            relay_a.publish_due_topics()
+            relay_b.poll_and_apply()
+
+            events = session_b.analyze_peer_transitions("relay:A", agreement.uuid)
+            clause_event = next(event for event in events if event["node_uuid"] == clause.uuid)
+            self.assertNotEqual(clause_event["type"], "in_agreement")
+
+    def test_desired_unknown_topic_mounts_after_its_application_registers(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            folder_a = session_a.create_child(
+                session_a.protocol.root.uuid, {"type": "agreement_folder"}, {},
+            ).value
+            agreement = session_a.create_child(
+                folder_a.uuid, {"type": "agreement", "title": "Terms"}, {},
+            ).value
+            session_a.shared_topics.register(
+                "test-agreement", {"agreement"}, lambda: [agreement.uuid],
+                lambda tree: session_a.accept_topic_invitation(tree, folder_a.uuid),
+            )
+            relay_a = RelayLogic(
+                session_a, self._relay_config(relay_root, "A", state_dir),
+            )
+            relay_a.publish_due_topics()
+
+            session_b = Session("addr-b")
+            relay_b = RelayLogic(
+                session_b, self._relay_config(relay_root, "B", state_dir),
+            )
+            relay_b.mark_topics_desired([agreement.uuid])
+            relay_b.poll_and_apply()
+            self.assertNotIn(agreement.uuid, session_b.protocol.index)
+            self.assertIsNotNone(
+                session_b.get_cached_peer_subtree("relay:A", agreement.uuid),
+            )
+
+            folder_b = session_b.create_child(
+                session_b.protocol.root.uuid, {"type": "agreement_folder"}, {},
+            ).value
+            session_b.shared_topics.register(
+                "test-agreement", {"agreement"}, lambda: [],
+                lambda tree: session_b.accept_topic_invitation(tree, folder_b.uuid),
+            )
+            relay_b.poll_and_apply()
+
+            self.assertEqual(
+                session_b.protocol.index[agreement.uuid].parent_uuid, folder_b.uuid,
+            )
+
     def test_profile_blob_is_published_before_head_and_cached_by_peer(self):
         with tempfile.TemporaryDirectory() as relay_root, \
                 tempfile.TemporaryDirectory() as state_dir, \
@@ -1526,6 +1625,7 @@ class RelayLogicTests(unittest.TestCase):
             descriptor = relay_a.channel_descriptor()
 
             session_b = Session("addr-b")
+            kanban_b = KanbanLogic(session_b, {})
             relay_b = RelayLogic(session_b, {"relay_state_file": str(Path(state_dir) / "b.json")})
             self.assertIsNone(relay_b.storage)
 
@@ -1534,7 +1634,6 @@ class RelayLogicTests(unittest.TestCase):
             applied = relay_b.poll_and_apply()
 
             self.assertIn((board_uuid, "A"), applied)
-            kanban_b = KanbanLogic(session_b, {})
             self.assertIn(board_uuid, [b.uuid for b in kanban_b.boards()])
 
     def test_board_payload_attaches_relay_liveness_for_relay_peers(self):
@@ -1591,7 +1690,7 @@ class RelayLogicTests(unittest.TestCase):
             manager = RelayManager(session_a, config)
             config["_relay_manager"] = manager
             target_id = manager.list_targets()[0]["id"]
-            manager.assign_board_target(board_uuid, target_id)
+            manager.assign_topic_target(board_uuid, target_id)
             connection = manager.connection_for_target(target_id)
             self.assertIn(board_uuid, connection._state["shared"])
 
@@ -1599,7 +1698,7 @@ class RelayLogicTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "ok")
             self.assertEqual(connection._state["shared"], [])
-            self.assertIsNone(manager.target_for_board(board_uuid))
+            self.assertIsNone(manager.target_for_topic(board_uuid))
 
     def test_delete_topic_clears_shared_too(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
@@ -1861,13 +1960,13 @@ class RelayLogicTests(unittest.TestCase):
             relay_a.publish_due_topics()
 
             session_b = Session("addr-b")
+            kanban_b = KanbanLogic(session_b, {})
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
             accept_result = relay_b.mark_topics_desired([board_uuid])
             self.assertEqual(accept_result.status, "ok")
             applied = relay_b.poll_and_apply()
 
             self.assertIn((board_uuid, "A"), applied)
-            kanban_b = KanbanLogic(session_b, {})
             self.assertIn(board_uuid, [b.uuid for b in kanban_b.boards()])
             self.assertEqual(kanban_b.auto_adopt_mode(session_b.protocol.index[board_uuid]), "always")
 
@@ -1884,6 +1983,7 @@ class RelayLogicTests(unittest.TestCase):
             relay_a.publish_due_topics()
 
             session_b = Session("addr-b")
+            kanban_b = KanbanLogic(session_b, {})
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
             relay_b.poll_and_apply()  # caches it before any token exists
             kanban_b = KanbanLogic(session_b, {})
@@ -1922,6 +2022,7 @@ class RelayLogicTests(unittest.TestCase):
             relay_a.publish_due_topics()
 
             session_b = Session("addr-b")
+            kanban_b = KanbanLogic(session_b, {})
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
             relay_b.mark_topics_desired([board_uuid])
             relay_b.poll_and_apply()
@@ -1931,7 +2032,6 @@ class RelayLogicTests(unittest.TestCase):
             applied = relay_b.poll_and_apply()
 
             self.assertEqual(applied, [(board_uuid, "A")])
-            kanban_b = KanbanLogic(session_b, {})
             # Accepted boards default to "never" (manual review), matching
             # the live-join accept path - opt in explicitly to prove the
             # later card is visible to auto-adopt once the user does so.

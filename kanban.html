@@ -420,8 +420,8 @@
         targetSelect.value = state.relay_target_id || "";
         targetSelect.onchange = async () => {
           try {
-            await api("/api/relay/boards/assign", {
-              board_uuid: state.board.uuid,
+            await api("/api/relay/topics/assign", {
+              topic_uuid: state.board.uuid,
               target_id: targetSelect.value || null,
             });
             await loadBoard();
@@ -451,7 +451,7 @@
           try {
             const token = await api("/api/connect_token", {
               target_id: targetSelect.value,
-              board_uuids: [state.board.uuid],
+              topic_uuids: [state.board.uuid],
             });
             await navigator.clipboard.writeText(btoa(JSON.stringify(token)));
             showToast("Token copied");

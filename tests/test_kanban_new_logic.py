@@ -6,6 +6,7 @@ from pathlib import Path
 import app_server
 from kanban_logic import KanbanLogic
 from protocol import PRSPNode
+from session import Session
 
 
 def connect(host, guest, board_uuid: str | None = None) -> dict:
@@ -1456,6 +1457,20 @@ class KanbanNewLogicTests(unittest.TestCase):
             runtime.session.app_metadata["apps"]["S-Kanban"]["selected_board_uuid"],
             board.uuid,
         )
+
+    def test_legacy_board_target_assignments_migrate_to_generic_topics(self):
+        session = Session("addr-a")
+        session.app_metadata = {
+            "apps": {"S-Kanban": {"board_target": {"board-1": "target-1"}}},
+        }
+
+        KanbanLogic(session, {})
+
+        self.assertEqual(
+            session.app_metadata["relay_topic_targets"],
+            {"board-1": "target-1"},
+        )
+        self.assertNotIn("board_target", session.app_metadata["apps"]["S-Kanban"])
 
     def test_auto_adopt_is_local_app_metadata(self):
         runtime = self.runtime(8360)
