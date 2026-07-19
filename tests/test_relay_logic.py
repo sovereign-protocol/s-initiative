@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import stat as stat_module
@@ -8,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from blob_store import BlobStore
 from kanban_logic import KanbanLogic
 from protocol import PRSPNode
 from relay_logic import (
@@ -150,6 +152,25 @@ def _sftp_storage_with_fake(fake: FakeSftpClient) -> SftpRelayStorage:
 
 
 class LocalFolderRelayStorageTests(unittest.TestCase):
+    def test_blob_manifest_and_lease_round_trip(self):
+        with tempfile.TemporaryDirectory() as root:
+            storage = LocalFolderRelayStorage(root)
+            data = b"avatar"
+            blob_id = BlobStore(Path(root) / "local").write_blob(data)
+
+            storage.write_blob_lease(blob_id, "A", {"expires_at": 123})
+            storage.write_blob(blob_id, data)
+            storage.write_snapshot(
+                "topic-1", "A", "hash-1", {"subtree": {}, "parent_uuid": None},
+                blob_ids={blob_id},
+            )
+
+            self.assertEqual(storage.read_blob(blob_id), data)
+            self.assertEqual(storage.read_head("topic-1", "A")["blobs"], [blob_id])
+            self.assertEqual(storage.list_blob_leases()[blob_id][0]["expires_at"], 123)
+            storage.delete_blob_lease(blob_id, "A")
+            self.assertEqual(storage.list_blob_leases().get(blob_id), [])
+
     def test_timing_probe_returns_mtime_and_leaves_no_file(self):
         with tempfile.TemporaryDirectory() as root:
             storage = LocalFolderRelayStorage(root)
@@ -255,6 +276,26 @@ class LocalFolderRelayStorageTests(unittest.TestCase):
 
 
 class SftpRelayStorageTests(unittest.TestCase):
+    def test_blob_manifest_and_lease_round_trip(self):
+        fake = FakeSftpClient()
+        storage = _sftp_storage_with_fake(fake)
+        data = b"avatar"
+        blob_id = "sha256:" + hashlib.sha256(data).hexdigest()
+
+        storage.write_blob_lease(blob_id, "A", {"expires_at": 123})
+        storage.write_blob(blob_id, data)
+        storage.write_snapshot(
+            "topic-1", "A", "hash-1", {"subtree": {}, "parent_uuid": None},
+            blob_ids={blob_id},
+        )
+
+        self.assertEqual(storage.read_blob(blob_id), data)
+        self.assertEqual(storage.list_blob_ids(), [blob_id])
+        self.assertEqual(storage.read_head("topic-1", "A")["blobs"], [blob_id])
+        self.assertEqual(storage.list_blob_leases()[blob_id][0]["expires_at"], 123)
+        storage.delete_blob_lease(blob_id, "A")
+        self.assertEqual(storage.list_blob_leases().get(blob_id), [])
+
     def test_timing_probe_returns_server_mtime_and_cleans_up(self):
         fake = FakeSftpClient()
         storage = _sftp_storage_with_fake(fake)
@@ -743,6 +784,53 @@ class RelayManagerTests(unittest.TestCase):
 
 
 class RelayLogicTests(unittest.TestCase):
+    def test_profile_blob_is_published_before_head_and_cached_by_peer(self):
+        with tempfile.TemporaryDirectory() as relay_root, \
+                tempfile.TemporaryDirectory() as state_dir, \
+                tempfile.TemporaryDirectory() as blobs_a, \
+                tempfile.TemporaryDirectory() as blobs_b:
+            session_a = Session("addr-a")
+            store_a = BlobStore(blobs_a)
+            data = b"GIF89a-avatar"
+            blob_id = store_a.write_blob(data)
+            KanbanLogic(session_a, {}).set_user_profile_avatar({
+                "id": "avatar-1", "role": "avatar", "blob_id": blob_id,
+                "name": "avatar.gif", "size": len(data), "mime": "image/gif",
+            })
+            config_a = self._relay_config(relay_root, "A", state_dir)
+            config_a["_blob_store"] = store_a
+            relay_a = RelayLogic(session_a, config_a)
+
+            self.assertIn(session_a.identity.uuid, relay_a.publish_due_topics())
+            head = relay_a.storage.read_head(session_a.identity.uuid, "A")
+            self.assertEqual(head["blobs"], [blob_id])
+            self.assertEqual(relay_a.storage.read_blob(blob_id), data)
+
+            session_b = Session("addr-b")
+            store_b = BlobStore(blobs_b)
+            config_b = self._relay_config(relay_root, "B", state_dir)
+            config_b["_blob_store"] = store_b
+            relay_b = RelayLogic(session_b, config_b)
+            relay_b.poll_and_apply()
+            self.assertEqual(store_b.read_blob(blob_id), data)
+
+    def test_relay_gc_requires_two_complete_unreferenced_scans(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            relay = RelayLogic(
+                Session("addr-a"), self._relay_config(relay_root, "A", state_dir),
+            )
+            data = b"orphan"
+            blob_id = BlobStore(Path(state_dir) / "source").write_blob(data)
+            relay.storage.write_blob(blob_id, data)
+
+            first = relay.blob_gc_report()
+            second = relay.blob_gc_report()
+
+            self.assertEqual(first["candidates"], [blob_id])
+            self.assertEqual(first["collectible"], [])
+            self.assertEqual(second["collectible"], [blob_id])
+            self.assertEqual(relay.storage.read_blob(blob_id), data)
+
     def test_timing_model_schedules_after_peer_poll_and_relay_work(self):
         timing = RelayTiming(timestamp_resolution_seconds=0.0)
         timing.observe_server_clock(

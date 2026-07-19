@@ -95,6 +95,21 @@
 
     <div id="reactionMenu" class="reaction-menu" role="menu" hidden></div>
 
+    <dialog id="profileModal">
+      <form method="dialog" id="profileForm">
+        <h2>Profile</h2>
+        <label>Name<input id="profileName" /></label>
+        <label>Profile picture<input id="profilePictureFile" type="file" accept="image/png,image/jpeg,image/gif,image/webp" /></label>
+        <img id="profilePicturePreview" class="profile-picture-preview" alt="Profile picture preview" />
+        <p class="confirm-text">PNG, JPEG, GIF or WebP. The picture is shared with your collaborators.</p>
+        <menu>
+          <button id="removeProfilePictureBtn" type="button" class="danger">Remove picture</button>
+          <button id="cancelProfileBtn" type="button">Cancel</button>
+          <button type="submit" class="primary">Save</button>
+        </menu>
+      </form>
+    </dialog>
+
     <dialog id="cardModal">
       <form method="dialog" id="cardForm">
         <h2 id="cardModalTitle">Card</h2>
@@ -1833,8 +1848,10 @@
           await action();
           showToast(ok || "Done");
           await loadBoard();
+          return true;
         } catch (error) {
           showToast(error.message, true);
+          return false;
         }
       }
 
@@ -1910,27 +1927,70 @@
             }),
           "Board renamed",
         );
-      el("selfAvatarBtn").onclick = () =>
-        openSimple(
-          "Profile",
-          [
-            {
-              name: "name",
-              label: "Name",
-              value: state.user_profile?.data?.display_name || state.address,
-            },
-            {
-              name: "picture",
-              label: "Picture URL",
-              value: state.user_profile?.data?.picture || "",
-            },
-          ],
-          async (form) =>
-            api("/api/kanban/profile", {
-              name: form.get("name"),
-              picture: form.get("picture"),
-            }),
-        );
+      function openProfile() {
+        const self = (state.users || [])[0] || {};
+        el("profileName").value = state.user_profile?.data?.display_name || state.address;
+        el("profilePictureFile").value = "";
+        const preview = el("profilePicturePreview");
+        preview.src = self.picture || "";
+        preview.style.display = self.picture ? "block" : "none";
+        el("removeProfilePictureBtn").style.display = self.picture ? "" : "none";
+        el("profileModal").showModal();
+      }
+
+      async function uploadBlob(file) {
+        const response = await fetch("/api/blob", {
+          method: "POST",
+          headers: {
+            "Content-Type": file.type || "application/octet-stream",
+            "X-Filename": file.name,
+          },
+          body: file,
+        });
+        const payload = await response.json();
+        if (!response.ok || payload.status === "error") {
+          throw new Error(payload.reason || "Upload failed");
+        }
+        return payload;
+      }
+
+      el("selfAvatarBtn").onclick = openProfile;
+      el("cancelProfileBtn").onclick = () => el("profileModal").close();
+      el("profilePictureFile").onchange = () => {
+        const file = el("profilePictureFile").files[0];
+        const preview = el("profilePicturePreview");
+        if (!file) return;
+        preview.src = URL.createObjectURL(file);
+        preview.style.display = "block";
+      };
+      el("profileForm").onsubmit = async (event) => {
+        event.preventDefault();
+        const file = el("profilePictureFile").files[0];
+        const succeeded = await run(async () => {
+          await api("/api/kanban/profile", {name: el("profileName").value});
+          if (file) {
+            const uploaded = await uploadBlob(file);
+            await api("/api/kanban/profile/avatar", {
+              attachment: {
+                id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${file.name}`,
+                role: "avatar",
+                blob_id: uploaded.blob_id,
+                name: file.name,
+                size: uploaded.size,
+                mime: uploaded.mime,
+              },
+            });
+          }
+        }, "Profile updated");
+        if (succeeded) el("profileModal").close();
+      };
+      el("removeProfilePictureBtn").onclick = async () => {
+        const succeeded = await run(async () => {
+          await api("/api/kanban/profile", {name: el("profileName").value});
+          await api("/api/kanban/profile/avatar", {remove: true});
+        }, "Profile picture removed");
+        if (succeeded) el("profileModal").close();
+      };
       async function selectBoardFromUrl() {
         const params = new URLSearchParams(window.location.search);
         const boardUuid = params.get("board");

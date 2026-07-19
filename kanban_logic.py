@@ -45,6 +45,9 @@ import copy
 from typing import Any
 
 from protocol import PRSPNode
+from blob_store import (
+    SAFE_IMAGE_MIMES, avatar_attachment, canonical_attachments, is_valid_image,
+)
 from session import Session, SessionResult
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -458,8 +461,29 @@ class KanbanLogic:
     def user_profile(self) -> PRSPNode:
         return self.session.identity
 
-    def set_user_profile(self, name: str, picture: str = "") -> SessionResult:
+    def set_user_profile(self, name: str, picture: str | None = None) -> SessionResult:
         return self.session.set_identity(name, picture)
+
+    def set_user_profile_avatar(self, reference: dict | None) -> SessionResult:
+        profile = self.user_profile()
+        data = dict(profile.data)
+        attachments = [
+            item for item in canonical_attachments(data.get("attachments"))
+            if item["role"] != "avatar"
+        ]
+        if reference is not None:
+            normalized = canonical_attachments([reference])
+            if not normalized or normalized[0]["role"] != "avatar":
+                return SessionResult("error", reason="invalid avatar reference")
+            if normalized[0]["mime"] not in SAFE_IMAGE_MIMES:
+                return SessionResult("error", reason="unsupported avatar image type")
+            attachments.append(normalized[0])
+            data["picture"] = ""
+        else:
+            # Also removes a legacy profile URL during the blob cutover.
+            data["picture"] = ""
+        data["attachments"] = canonical_attachments(attachments)
+        return self.session.modify(profile.uuid, data, profile.weights)
 
     def users(self) -> list[dict]:
         users = [self._user_info(self.session.address, self.user_profile())]
@@ -1297,13 +1321,18 @@ class KanbanLogic:
         display_name = data.get("display_name") or ""
         if display_name == address or display_name.startswith(("http://", "https://")):
             display_name = ""
+        avatar = avatar_attachment(data)
         return {
             "id": user_id or "",
             "profile_uuid": user_id or "",
             "identity_key": data.get("identity_key") or "",
             "address": address,
             "name": display_name or "?",
-            "picture": data.get("picture") or "",
+            "picture": (
+                f"/api/blob/{avatar['blob_id']}" if avatar
+                else data.get("picture") or ""
+            ),
+            "picture_blob_id": avatar["blob_id"] if avatar else "",
         }
 
     def _find_peer_user_profile(self, address: str) -> PRSPNode | None:
@@ -1433,8 +1462,34 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
         data = await request.json()
         return await _json_result(runtime, logic.set_user_profile(
             data.get("name", ""),
-            data.get("picture", ""),
+            data.get("picture") if "picture" in data else None,
         ))
+
+    async def api_profile_avatar(request: Request):
+        data = await request.json()
+        reference = None if data.get("remove") else data.get("attachment")
+        if reference is not None:
+            normalized = canonical_attachments([reference])
+            if not normalized:
+                return JSONResponse(
+                    {"status": "error", "reason": "invalid attachment"}, status_code=400,
+                )
+            reference = normalized[0]
+            blob_data = runtime.blob_store.read_blob(reference["blob_id"])
+            if blob_data is None:
+                return JSONResponse(
+                    {"status": "error", "reason": "uploaded blob not found"},
+                    status_code=409,
+                )
+            if not is_valid_image(blob_data, reference["mime"]):
+                return JSONResponse(
+                    {"status": "error", "reason": "invalid image data"}, status_code=400,
+                )
+            reference["size"] = len(blob_data)
+        response = await _json_result(runtime, logic.set_user_profile_avatar(reference))
+        if response.status_code < 400:
+            runtime.collect_local_blobs()
+        return response
 
     async def api_create_column(request: Request):
         data = await request.json()
@@ -1540,6 +1595,7 @@ def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:
         Route("/api/kanban/boards/copy", api_copy_board, methods=["POST"]),
         Route("/api/kanban/boards/delete", api_delete_board, methods=["POST"]),
         Route("/api/kanban/profile", api_profile, methods=["POST"]),
+        Route("/api/kanban/profile/avatar", api_profile_avatar, methods=["POST"]),
         Route("/api/kanban/boards/unshare", api_unshare_board, methods=["POST"]),
         Route("/api/kanban/columns/create", api_create_column, methods=["POST"]),
         Route("/api/kanban/columns/rename", api_rename_column, methods=["POST"]),

@@ -952,6 +952,26 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(runtime.session.identity.uuid, profile.uuid)
         self.assertEqual(profile.children, [])
 
+    def test_profile_avatar_is_a_blob_reference_and_remove_clears_legacy_url(self):
+        runtime = self.runtime(8390)
+        blob_id = "sha256:" + "a" * 64
+        runtime.logic.set_user_profile("Alice", "https://example.test/legacy.png")
+
+        attached = runtime.logic.set_user_profile_avatar({
+            "id": "avatar-1", "role": "avatar", "blob_id": blob_id,
+            "name": "alice.png", "size": 123, "mime": "image/png",
+        })
+
+        self.assertEqual(attached.status, "ok")
+        self.assertEqual(runtime.logic.users()[0]["picture"], f"/api/blob/{blob_id}")
+        self.assertEqual(runtime.logic.user_profile().data["picture"], "")
+
+        removed = runtime.logic.set_user_profile_avatar(None)
+
+        self.assertEqual(removed.status, "ok")
+        self.assertEqual(runtime.logic.users()[0]["picture"], "")
+        self.assertEqual(runtime.logic.user_profile().data["attachments"], [])
+
     def test_profile_topic_is_under_shared_user_data_and_not_adopted(self):
         left = self.runtime(8333)
         right = self.runtime(8334)
