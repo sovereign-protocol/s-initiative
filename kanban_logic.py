@@ -645,10 +645,6 @@ class KanbanLogic:
             changed = self.session.reconcile_peer_changes(
                 addr, board.uuid,
                 node_is_eligible=source_eligible,
-                # Per-node reconciliation is required here: replacing the
-                # whole board could bypass agenda-author authority (and the
-                # card ownership filters above) through a parent hash.
-                allow_wholesale_replace=False,
             ) or changed
         return changed
 
