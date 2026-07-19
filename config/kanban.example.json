@@ -1,0 +1,8 @@
+{
+  "applications": [
+    {"module": "s_kanban.application"}
+  ],
+  "primary_application_id": "kanban",
+  "advertise_host": "127.0.0.1",
+  "offer_http_channel": true
+}
