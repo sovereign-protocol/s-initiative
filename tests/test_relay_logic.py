@@ -11,13 +11,20 @@ from unittest.mock import patch
 
 from sovereign.blob_store import BlobStore
 from sovereign.profile import CoreProfileService
-from s_kanban.logic import KanbanLogic
+from s_kanban.logic import KanbanLogic as _KanbanLogic
 from sovereign.protocol import ProtocolNode
 from sovereign.relay_logic import (
-    RelayLogic, RelayManager, RelayTiming, _relay_fingerprint, channel_descriptor,
+    RelayLogic, RelayManager, RelayTiming, _relay_fingerprint,
 )
 from sovereign.relay_storage import LocalFolderRelayStorage, SftpRelayStorage
 from sovereign.session import Session
+
+
+def KanbanLogic(session, config):
+    """Construct registered app logic without a full ApplicationHost."""
+    logic = _KanbanLogic(session, config)
+    session.register_application(logic.application_registration())
+    return logic
 
 
 class FakeSftpFile:
@@ -904,8 +911,7 @@ class RelayLogicTests(unittest.TestCase):
                 "name": "avatar.gif", "size": len(data), "mime": "image/gif",
             })
             config_a = self._relay_config(relay_root, "A", state_dir)
-            config_a["_blob_store"] = store_a
-            relay_a = RelayLogic(session_a, config_a)
+            relay_a = RelayLogic(session_a, config_a, blob_store=store_a)
 
             self.assertIn(session_a.identity.uuid, relay_a.publish_due_topics())
             head = relay_a.storage.read_head(session_a.identity.uuid, "A")
@@ -915,8 +921,7 @@ class RelayLogicTests(unittest.TestCase):
             session_b = Session("addr-b")
             store_b = BlobStore(blobs_b)
             config_b = self._relay_config(relay_root, "B", state_dir)
-            config_b["_blob_store"] = store_b
-            relay_b = RelayLogic(session_b, config_b)
+            relay_b = RelayLogic(session_b, config_b, blob_store=store_b)
             relay_b.poll_and_apply()
             self.assertEqual(store_b.read_blob(blob_id), data)
 
@@ -1794,21 +1799,6 @@ class RelayLogicTests(unittest.TestCase):
             self.assertIn((board_uuid, "A"), applied)
             self.assertIsNotNone(session_b2.peer_perspectives.get("relay:A"))
 
-    def test_module_channel_descriptor_hook_delegates_to_stashed_manager(self):
-        # The module-level hook app_server calls, taking (runtime, config) and
-        # delegating to whichever RelayManager create_logic already stashed.
-        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
-            session_a = Session("addr-a")
-            config = self._relay_config(relay_root, "A", state_dir)
-            manager = RelayManager(session_a, config)
-            config["_relay_manager"] = manager
-
-            descriptor = channel_descriptor(runtime=None, config=config)
-
-            self.assertEqual(descriptor["type"], "relay")
-
-        self.assertIsNone(channel_descriptor(runtime=None, config={}))
-
     def test_users_includes_relay_only_peer_via_peer_perspectives(self):
         # kanban_logic.users() used to only look at session.members, which
         # a relay-only peer ("relay:A") never joins - note_relay_peer_topic
@@ -1993,7 +1983,6 @@ class RelayLogicTests(unittest.TestCase):
             kanban_b = KanbanLogic(session_b, {})
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
             relay_b.poll_and_apply()  # caches it before any token exists
-            kanban_b = KanbanLogic(session_b, {})
             self.assertNotIn(board_uuid, [b.uuid for b in kanban_b.boards()])
 
             relay_b.mark_topics_desired([board_uuid])

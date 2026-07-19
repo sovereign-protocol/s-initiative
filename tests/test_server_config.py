@@ -18,8 +18,8 @@ class ServerConfigTests(unittest.TestCase):
         config = app_server.load_config(None, "missing_test_app")
 
         self.assertEqual(config["app_module"], "missing_test_app_logic")
-        self.assertEqual(config["ui_file"], "missing_test_app.html")
-        self.assertEqual(config["css_file"], "missing_test_app.css")
+        self.assertIsNone(config["ui_file"])
+        self.assertIsNone(config["css_file"])
 
     def test_existing_app_config_file_is_loaded(self):
         config = app_server.load_config(None, "kanban")

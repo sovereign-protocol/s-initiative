@@ -1227,7 +1227,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         users = {user["address"]: user for user in middle.logic.users()}
         self.assertEqual(users[third.address]["name"], "Cynthia")
 
-    def test_kanban_rejects_non_board_or_identity_invitation(self):
+    def test_kanban_caches_topic_for_an_inactive_application(self):
         left = self.runtime(8324)
         right = self.runtime(8325)
         client = MemoryHttpClient({left.address: left, right.address: right})
@@ -1241,8 +1241,12 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         result = right.adapter.join_discussion(left.address, other.uuid)
 
-        self.assertEqual(result["status"], "error")
-        self.assertIn("no active application accepts", result["reason"])
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn(other.uuid, right.session.protocol.index)
+        self.assertIsNotNone(right.session.get_cached_peer_subtree(
+            left.address, other.uuid,
+        ))
+        self.assertIn(other.uuid, right.session.pending_topic_invitations)
 
     def test_first_participant_is_owner(self):
         runtime = self.runtime(8317)
@@ -1454,7 +1458,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(result.status, "ok")
         self.assertEqual(runtime.session.protocol.root.state_hash, root_before)
         self.assertEqual(
-            runtime.session.app_metadata["apps"]["S-Kanban"]["selected_board_uuid"],
+            runtime.session.app_metadata["apps"]["kanban"]["selected_board_uuid"],
             board.uuid,
         )
 

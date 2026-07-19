@@ -44,9 +44,13 @@ import asyncio
 import copy
 from typing import Any
 
+from sovereign.application import (
+    ApplicationInstance, ApplicationManifest, ApplicationServices,
+)
 from sovereign.protocol import ProtocolNode
 from sovereign.blob_store import avatar_attachment
 from sovereign.session import Session, SessionResult
+from sovereign.topic_registry import ApplicationRegistration
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -54,6 +58,7 @@ from starlette.routing import Route
 
 DEFAULT_COLUMNS = ["To Do", "Doing", "Done"]
 KANBAN_APP_NAME = "S-Kanban"
+KANBAN_APPLICATION_ID = "kanban"
 ORDER_GAP_EPSILON = 1e-9
 AUTO_ADOPT_MODES = ("always", "not_owner", "not_member", "never")
 AGENDA_PRIORITIES = ("high", "medium", "low")
@@ -62,20 +67,40 @@ AGENDA_PRIORITIES = ("high", "medium", "low")
 AGENDA_PRIORITY_RANK = {"high": 3, "medium": 2, "low": 1}
 
 
+APPLICATION_MANIFEST = ApplicationManifest(
+    application_id=KANBAN_APPLICATION_ID,
+    display_name=KANBAN_APP_NAME,
+    data_schema_version=1,
+    asset_package="s_kanban.assets",
+    ui_file="kanban.html",
+    css_file="kanban.css",
+)
+
+
 class KanbanLogic:
-    def __init__(self, session: Session, config: dict):
+    def __init__(self, session: Session, config: dict | None = None,
+                 relay_manager=None):
         self.session = session
-        self.config = config
+        self.config = config or {}
+        self.relay_manager = relay_manager
         # Revision ownership must exist before the first board/card mutation.
         # Session.identity bootstraps its own origin without recursion.
         self.session.identity
         self._migrate_legacy_relay_assignments()
-        self.session.shared_topics.register(
-            KANBAN_APP_NAME,
-            {"kanban_board"},
+
+    def application_registration(self) -> ApplicationRegistration:
+        return ApplicationRegistration(
+            KANBAN_APPLICATION_ID,
+            frozenset({"kanban_board"}),
             self.boards,
             self.accept_relay_board,
+            assignment_scoped=True,
+            mount_invitation=True,
+            on_peer_update=self.on_peer_update,
         )
+
+    def _relay_manager(self):
+        return self.relay_manager or self.config.get("_relay_manager")
 
     def _migrate_legacy_relay_assignments(self) -> None:
         """Move the former app-owned board map into transport-owned topic state."""
@@ -98,7 +123,7 @@ class KanbanLogic:
             self.adopt_all_incoming_changes()
             board = self.ensure_board()
         events = self.transition_events(board.uuid)
-        relay_manager = self.config.get("_relay_manager")
+        relay_manager = self._relay_manager()
         return {
             "address": self.session.address,
             "board": board.to_dict(),
@@ -153,7 +178,7 @@ class KanbanLogic:
         # accept_connect_token's (relay stashes itself in the shared
         # config dict); absent relay config, the payload is unchanged.
         info = self.session.get_network_info()
-        relay_manager = self.config.get("_relay_manager")
+        relay_manager = self._relay_manager()
         if relay_manager is None:
             return info
         for addr, peer_info in (info.get("peers") or {}).items():
@@ -295,7 +320,7 @@ class KanbanLogic:
         board = self.session.protocol.index.get(board_uuid)
         if not board or board.data.get("type") != "kanban_board":
             return SessionResult("error", reason="board not found")
-        relay_manager = self.config.get("_relay_manager")
+        relay_manager = self._relay_manager()
         if relay_manager:
             relay_manager.assign_topic_target(board_uuid, None)
         result = self.session.delete(board.uuid)
@@ -330,7 +355,7 @@ class KanbanLogic:
         # has no other shrink path (review R-3). Done before the peer check
         # below: a board shared via token but never yet accepted by anyone
         # has no peers, yet its relay publishing still has to stop.
-        relay_manager = self.config.get("_relay_manager")
+        relay_manager = self._relay_manager()
         if relay_manager is not None:
             relay_manager.assign_topic_target(board.uuid, None)
         board_peers = [
@@ -1176,7 +1201,7 @@ class KanbanLogic:
 
     def _metadata(self) -> dict:
         apps = self.session.app_metadata.setdefault("apps", {})
-        return apps.setdefault(KANBAN_APP_NAME, {})
+        return apps.setdefault(KANBAN_APPLICATION_ID, {})
 
     def _kanban_container(self) -> ProtocolNode:
         return self._folder(self._apps_folder(), KANBAN_APP_NAME, "kanban_app")
@@ -1283,7 +1308,23 @@ class KanbanLogic:
 
 
 def create_logic(session: Session, config: dict) -> KanbanLogic:
-    return KanbanLogic(session, config)
+    logic = KanbanLogic(session, config, config.get("_relay_manager"))
+    session.register_application(logic.application_registration())
+    return logic
+
+
+def create_application(services: ApplicationServices) -> ApplicationInstance:
+    logic = KanbanLogic(
+        services.session,
+        dict(services.settings),
+        services.relay_manager,
+    )
+    return ApplicationInstance(
+        manifest=APPLICATION_MANIFEST,
+        logic=logic,
+        registration=logic.application_registration(),
+        controllers=tuple(build_routes(logic, services, dict(services.settings))),
+    )
 
 
 def build_routes(logic: KanbanLogic, runtime, config: dict) -> list[Route]:

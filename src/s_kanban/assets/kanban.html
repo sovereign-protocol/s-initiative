@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Kanban Board</title>
     <link rel="stylesheet" href="/shared.css" />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="/apps/kanban/styles.css" />
   </head>
   <body>
     <div id="toast" class="toast"></div>
@@ -502,7 +502,7 @@
 
         const overviewLink = document.createElement("a");
         overviewLink.className = "overview-link";
-        overviewLink.href = `/summary?share=${encodeURIComponent(state.board.uuid)}`;
+        overviewLink.href = `/apps/personal-cockpit?share=${encodeURIComponent(state.board.uuid)}`;
         overviewLink.textContent = "Manage all boards →";
         fields.append(overviewLink);
 
@@ -1876,7 +1876,7 @@
         el("settingsSection").scrollIntoView({ behavior: "smooth", block: "start" });
       };
       el("overviewBtn").onclick = () => {
-        window.location.href = "/summary";
+        window.location.href = "/apps/personal-cockpit";
       };
       el("boardSwitchBtn").onclick = (event) => {
         event.stopPropagation();
