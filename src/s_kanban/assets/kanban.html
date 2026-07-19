@@ -44,7 +44,7 @@
       </div>
       <div class="top-actions">
         <button id="selfAvatarBtn" class="header-avatar-btn" title="Edit your profile"></button>
-        <button id="networkBtn">local</button>
+        <div id="shell"></div>
         <div id="autoAdoptHeaderControl" class="auto-adopt-header-control">
           <span id="autoAdoptIndicator" class="auto-adopt-square" title="Auto-adopt"></span>
           <span id="autoAdoptHeaderLabel" class="auto-adopt-header-label"></span>
@@ -262,46 +262,9 @@
       }
 
       function renderNetwork() {
-        const peers = boardPeerAddresses();
-        const networkBtn = el("networkBtn");
-        networkBtn.replaceChildren();
-        networkBtn.className = peers.length ? "peer-cluster" : "peer-cluster local";
-        if (!peers.length) {
-          networkBtn.textContent = "local";
-        } else {
-          for (const addr of peers.slice(0, 4)) {
-            const user = userForParticipant(addr);
-            const online = peerPresence(addr).online;
-            const avatar = document.createElement("span");
-            avatar.className = "header-avatar";
-            avatar.classList.add(online ? "status-online" : "status-offline");
-            if (user.picture) {
-              avatar.style.backgroundImage = `url("${cssUrl(user.picture)}")`;
-            } else {
-              avatar.textContent = initials(user.name || peerLabel(addr));
-            }
-            const channel = peerChannel(addr);
-            avatar.title = channel ? `${peerLabel(addr)} (${channel})` : peerLabel(addr);
-            networkBtn.append(avatar);
-          }
-          if (peers.length > 4) {
-            const more = document.createElement("span");
-            more.className = "header-avatar more";
-            more.textContent = `+${peers.length - 4}`;
-            networkBtn.append(more);
-          }
-        }
-        el("networkBtn").title = peers
-          .map((addr) => {
-            const status = peerStatus(addr);
-            const suffix =
-              status.state === "offline"
-                ? ` (on hold${status.last_error ? `: ${status.last_error}` : ""})`
-                : "";
-            const channel = peerChannel(addr);
-            return `${peerLabel(addr)}${channel ? ` [${channel}]` : ""}${suffix}`;
-          })
-          .join("\\n");
+        // The shell draws the cluster; Kanban only says which peers belong
+        // to this board and what each of them looks like.
+        SovereignShell.refresh();
       }
 
       function renderSelfAvatar() {
@@ -359,13 +322,10 @@
         return avatar;
       }
 
-      function openNetworkPanel() {
-        setModalFooterMode("done");
-        el("simpleTitle").textContent = "Peers";
-        const fields = el("simpleFields");
-        fields.replaceChildren();
-
-        // 1) Graphical overview of who's connected on this board.
+      // Who is on this board, with the faces and names only Kanban knows.
+      // The shell hosts it; Core supplies target assignment, tokens, and
+      // connect around it.
+      function boardPeerGraph() {
         const graph = document.createElement("div");
         graph.className = "peer-graph";
         const self = (state.users || [])[0] || { name: "You" };
@@ -401,116 +361,22 @@
           peerList.append(row);
         }
         graph.append(peerList);
-        fields.append(graph);
+        return graph;
+      }
 
-        const targetControl = document.createElement("label");
-        targetControl.className = "peer-target-control";
-        targetControl.textContent = "Relay target for this board";
-        const targetSelect = document.createElement("select");
-        const unassigned = document.createElement("option");
-        unassigned.value = "";
-        unassigned.textContent = "Not assigned";
-        targetSelect.append(unassigned);
-        for (const target of state.channel_targets || []) {
-          const option = document.createElement("option");
-          option.value = target.id;
-          option.textContent = target.name;
-          targetSelect.append(option);
-        }
-        targetSelect.value = state.channel_target_id || "";
-        targetSelect.onchange = async () => {
-          try {
-            await api("/api/channels/mailbox/topics/assign", {
-              topic_uuid: state.board.uuid,
-              target_id: targetSelect.value || null,
-            });
-            await loadBoard();
-            showToast(targetSelect.value ? "Relay target assigned" : "Relay target removed");
-            el("simpleModal").close();
-          } catch (error) {
-            showToast(error.message, true);
-          }
-        };
-        targetControl.append(targetSelect);
-        fields.append(targetControl);
-
-        // 2) Share/connect right here - the share modal never needed
-        // overview context (board uuid/name and three same-server
-        // endpoints), so no page switch for the common case. The overview
-        // keeps its own share modal for multi-board management.
-        const shareRow = document.createElement("div");
-        shareRow.className = "peer-share-row";
-        const copyBtn = document.createElement("button");
-        copyBtn.type = "button";
-        copyBtn.textContent = "Copy share token";
-        copyBtn.disabled = !targetSelect.value;
-        copyBtn.title = targetSelect.value
-          ? "Copy a token for this board and relay target"
-          : "Assign a relay target first";
-        copyBtn.onclick = async () => {
-          try {
-            const token = await api("/api/connect_token", {
-              channel_options: { mailbox: { target_id: targetSelect.value } },
-              topic_uuids: [state.board.uuid],
-            });
-            await navigator.clipboard.writeText(btoa(JSON.stringify(token)));
-            showToast("Token copied");
-          } catch (error) {
-            showToast(error.message, true);
-          }
-        };
-        shareRow.append(copyBtn);
-        const unshareBtn = document.createElement("button");
-        unshareBtn.type = "button";
-        unshareBtn.className = "danger";
-        unshareBtn.textContent = "Stop discussing";
-        unshareBtn.onclick = () => {
-          el("simpleModal").close();
-          confirmAction(
+      function unshareAction() {
+        return [{
+          label: "Stop discussing",
+          className: "danger",
+          onClick: () => confirmAction(
             "Stop discussing this board?",
             "This stops discussing it with everyone currently on it. The board itself is not deleted.",
-            () => run(() => api("/api/kanban/boards/unshare", { board_uuid: state.board.uuid }), "Stopped discussing this board"),
-          );
-        };
-        shareRow.append(unshareBtn);
-        fields.append(shareRow);
-
-        const connectRow = document.createElement("div");
-        connectRow.className = "peer-share-row";
-        const tokenInput = document.createElement("input");
-        tokenInput.placeholder = "Paste a share token…";
-        connectRow.append(tokenInput);
-        const connectBtn = document.createElement("button");
-        connectBtn.type = "button";
-        connectBtn.textContent = "Connect";
-        connectBtn.onclick = () => {
-          let token;
-          try {
-            token = JSON.parse(atob(tokenInput.value.trim()));
-            if (token.token_version !== 1 || !Array.isArray(token.topic_uuids) || !token.topic_uuids.length) {
-              throw new Error("Invalid or unrecognized token");
-            }
-          } catch (err) {
-            showToast("Invalid token", true);
-            return;
-          }
-          el("simpleModal").close();
-          run(() => api("/api/connect", { token }), "Connected");
-        };
-        connectRow.append(connectBtn);
-        fields.append(connectRow);
-
-        const overviewLink = document.createElement("a");
-        overviewLink.className = "overview-link";
-        overviewLink.href = `/apps/personal-cockpit?share=${encodeURIComponent(state.board.uuid)}`;
-        overviewLink.textContent = "Manage all boards →";
-        fields.append(overviewLink);
-
-        el("simpleForm").onsubmit = (event) => {
-          event.preventDefault();
-          el("simpleModal").close();
-        };
-        el("simpleModal").showModal();
+            () => run(
+              () => api("/api/kanban/boards/unshare", { board_uuid: state.board.uuid }),
+              "Stopped discussing this board",
+            ),
+          ),
+        }];
       }
 
       function peerPresence(addr) {
@@ -1901,7 +1767,26 @@
         if (!target?.closest(".board-title")) closeBoardSwitchMenu();
       });
 
-      el("networkBtn").onclick = openNetworkPanel;
+      SovereignShell.mount({
+        container: el("shell"),
+        applicationId: "kanban",
+        topicUuid: () => state?.board?.uuid || "",
+        state: () => state || {},
+        // Scope the cluster to this board, and let Kanban supply the faces.
+        peerAddresses: () => (state?.board ? boardPeerAddresses() : []),
+        describePeer: (addr) => {
+          const user = userForParticipant(addr);
+          const presence = peerPresence(addr);
+          return {
+            label: peerLabel(addr),
+            picture: user?.picture ? cssUrl(user.picture) : "",
+            online: presence.online,
+          };
+        },
+        panelContent: () => (state?.board ? boardPeerGraph() : null),
+        extras: () => (state?.board ? unshareAction() : []),
+        onChanged: () => loadBoard(),
+      });
       function sizeBoardNameInput() {
         const input = el("boardName");
         const canvas = (sizeBoardNameInput._canvas ??= document.createElement("canvas"));
