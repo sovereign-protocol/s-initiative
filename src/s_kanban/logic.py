@@ -931,15 +931,7 @@ class KanbanLogic:
         return str(participant)[:8]
 
     def transition_by_node(self, events: list[dict]) -> dict:
-        priority = {
-            "divergence": 6,
-            "peer_made_changes": 4,
-            "local_missing_node": 4,
-            "local_made_changes": 3,
-            "peer_missing_node": 3,
-            "in_transition": 1,
-            "in_agreement": 0,
-        }
+        priority = Session.TRANSITION_PRIORITY
         out = {}
         for event in events:
             node_uuid = event.get("node_uuid")
