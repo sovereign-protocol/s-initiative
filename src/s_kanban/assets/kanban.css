@@ -1,3 +1,8 @@
+/* U4: one theme for 0.1 - dark everywhere. Declaring color-scheme makes
+   native controls, scrollbars, and form widgets match rather than
+   rendering light on a dark surface. */
+:root { color-scheme: dark; }
+
 :root {
   --bg: #171818;
   --surface: #202120;
