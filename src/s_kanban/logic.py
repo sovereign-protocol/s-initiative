@@ -142,24 +142,26 @@ class KanbanLogic:
             if channel_manager else self.session.get_network_info()
         )
 
+    # The policy is Session's; Kanban only adds the two modes that are judged
+    # against card ownership. Settings saved before the move still live under
+    # this application's metadata, so they are read through rather than reset.
     def auto_adopt_mode(self, board: ProtocolNode | None = None) -> str:
         board = board or self.ensure_board()
-        values = self._metadata().get("auto_adopt_by_board", {})
-        if isinstance(values, dict) and board.uuid in values:
-            return self._normalize_auto_adopt_mode(values[board.uuid])
-        return self._normalize_auto_adopt_mode(self._metadata().get("auto_adopt", "always"))
+        legacy = self._metadata().get("auto_adopt_by_board", {})
+        fallback = self._normalize_auto_adopt_mode(
+            legacy[board.uuid] if isinstance(legacy, dict) and board.uuid in legacy
+            else self._metadata().get("auto_adopt", "always")
+        )
+        return self._normalize_auto_adopt_mode(
+            self.session.auto_adopt_mode(board.uuid, fallback)
+        )
 
     def set_auto_adopt_mode(self, mode: str) -> SessionResult:
         board = self.ensure_board()
         normalized = self._normalize_auto_adopt_mode(mode)
-        self._set_board_auto_adopt(board.uuid, normalized)
-        return SessionResult("ok", value=normalized)
-
-    def _set_board_auto_adopt(self, board_uuid: str, mode: str) -> None:
-        metadata = self._metadata()
-        values = dict(metadata.get("auto_adopt_by_board", {}))
-        values[board_uuid] = self._normalize_auto_adopt_mode(mode)
-        metadata["auto_adopt_by_board"] = values
+        return self.session.set_auto_adopt_mode(
+            board.uuid, normalized, AUTO_ADOPT_MODES,
+        )
 
     @staticmethod
     def _normalize_auto_adopt_mode(value: Any) -> str:
@@ -226,7 +228,9 @@ class KanbanLogic:
         accepted = self.session.accept_topic_invitation(subtree, self._kanban_container().uuid)
         if accepted.status == "ok":
             if not was_known:
-                self._set_board_auto_adopt(accepted.value, "always")
+                self.session.set_auto_adopt_mode(
+                    accepted.value, "always", AUTO_ADOPT_MODES,
+                )
             self._remember_board(accepted.value)
         return accepted
 
