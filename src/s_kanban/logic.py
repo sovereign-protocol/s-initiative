@@ -993,18 +993,9 @@ class KanbanLogic:
         return out
 
     def _reaction_for_event(self, event: dict) -> str:
-        local_identity = self.session._local_revision_origin()
-        local_origin = event.get("local_revision_origin")
-        peer_origin = event.get("peer_revision_origin")
-        original_type = event.get("original_type") or event.get("type")
-        same_local_wave = (
-            peer_origin == local_identity
-            and event.get("local_base_hash") == event.get("peer_base_hash")
-        )
-        if (local_identity and local_origin == local_identity
-                and (same_local_wave or original_type == "peer_missing_node")):
-            return "rollback"
-        return "adopt"
+        # Session owns this: it is decided purely from revision origins and
+        # base hashes, and every application needs the same answer.
+        return self.session.reaction_for_event(event)
 
     @staticmethod
     def _transition_event_signature(event: dict) -> tuple:
