@@ -1760,6 +1760,16 @@
         },
         panelContent: () => (state?.board ? boardPeerGraph() : null),
         extras: () => (state?.board ? unshareAction() : []),
+        // Kanban had no board-creation affordance of its own - only the
+        // overview could make one. Create with a default name and let the
+        // header's editable title rename it in place.
+        onCreateTopic: () => run(
+          async () => {
+            const created = await api("/api/kanban/boards/create", { name: "New board" });
+            await api("/api/kanban/boards/select", { board_uuid: created.value });
+          },
+          "Board created - click its name to rename it",
+        ),
         onChanged: () => loadBoard(),
       });
       function sizeBoardNameInput() {
