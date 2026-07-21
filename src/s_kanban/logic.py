@@ -1033,46 +1033,23 @@ class KanbanLogic:
             key=lambda node: (float(node.data.get("order", 0)), node.created_at),
         )
 
+    # Agendas are Session's - an agenda item is a child of the topic root, and
+    # a board is one. These stay only to keep Kanban's board-scoped calling
+    # convention; the rules live in one place.
     def agenda_items(self, board: ProtocolNode | None = None) -> list[ProtocolNode]:
         board = board or self.ensure_board()
-        return sorted(
-            [child for child in board.live_children() if child.data.get("type") == "agenda_item"],
-            key=lambda node: (
-                -AGENDA_PRIORITY_RANK.get(node.data.get("priority"), 0),
-                node.created_at,
-            ),
-        )
+        return self.session.agenda_items(board.uuid)
 
     def create_agenda_item(self, text: str, priority: str | None = None) -> SessionResult:
-        board = self.ensure_board()
-        return self.session.create_child(
-            board.uuid,
-            {
-                "type": "agenda_item",
-                "text": text or "",
-                "priority": priority if priority in AGENDA_PRIORITIES else None,
-                "author": self.user_profile().uuid,
-            },
-            {},
+        return self.session.create_agenda_item(
+            self.ensure_board().uuid, text, priority,
         )
 
     def delete_agenda_item(self, item_uuid: str) -> SessionResult:
-        item = self._node(item_uuid, "agenda_item")
-        if not item:
-            return SessionResult("error", reason="agenda item not found")
-        if item.data.get("author") != self.user_profile().uuid:
-            return SessionResult("error", reason="only the topic originator can delete it")
-        return self.session.delete(item.uuid)
+        return self.session.delete_agenda_item(item_uuid)
 
     def set_agenda_item_priority(self, item_uuid: str, priority: str | None) -> SessionResult:
-        item = self._node(item_uuid, "agenda_item")
-        if not item:
-            return SessionResult("error", reason="agenda item not found")
-        if item.data.get("author") != self.user_profile().uuid:
-            return SessionResult("error", reason="only the topic originator can set its priority")
-        data = dict(item.data)
-        data["priority"] = priority if priority in AGENDA_PRIORITIES else None
-        return self.session.modify(item.uuid, data, item.weights)
+        return self.session.set_agenda_item_priority(item_uuid, priority)
 
     @staticmethod
     def _order_between(low: float | None, high: float | None) -> float | None:
