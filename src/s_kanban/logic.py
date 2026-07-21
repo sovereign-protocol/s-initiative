@@ -103,6 +103,10 @@ class KanbanLogic:
                 for addr, tree in sorted(self.session.peer_perspectives.items())
             },
             "auto_adopt_mode": self.auto_adopt_mode(board),
+            # The shell renders the adoption control and the agenda, so it
+            # needs this application's mode set and who "mine" is.
+            "auto_adopt_modes": list(AUTO_ADOPT_MODES),
+            "identity_uuid": self.session.identity.uuid,
             "transition_events": events,
             "transition_by_node": self.transition_by_node(events),
             "agenda_items": [item.to_dict() for item in self.agenda_items(board)],

@@ -11,14 +11,6 @@
     <div id="toast" class="toast"></div>
     <header class="topbar">
       <div class="top-actions-left">
-        <button id="menuToggleBtn" class="icon-btn" title="Collaboration" aria-label="Collaboration">
-          <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">
-            <path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"></path>
-            <path d="M16 10a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z"></path>
-            <path d="M3.5 19c.6-3 2.3-5 4.5-5s3.9 2 4.5 5"></path>
-            <path d="M12.5 18c.5-2.3 1.8-3.8 3.5-3.8s3 1.5 3.5 3.8"></path>
-          </svg>
-        </button>
         <div class="brand">
           <span class="brand-mark"></span><strong>S-Kanban</strong>
         </div>
@@ -51,42 +43,6 @@
       </div>
     </header>
 
-    <div id="sidePanelOverlay" class="side-panel-overlay"></div>
-    <aside id="sidePanel" class="side-panel">
-      <div class="side-panel-header">
-        <strong>Collaboration</strong>
-        <button id="sidePanelCloseBtn" class="icon-btn" title="Close" aria-label="Close">
-          <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">
-            <path d="M18 6 6 18"></path>
-            <path d="M6 6l12 12"></path>
-          </svg>
-        </button>
-      </div>
-      <div class="side-panel-section agenda-group">
-        <h3>My Agenda</h3>
-        <div id="myAgendaList" class="agenda-list"></div>
-        <form id="agendaForm" class="agenda-add-row">
-          <input id="agendaText" placeholder="Add a discussion topic…" />
-          <button type="submit">+ Add</button>
-        </form>
-      </div>
-      <div class="side-panel-section agenda-group">
-        <h3>Integrated Agenda</h3>
-        <div id="mergedAgendaList" class="agenda-list"></div>
-      </div>
-      <div class="side-panel-section separated">
-        <h3>Cards and columns not aligned</h3>
-        <div id="discussionList" class="discussion-list"></div>
-      </div>
-      <div id="settingsSection" class="side-panel-section separated">
-        <h3>Settings</h3>
-        <div class="auto-adopt-control">
-          <label for="autoAdoptSelect" class="auto-adopt-label">Auto-adopt</label>
-          <select id="autoAdoptSelect"></select>
-        </div>
-        <p id="autoAdoptDescription" class="auto-adopt-description"></p>
-      </div>
-    </aside>
 
     <main>
       <section id="board" class="board"></section>
@@ -270,21 +226,6 @@
         control.title = `Auto-adopt: ${label} - click to change`;
       }
 
-      function renderAutoAdoptControl() {
-        const select = el("autoAdoptSelect");
-        if (!select.options.length) {
-          for (const mode of AUTO_ADOPT_MODES) {
-            const option = document.createElement("option");
-            option.value = mode;
-            option.textContent = AUTO_ADOPT_LABELS[mode];
-            select.append(option);
-          }
-        }
-        select.value = state.auto_adopt_mode || "always";
-        el("autoAdoptDescription").textContent =
-          AUTO_ADOPT_DESCRIPTIONS[state.auto_adopt_mode] || AUTO_ADOPT_DESCRIPTIONS.always;
-      }
-
       function avatarElement(user, online) {
         const avatar = document.createElement("span");
         avatar.className = "header-avatar";
@@ -437,171 +378,10 @@
 
       const AGENDA_PRIORITY_LABELS = { "": "No priority", high: "High", medium: "Medium", low: "Low" };
 
-      function renderAgenda() {
-        // The board refreshes every 1.5 seconds. Replacing a focused native
-        // select closes its open dropdown, so leave the agenda DOM untouched
-        // while the user is choosing a priority.
-        if (document.activeElement?.classList.contains("agenda-priority-select")) return;
-        const items = state.agenda_items || [];
-        const myId = state.user_profile?.uuid;
-        renderMyAgendaList(items.filter((item) => item.data.author === myId));
-        renderMergedAgendaList(items);
-      }
-
-      function agendaEmptyState(container) {
-        const empty = document.createElement("p");
-        empty.className = "confirm-text";
-        empty.textContent = "Nothing yet.";
-        container.append(empty);
-      }
-
-      function renderMyAgendaList(items) {
-        const container = el("myAgendaList");
-        container.replaceChildren();
-        if (!items.length) return agendaEmptyState(container);
-        for (const item of items) {
-          const row = document.createElement("div");
-          row.className = "agenda-row";
-          const select = document.createElement("select");
-          select.className = "agenda-priority-select";
-          for (const [value, label] of Object.entries(AGENDA_PRIORITY_LABELS)) {
-            const option = document.createElement("option");
-            option.value = value;
-            option.textContent = label;
-            select.append(option);
-          }
-          select.value = item.data.priority || "";
-          select.onchange = () => {
-            const priority = select.value || null;
-            select.blur();
-            run(
-              () =>
-                api("/api/kanban/agenda/set_priority", {
-                  item_uuid: item.uuid,
-                  priority,
-                }),
-              "Priority updated",
-            );
-          };
-          row.append(select);
-          const text = document.createElement("span");
-          text.className = "agenda-text";
-          text.textContent = item.data.text || "";
-          row.append(text);
-          const del = iconButton(ICON_DELETE, "Remove", () =>
-            confirmAction("Remove agenda item?", "This removes it from your agenda.", () =>
-              run(() => api("/api/kanban/agenda/delete", { item_uuid: item.uuid }), "Removed"),
-            ),
-          );
-          del.classList.add("delete-icon-btn");
-          row.append(del);
-          container.append(row);
-        }
-      }
-
-      function renderMergedAgendaList(items) {
-        const container = el("mergedAgendaList");
-        container.replaceChildren();
-        if (!items.length) return agendaEmptyState(container);
-        for (const item of items) {
-          const row = document.createElement("div");
-          row.className = "agenda-row";
-          if (item.data.priority) {
-            const priority = document.createElement("span");
-            priority.className = `agenda-priority agenda-priority-${item.data.priority}`;
-            priority.title = item.data.priority;
-            priority.textContent = item.data.priority[0].toUpperCase();
-            row.append(priority);
-          }
-          const text = document.createElement("span");
-          text.className = "agenda-text";
-          text.textContent = item.data.text || "";
-          row.append(text);
-          const author = document.createElement("span");
-          author.className = "agenda-author";
-          author.textContent = userForParticipant(item.data.author).name;
-          row.append(author);
-          container.append(row);
-        }
-      }
-
-      const DISCUSSION_TYPE_LABELS = {
-        divergence: "Conflict",
-        peer_made_changes: "Peer updated",
-        local_missing_node: "New from peer",
-        local_made_changes: "You updated",
-        peer_missing_node: "New from you",
-      };
-
-      function discussionNode(uuid, info) {
-        return findNode(state.board, uuid) ||
-          (info.peer_addr && findNode(state.peers?.[info.peer_addr], uuid)) ||
-          Object.values(state.peers || {}).map(peer => findNode(peer, uuid)).find(Boolean);
-      }
-
-      function renderDiscussionList() {
-        const container = el("discussionList");
-        container.replaceChildren();
-        const entries = Object.entries(state.transition_by_node || {}).filter(([uuid, info]) => {
-          if (["in_agreement", "in_transition"].includes(info.type)) return false;
-          // The board itself is never something to act on here - it's
-          // either cascading from a child (see below) or, for the topic
-          // root specifically, a permanent attachment artifact (each peer
-          // grafts the shared board under their own differently-uuid'd
-          // local folder - see BACKLOG.md item 11), so it can look
-          // "diverged" forever even when every real card agrees.
-          if (uuid === state.board.uuid) return false;
-          // Agenda priorities reconcile automatically. This panel is only
-          // for actionable board structure/content conflicts.
-          const localNode = findNode(state.board, uuid);
-          const node = localNode || discussionNode(uuid, info);
-          if (!["kanban_card", "kanban_column"].includes(node?.data?.type)) return false;
-          // A container (column) whose own fields match the peer and is
-          // only flagged because a child changed underneath it would just
-          // be noise here - that same event already shows up on the child
-          // itself.
-          return !(localNode && isContainerOnlyDivergence(localNode));
-        });
-        if (!entries.length) {
-          const empty = document.createElement("p");
-          empty.className = "confirm-text";
-          empty.textContent = "All cards and columns are aligned.";
-          container.append(empty);
-          return;
-        }
-        entries.sort((a, b) => (b[1].priority || 0) - (a[1].priority || 0));
-        let lastPriority = null;
-        for (const [uuid, info] of entries) {
-          if (lastPriority !== null && lastPriority !== info.priority) {
-            const divider = document.createElement("div");
-            divider.className = "discussion-divider";
-            container.append(divider);
-          }
-          // A node with no local copy yet (e.g. local_missing_node) still
-          // has a name on the peer's side - look there before giving up,
-          // so it doesn't misleadingly read as "removed".
-          const node = discussionNode(uuid, info);
-          const row = document.createElement("div");
-          row.className = "discussion-row";
-          const name = document.createElement("span");
-          name.className = "discussion-name";
-          name.textContent = node ? node.data.name || node.data.text || "Untitled" : "(unavailable)";
-          row.append(name);
-          const type = document.createElement("span");
-          type.className = "discussion-type";
-          type.textContent = DISCUSSION_TYPE_LABELS[info.type] || info.type;
-          row.append(type);
-          row.title = transitionLabel(info);
-          row.onclick = () => highlightCard(uuid);
-          container.append(row);
-          lastPriority = info.priority;
-        }
-      }
-
       function highlightCard(uuid) {
         const target = document.querySelector(`[data-uuid="${uuid}"]`);
         if (!target) return;
-        closeSidePanel();
+        SovereignShell.closeCollab();
         target.scrollIntoView({ behavior: "smooth", block: "center" });
         target.classList.add("highlight-flash");
         setTimeout(() => target.classList.remove("highlight-flash"), 1500);
@@ -692,14 +472,11 @@
           sizeBoardNameInput();
 
           renderAutoAdoptIndicator();
-          renderAutoAdoptControl();
           renderBoardAdoptTools();
 
           renderBoardQuickSwitch();
           renderNetwork();
           renderSelfAvatar();
-          renderAgenda();
-          renderDiscussionList();
 
           // Neues Rendering via Diffing
           renderBoard();
@@ -1402,7 +1179,7 @@
       }
 
       function openSimple(title, fields, onSubmit) {
-        closeSidePanel();
+        SovereignShell.closeCollab();
         setModalFooterMode("cancel-apply");
         el("simpleTitle").textContent = title;
         el("simpleFields").replaceChildren();
@@ -1696,26 +1473,9 @@
         }
       }
 
-      el("autoAdoptSelect").onchange = (event) =>
-        run(
-          () => api("/api/kanban/auto_adopt", { mode: event.target.value }),
-          "Auto-adopt updated",
-        );
-      function openSidePanel() {
-        document.body.classList.add("side-panel-open");
-        el("sidePanel").classList.add("open");
-      }
-      function closeSidePanel() {
-        document.body.classList.remove("side-panel-open");
-        el("sidePanel").classList.remove("open");
-      }
-      el("menuToggleBtn").onclick = () =>
-        el("sidePanel").classList.contains("open") ? closeSidePanel() : openSidePanel();
-      el("sidePanelCloseBtn").onclick = closeSidePanel;
-      el("autoAdoptHeaderControl").onclick = () => {
-        openSidePanel();
-        el("settingsSection").scrollIntoView({ behavior: "smooth", block: "start" });
-      };
+      // The header indicator still opens the setting, which now lives in the
+      // shell's collaboration pane rather than this page's own panel.
+      el("autoAdoptHeaderControl").onclick = () => SovereignShell.openCollab();
       el("overviewBtn").onclick = () => {
         window.location.href = "/apps/personal-cockpit";
       };
@@ -1724,16 +1484,9 @@
         toggleBoardSwitchMenu();
       };
       el("boardQuickSwitch").onchange = () => selectBoard(el("boardQuickSwitch").value);
-      el("agendaForm").addEventListener("submit", (event) => {
-        event.preventDefault();
-        const text = el("agendaText").value.trim();
-        if (!text) return;
-        el("agendaText").value = "";
-        run(() => api("/api/kanban/agenda/create", { text }), "Added");
-      });
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") {
-          closeSidePanel();
+          SovereignShell.closeCollab();
           closeBoardSwitchMenu();
         }
       });
@@ -1760,6 +1513,22 @@
         },
         panelContent: () => (state?.board ? boardPeerGraph() : null),
         extras: () => (state?.board ? unshareAction() : []),
+        // The pane is the shell's; Kanban supplies where its routes live and
+        // the two extra modes judged against card ownership, which Core
+        // stores without interpreting.
+        agendaRoutes: {
+          topicKey: 'board_uuid',
+          create: '/api/kanban/agenda/create',
+          delete: '/api/kanban/agenda/delete',
+          setPriority: '/api/kanban/agenda/set_priority',
+        },
+        autoAdoptRoute: {path: '/api/kanban/auto_adopt', topicKey: 'board_uuid'},
+        autoAdoptLabels: AUTO_ADOPT_LABELS,
+        describeNode: (uuid) => {
+          const node = findNode(state?.board, uuid);
+          return node ? (node.data.name || node.data.text || '') : '';
+        },
+        revealNode: (uuid) => highlightCard(uuid),
         // Kanban had no board-creation affordance of its own - only the
         // overview could make one. Create with a default name and let the
         // header's editable title rename it in place.
