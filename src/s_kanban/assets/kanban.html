@@ -9,12 +9,12 @@
   </head>
   <body>
     <div id="toast" class="toast"></div>
-    <header class="topbar">
-      <div class="top-actions-left">
-        <div class="brand">
-          <span class="brand-mark"></span><strong>S-Kanban</strong>
-        </div>
-      </div>
+    <!-- The shell owns the bar. Kanban's own controls are handed to it:
+         the board title goes in the topic region, the auto-adopt indicator
+         and adopt tools in the application-actions slot. -->
+    <header class="topbar"><div id="shell"></div></header>
+
+    <template id="kanbanHeaderControls">
       <div class="board-title">
         <select id="boardQuickSwitch" title="Switch board"></select>
         <input id="boardName" />
@@ -23,25 +23,14 @@
             <path d="M6 9l6 6 6-6"></path>
           </svg>
         </button>
-        <button id="overviewBtn" class="icon-btn" type="button" title="Manage all boards" aria-label="Manage all boards">
-          <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">
-            <rect x="3" y="3" width="7" height="7" rx="1"></rect>
-            <rect x="14" y="3" width="7" height="7" rx="1"></rect>
-            <rect x="3" y="14" width="7" height="7" rx="1"></rect>
-            <rect x="14" y="14" width="7" height="7" rx="1"></rect>
-          </svg>
-        </button>
         <div id="boardSwitchMenu" class="board-switch-menu"></div>
-        <div id="boardAdoptTools" class="adopt-tools"></div>
       </div>
-      <div class="top-actions">
-        <div id="shell"></div>
-        <div id="autoAdoptHeaderControl" class="auto-adopt-header-control">
-          <span id="autoAdoptIndicator" class="auto-adopt-square" title="Auto-adopt"></span>
-          <span id="autoAdoptHeaderLabel" class="auto-adopt-header-label"></span>
-        </div>
+      <div id="boardAdoptTools" class="adopt-tools"></div>
+      <div id="autoAdoptHeaderControl" class="auto-adopt-header-control">
+        <span id="autoAdoptIndicator" class="auto-adopt-square" title="Auto-adopt"></span>
+        <span id="autoAdoptHeaderLabel" class="auto-adopt-header-label"></span>
       </div>
-    </header>
+    </template>
 
 
     <main>
@@ -1475,25 +1464,12 @@
 
       // The header indicator still opens the setting, which now lives in the
       // shell's collaboration pane rather than this page's own panel.
-      el("autoAdoptHeaderControl").onclick = () => SovereignShell.openCollab();
-      el("overviewBtn").onclick = () => {
-        window.location.href = "/apps/personal-cockpit";
-      };
-      el("boardSwitchBtn").onclick = (event) => {
-        event.stopPropagation();
-        toggleBoardSwitchMenu();
-      };
-      el("boardQuickSwitch").onchange = () => selectBoard(el("boardQuickSwitch").value);
-      document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") {
-          SovereignShell.closeCollab();
-          closeBoardSwitchMenu();
-        }
-      });
-      document.addEventListener("click", (event) => {
-        const target = event.target instanceof Element ? event.target : event.target.parentElement;
-        if (!target?.closest(".board-title")) closeBoardSwitchMenu();
-      });
+      // Hand the application's own header controls to the shell before it
+      // renders, so they land in its regions rather than beside it.
+      const kanbanControls = el("kanbanHeaderControls").content;
+      const boardTitle = kanbanControls.querySelector(".board-title");
+      const adoptTools = kanbanControls.querySelector("#boardAdoptTools");
+      const autoAdoptIndicator = kanbanControls.querySelector("#autoAdoptHeaderControl");
 
       SovereignShell.mount({
         container: el("shell"),
@@ -1541,6 +1517,27 @@
         ),
         onChanged: () => loadBoard(),
       });
+      SovereignShell.setTopicRegion(boardTitle);
+      SovereignShell.setAppActions(adoptTools, autoAdoptIndicator);
+
+      el("autoAdoptHeaderControl").onclick = () => SovereignShell.openCollab();
+      el("boardSwitchBtn").onclick = (event) => {
+        event.stopPropagation();
+        toggleBoardSwitchMenu();
+      };
+      el("boardQuickSwitch").onchange = () => selectBoard(el("boardQuickSwitch").value);
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          SovereignShell.closeCollab();
+          closeBoardSwitchMenu();
+        }
+      });
+      document.addEventListener("click", (event) => {
+        const target = event.target instanceof Element ? event.target : event.target.parentElement;
+        if (!target?.closest(".board-title")) closeBoardSwitchMenu();
+      });
+
+
       function sizeBoardNameInput() {
         const input = el("boardName");
         const canvas = (sizeBoardNameInput._canvas ??= document.createElement("canvas"));

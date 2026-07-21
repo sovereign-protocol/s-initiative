@@ -15,6 +15,11 @@ APPLICATION_MANIFEST = ApplicationManifest(
     display_name="S-Kanban",
     data_schema_version=1,
     asset_package="s_kanban.assets",
+    icon=(
+        '<rect x="4" y="4" width="4" height="16" rx="1"></rect>'
+        '<rect x="10" y="4" width="4" height="11" rx="1"></rect>'
+        '<rect x="16" y="4" width="4" height="7" rx="1"></rect>'
+    ),
     ui_file="kanban.html",
     css_file="kanban.css",
 )
