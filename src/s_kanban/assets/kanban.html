@@ -230,45 +230,6 @@
       // Who is on this board, with the faces and names only Kanban knows.
       // The shell hosts it; Core supplies target assignment, tokens, and
       // connect around it.
-      function boardPeerGraph() {
-        const graph = document.createElement("div");
-        graph.className = "peer-graph";
-        const self = (state.users || [])[0] || { name: "You" };
-        const youNode = document.createElement("div");
-        youNode.className = "peer-graph-you";
-        youNode.append(avatarElement(self, true), document.createTextNode("You"));
-        graph.append(youNode);
-
-        const boardPeers = boardPeerAddresses();
-        const peerList = document.createElement("div");
-        peerList.className = "peer-graph-peers";
-        if (!boardPeers.length) {
-          const empty = document.createElement("p");
-          empty.className = "confirm-text";
-          empty.textContent = "No one else is discussing this board yet.";
-          peerList.append(empty);
-        }
-        for (const addr of boardPeers) {
-          const { online, metaText } = peerPresence(addr);
-          const row = document.createElement("div");
-          row.className = "peer-graph-peer";
-          row.append(avatarElement(userForParticipant(addr), online));
-          const details = document.createElement("div");
-          details.className = "peer-graph-peer-info";
-          const name = document.createElement("span");
-          name.className = "peer-graph-peer-name";
-          name.textContent = peerLabel(addr);
-          const meta = document.createElement("span");
-          meta.className = "peer-graph-peer-meta";
-          meta.textContent = metaText;
-          details.append(name, meta);
-          row.append(details);
-          peerList.append(row);
-        }
-        graph.append(peerList);
-        return graph;
-      }
-
       function unshareAction() {
         return [{
           label: "Stop discussing",
@@ -1485,9 +1446,11 @@
             label: peerLabel(addr),
             picture: user?.picture ? cssUrl(user.picture) : "",
             online: presence.online,
+            // The connections pane shows this per peer; Kanban's presence
+            // text is richer than "Online/Offline" (relay heartbeat age).
+            status: presence.metaText,
           };
         },
-        panelContent: () => (state?.board ? boardPeerGraph() : null),
         extras: () => (state?.board ? unshareAction() : []),
         // The pane is the shell's; Kanban supplies where its routes live and
         // the two extra modes judged against card ownership, which Core
