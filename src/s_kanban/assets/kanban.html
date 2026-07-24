@@ -1483,7 +1483,7 @@
       SovereignShell.setTopicRegion(boardTitle);
       SovereignShell.setAppActions(adoptTools, autoAdoptIndicator);
 
-      el("autoAdoptHeaderControl").onclick = () => SovereignShell.openCollab();
+      el("autoAdoptHeaderControl").onclick = () => SovereignShell.openConnectionPanel();
       el("boardSwitchBtn").onclick = (event) => {
         event.stopPropagation();
         toggleBoardSwitchMenu();
