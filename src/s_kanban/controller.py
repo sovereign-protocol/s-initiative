@@ -173,6 +173,12 @@ def build_routes(logic, runtime, config: dict) -> list[Route]:
             data["item_uuid"], data.get("priority"),
         ))
 
+    async def api_move_agenda_item(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.move_agenda_item(
+            data["item_uuid"], int(data.get("index", 0)),
+        ))
+
     return [
         Route("/api/kanban/board", api_board),
         Route("/api/kanban/auto_adopt", api_auto_adopt, methods=["POST"]),
@@ -198,6 +204,7 @@ def build_routes(logic, runtime, config: dict) -> list[Route]:
         Route("/api/kanban/agenda/create", api_create_agenda_item, methods=["POST"]),
         Route("/api/kanban/agenda/delete", api_delete_agenda_item, methods=["POST"]),
         Route("/api/kanban/agenda/set_priority", api_set_agenda_item_priority, methods=["POST"]),
+        Route("/api/kanban/agenda/move", api_move_agenda_item, methods=["POST"]),
     ]
 
 

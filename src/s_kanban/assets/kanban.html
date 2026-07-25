@@ -111,8 +111,8 @@
       const AUTO_ADOPT_FILL = { always: 4, not_owner: 2, not_member: 1, never: 0 };
       const AUTO_ADOPT_DESCRIPTIONS = {
         always: "Peer changes are automatically adopted into every card.",
-        not_owner: "Peer changes are automatically adopted, except on cards you own. New columns from peers wait for manual adoption.",
-        not_member: "Peer changes are automatically adopted, except on cards you're a member of. New columns from peers wait for manual adoption.",
+        not_owner: "Peer changes are automatically adopted, except on cards you own.",
+        not_member: "Peer changes are automatically adopted, except on cards you're a member of.",
         never: "Peer changes are never auto-adopted - you review and adopt each one yourself.",
       };
 
@@ -167,9 +167,9 @@
         );
       }
 
-      function renderAutoAdoptSquare(container) {
+      function renderAutoAdoptSquare(container, mode = state.auto_adopt_mode) {
         container.replaceChildren();
-        const filled = AUTO_ADOPT_FILL[state.auto_adopt_mode] ?? 4;
+        const filled = AUTO_ADOPT_FILL[mode] ?? 4;
         for (let i = 0; i < 4; i++) {
           const cell = document.createElement("span");
           cell.className = "auto-adopt-cell";
@@ -225,24 +225,6 @@
           avatar.textContent = initials(user.name);
         }
         return avatar;
-      }
-
-      // Who is on this board, with the faces and names only Kanban knows.
-      // The shell hosts it; Core supplies target assignment, tokens, and
-      // connect around it.
-      function unshareAction() {
-        return [{
-          label: "Stop discussing",
-          className: "danger",
-          onClick: () => confirmAction(
-            "Stop discussing this board?",
-            "This stops discussing it with everyone currently on it. The board itself is not deleted.",
-            () => run(
-              () => api("/api/kanban/boards/unshare", { board_uuid: state.board.uuid }),
-              "Stopped discussing this board",
-            ),
-          ),
-        }];
       }
 
       function peerPresence(addr) {
@@ -566,6 +548,14 @@
         article.className = "column";
         if (ghost) article.classList.add("ghost");
         article.draggable = !ghost;
+        if (!ghost) {
+          article.onmousedown = (event) => {
+            article.draggable = !event.target.closest(".card");
+          };
+          article.onmouseup = () => {
+            article.draggable = true;
+          };
+        }
         article.dataset.uuid = column.uuid;
         applyTransitionClass(article, column.uuid, {
           suppress: !ghost && isContainerOnlyDivergence(column),
@@ -632,6 +622,10 @@
             draggedColumn = column.uuid;
             dragActive = true;
             article.classList.add("dragging");
+            if (event.dataTransfer) {
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData("text/plain", column.uuid);
+            }
           };
           article.ondragend = () => {
             article.classList.remove("dragging");
@@ -649,7 +643,7 @@
         node.className = "card";
         if (ghost) node.classList.add("ghost");
         applyTransitionClass(node, card.uuid);
-        node.draggable = !ghost;
+        node.draggable = false;
         node.dataset.uuid = card.uuid;
         node.replaceChildren();
         const title = document.createElement("div");
@@ -669,20 +663,53 @@
         node.append(...cardReactionTools(card, ghost));
         node.onclick = (event) => {
           if (ghost) return;
+          if (node.dataset.suppressClick === "true") {
+            delete node.dataset.suppressClick;
+            return;
+          }
           if (isInteractiveCardTarget(event)) return;
           openCard(card, card.parent_uuid);
         };
         if (!ghost) {
-          node.ondragstart = (event) => {
-            draggedCard = card.uuid;
-            dragActive = true;
-            node.classList.add("dragging");
-            event.stopPropagation();
-          };
-          node.ondragend = () => {
-            draggedCard = null;
-            dragActive = false;
-            node.classList.remove("dragging");
+          node.onmousedown = (event) => {
+            if (event.button !== 0 || isInteractiveCardTarget(event)) return;
+            const startX = event.clientX;
+            const startY = event.clientY;
+            let moved = false;
+            const move = (moveEvent) => {
+              if (!moved && Math.hypot(
+                moveEvent.clientX - startX,
+                moveEvent.clientY - startY,
+              ) < 4) return;
+              moved = true;
+              moveEvent.preventDefault();
+              draggedCard = card.uuid;
+              dragActive = true;
+              node.classList.add("dragging");
+              const list = document.elementFromPoint(
+                moveEvent.clientX, moveEvent.clientY,
+              )?.closest(".card-list");
+              if (!list) return;
+              const after = cardAfterPointer(list, moveEvent.clientY);
+              if (after) list.insertBefore(node, after);
+              else list.append(node);
+            };
+            const up = async () => {
+              document.removeEventListener("mousemove", move);
+              document.removeEventListener("mouseup", up);
+              if (!moved) return;
+              node.dataset.suppressClick = "true";
+              const list = node.closest(".card-list");
+              if (!list) {
+                draggedCard = null;
+                dragActive = false;
+                node.classList.remove("dragging");
+                return;
+              }
+              await commitCardDrop(list, list.dataset.columnUuid);
+            };
+            document.addEventListener("mousemove", move);
+            document.addEventListener("mouseup", up);
           };
         }
         return node;
@@ -1170,10 +1197,15 @@
       el("cancelSimpleBtn").onclick = () => el("simpleModal").close();
 
       async function dropCard(event, columnUuid) {
+        if (!draggedCard) return;
         event.preventDefault();
         event.stopPropagation();
+        await commitCardDrop(event.currentTarget, columnUuid);
+      }
+
+      async function commitCardDrop(list, columnUuid) {
         if (!draggedCard) return;
-        const order = [...event.currentTarget.querySelectorAll(".card")].map(
+        const order = [...list.querySelectorAll(".card")].map(
           (item) => item.dataset.uuid,
         );
         const cardUuid = draggedCard;
@@ -1217,6 +1249,7 @@
       }
 
       function onCardDragOver(event) {
+        if (!draggedCard) return;
         event.preventDefault();
         event.stopPropagation();
         const dragging = document.querySelector(".card.dragging");
@@ -1451,7 +1484,6 @@
             status: presence.metaText,
           };
         },
-        extras: () => (state?.board ? unshareAction() : []),
         // The pane is the shell's; Kanban supplies where its routes live and
         // the two extra modes judged against card ownership, which Core
         // stores without interpreting.
@@ -1460,9 +1492,15 @@
           create: '/api/kanban/agenda/create',
           delete: '/api/kanban/agenda/delete',
           setPriority: '/api/kanban/agenda/set_priority',
+          move: '/api/kanban/agenda/move',
         },
         autoAdoptRoute: {path: '/api/kanban/auto_adopt', topicKey: 'board_uuid'},
         autoAdoptLabels: AUTO_ADOPT_LABELS,
+        autoAdoptDescriptions: AUTO_ADOPT_DESCRIPTIONS,
+        renderAutoAdoptIndicator: (container, mode) => {
+          container.classList.add("auto-adopt-square");
+          renderAutoAdoptSquare(container, mode);
+        },
         describeNode: (uuid) => {
           const node = findNode(state?.board, uuid);
           return node ? (node.data.name || node.data.text || '') : '';

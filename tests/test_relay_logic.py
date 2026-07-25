@@ -195,11 +195,22 @@ class LocalFolderRelayStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             storage = LocalFolderRelayStorage(root)
 
-            storage.write_snapshot("topic-1", "A", "hash-1", {"subtree": {"name": "x"}, "parent_uuid": None})
+            storage.write_snapshot("topic-1", "A", "hash-1", {
+                "subtree": {"name": "x"},
+                "parent_uuid": None,
+                "_relay_publication_seq": 7,
+                "_relay_ack_requested": True,
+                "_relay_ack_publication_seq": 7,
+                "_relay_observed_publications": {"B": 4},
+            })
 
             head = storage.read_head("topic-1", "A")
             self.assertEqual(head["hash"], "hash-1")
             self.assertEqual(head["peer"], "A")
+            self.assertEqual(head["publication_seq"], 7)
+            self.assertTrue(head["ack_requested"])
+            self.assertEqual(head["ack_publication_seq"], 7)
+            self.assertEqual(head["observed_publications"], {"B": 4})
             snapshot = storage.read_snapshot("topic-1", "A", "hash-1")
             self.assertEqual(snapshot["subtree"], {"name": "x"})
 
@@ -381,11 +392,22 @@ class SftpRelayStorageTests(unittest.TestCase):
         fake = FakeSftpClient()
         storage = _sftp_storage_with_fake(fake)
 
-        storage.write_snapshot("topic-1", "A", "hash-1", {"subtree": {"name": "x"}, "parent_uuid": None})
+        storage.write_snapshot("topic-1", "A", "hash-1", {
+            "subtree": {"name": "x"},
+            "parent_uuid": None,
+            "_relay_publication_seq": 7,
+            "_relay_ack_requested": True,
+            "_relay_ack_publication_seq": 7,
+            "_relay_observed_publications": {"B": 4},
+        })
 
         head = storage.read_head("topic-1", "A")
         self.assertEqual(head["hash"], "hash-1")
         self.assertEqual(head["peer"], "A")
+        self.assertEqual(head["publication_seq"], 7)
+        self.assertTrue(head["ack_requested"])
+        self.assertEqual(head["ack_publication_seq"], 7)
+        self.assertEqual(head["observed_publications"], {"B": 4})
         snapshot = storage.read_snapshot("topic-1", "A", "hash-1")
         self.assertEqual(snapshot["subtree"], {"name": "x"})
 
@@ -1222,6 +1244,95 @@ class RelayLogicTests(unittest.TestCase):
 
             self.assertEqual(second, [])
 
+    def test_publication_sequence_persists_and_advances_after_restart(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            kanban_a = KanbanLogic(session_a, {})
+            board_uuid = kanban_a.create_board("Board").value
+            config = self._relay_config(relay_root, "A", state_dir)
+            relay_a = RelayLogic(session_a, config)
+
+            relay_a.publish_due_topics()
+
+            first_head = relay_a.storage.read_head(board_uuid, "A")
+            self.assertEqual(first_head["publication_seq"], 1)
+            self.assertTrue(first_head["ack_requested"])
+            self.assertEqual(first_head["ack_publication_seq"], 1)
+            state = json.loads(
+                Path(relay_a._state_path).read_text(encoding="utf-8"),
+            )
+            self.assertEqual(state["publication_seq"][board_uuid], 1)
+
+            restarted = RelayLogic(session_a, config)
+            board = kanban_a.ensure_board()
+            kanban_a.create_card(
+                kanban_a.columns(board)[0].uuid, "After restart",
+            )
+            restarted.publish_due_topics()
+
+            second_head = restarted.storage.read_head(board_uuid, "A")
+            self.assertEqual(second_head["publication_seq"], 2)
+            self.assertTrue(second_head["ack_requested"])
+            self.assertEqual(second_head["ack_publication_seq"], 2)
+
+    def test_publication_acknowledgement_is_sequenced_without_ack_loop(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            kanban_a = KanbanLogic(session_a, {})
+            board_uuid = kanban_a.create_board("Shared").value
+            relay_a = RelayLogic(
+                session_a, self._relay_config(relay_root, "A", state_dir),
+            )
+            relay_a.mark_topics_shared([board_uuid])
+            relay_a.publish_due_topics()
+            self.assertEqual(
+                relay_a.storage.read_head(board_uuid, "A")["publication_seq"],
+                1,
+            )
+
+            session_b = Session("addr-b")
+            KanbanLogic(session_b, {})
+            relay_b = RelayLogic(
+                session_b, self._relay_config(relay_root, "B", state_dir),
+            )
+            relay_b.mark_topics_desired([board_uuid])
+            relay_b.poll_and_apply()
+            relay_b.publish_due_topics()
+
+            head_b = relay_b.storage.read_head(board_uuid, "B")
+            self.assertEqual(head_b["observed_publications"]["A"], 1)
+            self.assertTrue(head_b["ack_requested"])
+
+            relay_a.poll_and_apply()
+            self.assertEqual(
+                relay_a._state["peer_observed_publications"][board_uuid]["B"],
+                1,
+            )
+            self.assertIn(board_uuid, relay_a.publish_due_topics())
+            head_a = relay_a.storage.read_head(board_uuid, "A")
+            self.assertEqual(head_a["publication_seq"], 2)
+            self.assertFalse(head_a["ack_requested"])
+            self.assertEqual(head_a["ack_publication_seq"], 1)
+            self.assertEqual(head_a["observed_publications"]["B"], 1)
+
+            relay_b.poll_and_apply()
+
+            self.assertEqual(relay_b.publish_due_topics(), [])
+
+            # A late peer sees acknowledgement-only A#2, but it still
+            # acknowledges A#1: the semantic publication represented by
+            # that unchanged-hash head.
+            session_c = Session("addr-c")
+            KanbanLogic(session_c, {})
+            relay_c = RelayLogic(
+                session_c, self._relay_config(relay_root, "C", state_dir),
+            )
+            relay_c.mark_topics_desired([board_uuid])
+            relay_c.poll_and_apply()
+            relay_c.publish_due_topics()
+            head_c = relay_c.storage.read_head(board_uuid, "C")
+            self.assertEqual(head_c["observed_publications"]["A"], 1)
+
     def test_relay_acknowledgement_confirms_divergence_without_timer(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
@@ -1257,6 +1368,110 @@ class RelayLogicTests(unittest.TestCase):
 
             confirmed = kanban_a.transition_by_node(kanban_a.transition_events(board_uuid))
             self.assertEqual(confirmed[card.uuid]["type"], "divergence")
+
+    def test_peer_observation_waits_for_matching_changed_snapshot(self):
+        with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
+            session_a = Session("addr-a")
+            kanban_a = KanbanLogic(session_a, {})
+            board_uuid = kanban_a.create_board("Shared").value
+            card = kanban_a.create_card(
+                kanban_a.columns(kanban_a.ensure_board())[0].uuid,
+                "Before", "", [],
+            ).value
+            relay_a = RelayLogic(
+                session_a, self._relay_config(relay_root, "A", state_dir),
+            )
+            relay_a.mark_topics_shared([board_uuid])
+            relay_a.publish_due_topics()
+
+            session_b = Session("addr-b")
+            KanbanLogic(session_b, {})
+            relay_b = RelayLogic(
+                session_b, self._relay_config(relay_root, "B", state_dir),
+            )
+            relay_b.mark_topics_desired([board_uuid])
+            relay_b.poll_and_apply()
+            relay_b.publish_due_topics()
+            relay_a.poll_and_apply()
+
+            kanban_a.update_card(card.uuid, "After", "", [], None)
+            relay_a.publish_due_topics()
+            relay_b.poll_and_apply()
+            session_b.reconcile_peer_changes("relay:A", board_uuid)
+            relay_b.publish_due_topics()
+
+            original_read_snapshot = relay_a.storage.read_snapshot
+            relay_a.storage.read_snapshot = lambda *_args, **_kwargs: None
+            try:
+                relay_a.poll_and_apply()
+            finally:
+                relay_a.storage.read_snapshot = original_read_snapshot
+
+            current_card = session_a.protocol.index[card.uuid]
+            self.assertFalse(
+                session_a.peer_observed_node("relay:B", current_card),
+            )
+            waiting = kanban_a.transition_by_node(
+                kanban_a.transition_events(board_uuid),
+            )
+            self.assertEqual(waiting[card.uuid]["type"], "in_transition")
+
+            relay_a.poll_and_apply()
+
+            self.assertTrue(
+                session_a.peer_observed_node("relay:B", current_card),
+            )
+            agreed = kanban_a.transition_by_node(
+                kanban_a.transition_events(board_uuid),
+            )
+            self.assertEqual(agreed[card.uuid]["type"], "in_agreement")
+
+    def test_stale_peer_suppresses_only_unconfirmed_transition(self):
+        session = Session("addr-a")
+        liveness = {"state": "alive"}
+        channels = types.SimpleNamespace(
+            peer_liveness_for_address=lambda _addr, _topic: dict(liveness),
+        )
+        kanban = KanbanLogic(session, {}, channels)
+        board_uuid = kanban.create_board("Shared").value
+        card = kanban.create_card(
+            kanban.columns(kanban.ensure_board())[0].uuid,
+            "Before", "", [],
+        ).value
+        peer_board = ProtocolNode.from_dict(
+            session.protocol.index[board_uuid].to_dict(),
+        )
+        session.apply_peer_subtree("relay:B", peer_board, None)
+        session.note_indirect_peer_topic("relay:B", board_uuid)
+        session.note_peer_channel("relay:B", "mailbox")
+
+        kanban.update_card(card.uuid, "After", "", [], None)
+        alive = kanban.transition_by_node(
+            kanban.transition_events(board_uuid),
+        )
+        self.assertEqual(alive[card.uuid]["type"], "in_transition")
+
+        liveness["state"] = "stale"
+        stale = kanban.transition_by_node(
+            kanban.transition_events(board_uuid),
+        )
+        self.assertNotIn(card.uuid, stale)
+
+        current_card = session.protocol.index[card.uuid]
+        session.record_peer_observations(
+            "relay:B",
+            {card.uuid: session.node_revision(current_card)},
+        )
+        confirmed = kanban.transition_by_node(
+            kanban.transition_events(board_uuid),
+        )
+        self.assertEqual(confirmed[card.uuid]["type"], "divergence")
+
+        liveness["state"] = "alive"
+        online_again = kanban.transition_by_node(
+            kanban.transition_events(board_uuid),
+        )
+        self.assertEqual(online_again[card.uuid]["type"], "divergence")
 
     def test_channel_descriptor_carries_host_poll_interval(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:

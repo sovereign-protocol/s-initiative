@@ -288,7 +288,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         self.assertEqual(
             right.session.analyze_peer_transitions(left.address, item.uuid)[0]["type"],
-            "in_transition",
+            "peer_made_changes",
         )
         right.logic.board_payload()
 
@@ -313,6 +313,54 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertEqual(result.status, "error")
         self.assertEqual(right.session.protocol.index[item.uuid].data["priority"], "low")
+
+    def test_non_originator_can_reorder_agenda_and_order_propagates(self):
+        left = self.runtime(8399)
+        right = self.runtime(8400)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        left.logic.set_auto_adopt_mode("never")
+        first = left.logic.create_agenda_item("First").value
+        second = left.logic.create_agenda_item("Second").value
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        right.logic.board_payload()
+
+        result = right.logic.move_agenda_item(second.uuid, 0)
+        right.adapter.execute_effects(right.session.sync_effects(board.uuid))
+        left.logic.board_payload()
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(
+            [item.uuid for item in left.logic.agenda_items()],
+            [second.uuid, first.uuid],
+        )
+
+    def test_agenda_changes_are_not_displayed_as_board_divergences(self):
+        left = self.runtime(8402)
+        right = self.runtime(8403)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        item = left.logic.create_agenda_item("Discuss later").value
+        payload = left.session.get_subtree(board.uuid)
+        right.session.apply_peer_subtree(
+            left.address,
+            ProtocolNode.from_dict(payload["subtree"]),
+            payload["parent_uuid"],
+        )
+
+        events = right.logic.transition_events(board.uuid)
+
+        self.assertNotIn(item.uuid, {
+            event["node_uuid"] for event in events
+        })
 
     def test_two_clients_auto_adopt_card_move(self):
         left = self.runtime(8313)
@@ -391,6 +439,56 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertEqual(left.session.protocol.index[card.uuid].parent_uuid, second.uuid)
 
+    def test_auto_adopt_accepts_second_move_by_same_origin_after_agreement(self):
+        left = self.runtime(8401)
+        right = self.runtime(8402)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        connect(left, right, board.uuid)
+        left.logic.set_auto_adopt_mode("always")
+        right.logic.set_auto_adopt_mode("always")
+        todo, doing, done = left.logic.columns(board)[:3]
+
+        # Right authors the card and remains its origin through two moves.
+        card = right.logic.create_card(done.uuid, "Move twice", "", []).value
+        right.adapter.execute_effects(right.session.sync_effects(board.uuid))
+        left.logic.board_payload()
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        right.logic.board_payload()
+
+        right.logic.move_card(card.uuid, doing.uuid, 0)
+        right.adapter.execute_effects(right.session.sync_effects(board.uuid))
+        left.logic.board_payload()
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        right.logic.board_payload()
+        agreed_seq = right.session.protocol.index[card.uuid].revision_seq
+
+        right.logic.move_card(card.uuid, todo.uuid, 0)
+        moved = right.session.protocol.index[card.uuid]
+        self.assertGreater(moved.revision_seq, agreed_seq)
+        right.adapter.execute_effects(right.session.sync_effects(board.uuid))
+
+        incoming = next(
+            event
+            for event in left.session.analyze_peer_transitions(
+                right.address, board.uuid,
+            )
+            if event["node_uuid"] == card.uuid
+        )
+        self.assertEqual(incoming["type"], "peer_made_changes")
+        left.logic.board_payload()
+
+        self.assertEqual(
+            left.session.protocol.index[card.uuid].parent_uuid,
+            todo.uuid,
+        )
+        self.assertEqual(
+            left.session.protocol.index[card.uuid].revision_seq,
+            moved.revision_seq,
+        )
+
     def test_auto_adopt_not_owner_skips_only_cards_i_own(self):
         left = self.runtime(8369)
         right = self.runtime(8370)
@@ -461,6 +559,61 @@ class KanbanNewLogicTests(unittest.TestCase):
             right.session.protocol.index[not_involved.uuid].data["name"],
             "Renamed (uninvolved)",
         )
+
+    def test_not_member_auto_adopts_new_empty_column_and_its_order(self):
+        left = self.runtime(8375)
+        right = self.runtime(8376)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        right.logic.set_auto_adopt_mode("not_member")
+
+        column = left.logic.create_column("Peer column").value
+        left.logic.move_column(column.uuid, 0)
+        expected = left.session.protocol.index[column.uuid]
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+
+        payload = right.logic.board_payload()
+
+        self.assertIn(column.uuid, right.session.protocol.index)
+        adopted = right.session.protocol.index[column.uuid]
+        self.assertEqual(adopted.data, expected.data)
+        self.assertEqual(adopted.revision_origin, expected.revision_origin)
+        self.assertEqual(adopted.revision_seq, expected.revision_seq)
+        self.assertEqual(
+            payload["transition_by_node"][column.uuid]["type"],
+            "in_agreement",
+        )
+
+    def test_not_member_adopts_new_column_then_filters_its_cards(self):
+        left = self.runtime(8377)
+        right = self.runtime(8378)
+        client = MemoryHttpClient({left.address: left, right.address: right})
+        left.adapter.http = client
+        right.adapter.http = client
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        right.logic.set_auto_adopt_mode("not_member")
+        right_id = right.logic.user_profile().uuid
+
+        column = left.logic.create_column("Mixed cards").value
+        protected = left.logic.create_card(
+            column.uuid, "Right participates", "", [right_id],
+        ).value
+        allowed = left.logic.create_card(
+            column.uuid, "Uninvolved", "", [],
+        ).value
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+
+        right.logic.board_payload()
+
+        self.assertIn(column.uuid, right.session.protocol.index)
+        self.assertNotIn(protected.uuid, right.session.protocol.index)
+        self.assertIn(allowed.uuid, right.session.protocol.index)
 
     def test_not_owner_declines_column_deletion_holding_my_card(self):
         # Deleting a container removes its whole subtree at the protocol level
@@ -1530,7 +1683,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertEqual(result.status, "error")
 
-    def test_agenda_items_unset_priority_sorts_after_low(self):
+    def test_agenda_priority_does_not_reorder_items(self):
         runtime = self.runtime(8389)
         logic: KanbanLogic = runtime.logic
 
@@ -1539,21 +1692,21 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         items = logic.agenda_items()
 
-        self.assertEqual([item.data["text"] for item in items], ["Low item", "No priority"])
+        self.assertEqual([item.data["text"] for item in items], ["No priority", "Low item"])
 
-    def test_agenda_items_sort_high_before_medium_before_low(self):
+    def test_changing_agenda_priority_does_not_reorder_items(self):
         runtime = self.runtime(8380)
         logic: KanbanLogic = runtime.logic
 
-        logic.create_agenda_item("Low item", priority="low")
-        logic.create_agenda_item("High item", priority="high")
-        logic.create_agenda_item("Medium item", priority="medium")
+        first = logic.create_agenda_item("First", priority="low").value
+        logic.create_agenda_item("Second", priority="high")
+        logic.set_agenda_item_priority(first.uuid, "high")
 
         items = logic.agenda_items()
 
         self.assertEqual(
             [item.data["text"] for item in items],
-            ["High item", "Medium item", "Low item"],
+            ["First", "Second"],
         )
 
     def test_agenda_items_same_priority_keeps_creation_order(self):
@@ -1566,6 +1719,40 @@ class KanbanNewLogicTests(unittest.TestCase):
         items = logic.agenda_items()
 
         self.assertEqual([item.data["text"] for item in items], ["First", "Second"])
+
+    def test_move_agenda_item_sets_manual_order(self):
+        runtime = self.runtime(8401)
+        logic: KanbanLogic = runtime.logic
+        first = logic.create_agenda_item("First").value
+        second = logic.create_agenda_item("Second").value
+        third = logic.create_agenda_item("Third").value
+
+        result = logic.move_agenda_item(third.uuid, 0)
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(
+            [item.uuid for item in logic.agenda_items()],
+            [third.uuid, first.uuid, second.uuid],
+        )
+
+    def test_move_legacy_agenda_item_uses_unshifted_fallback_order(self):
+        runtime = self.runtime(8404)
+        logic: KanbanLogic = runtime.logic
+        first = logic.create_agenda_item("First").value
+        second = logic.create_agenda_item("Second").value
+        third = logic.create_agenda_item("Third").value
+        for item in logic.agenda_items():
+            data = dict(item.data)
+            data.pop("order")
+            logic.session.modify(item.uuid, data, item.weights)
+
+        result = logic.move_agenda_item(first.uuid, 1)
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(
+            [item.uuid for item in logic.agenda_items()],
+            [second.uuid, first.uuid, third.uuid],
+        )
 
     def test_delete_agenda_item_removes_it(self):
         runtime = self.runtime(8382)

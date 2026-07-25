@@ -55,9 +55,9 @@ KANBAN_APPLICATION_ID = "kanban"
 ORDER_GAP_EPSILON = 1e-9
 AUTO_ADOPT_MODES = ("always", "not_owner", "not_member", "never")
 AGENDA_PRIORITIES = ("high", "medium", "low")
-# Priority is optional (None/"" means "not set") - unset sorts below every
-# explicit priority rather than defaulting to "medium".
-AGENDA_PRIORITY_RANK = {"high": 3, "medium": 2, "low": 1}
+DISPLAYED_DIVERGENCE_TYPES = frozenset({
+    "kanban_board", "kanban_column", "kanban_card",
+})
 
 
 class KanbanLogic:
@@ -89,7 +89,8 @@ class KanbanLogic:
         if auto_adopt:
             self.adopt_all_incoming_changes()
             board = self.ensure_board()
-        events = self.transition_events(board.uuid)
+        network = self._network_info(board.uuid)
+        events = self.transition_events(board.uuid, network)
         channel_manager = self._channel_manager()
         return {
             "address": self.session.address,
@@ -97,7 +98,7 @@ class KanbanLogic:
             "boards": [item.to_dict() for item in self.boards()],
             "user_profile": self.user_profile().to_dict(),
             "users": self.users(),
-            "network": self._network_info(board.uuid),
+            "network": network,
             "peers": {
                 addr: tree.to_dict()
                 for addr, tree in sorted(self.session.peer_perspectives.items())
@@ -544,19 +545,9 @@ class KanbanLogic:
                 # (including a brand-new one) so a peer's note appears under any
                 # auto-adopt mode, the way agenda items follow their author.
                 return True
-            # Known consequence (review S-6/K-4): in not_owner/not_member,
-            # a peer's brand-new column is ineligible here, and reconcile
-            # walks events uuid-sorted rather than parents-first, so its
-            # child cards can't adopt either (no local parent yet) - the
-            # whole new column waits for manual adoption. Documented in
-            # AUTO_ADOPT_DESCRIPTIONS; revisit if parents-first ordering
-            # ever lands.
-            #
-            # A column (or any non-card node) that doesn't exist locally yet
-            # would have to be adopted as a whole subtree, which could pull
-            # in child cards the current mode is supposed to filter out.
-            # Only "always" mode may adopt those; other modes leave it for
-            # manual review.
+            # Missing columns under restricted modes are adopted shallowly
+            # before this generic pass. Any other missing container would
+            # still graft its whole subtree, so only "always" may accept it.
             if event_type == "local_missing_node":
                 return mode == "always"
             return True
@@ -571,6 +562,11 @@ class KanbanLogic:
             changed = self._adopt_originator_agenda_changes(addr, board.uuid) or changed
             if mode == "never":
                 continue
+            if mode in ("not_owner", "not_member"):
+                changed = (
+                    self._adopt_missing_columns_shallowly(addr, board.uuid)
+                    or changed
+                )
 
             def source_eligible(node: ProtocolNode, event_type: str) -> bool:
                 # Agenda changes are handled above using author authority;
@@ -598,6 +594,32 @@ class KanbanLogic:
             ) or changed
         return changed
 
+    def _adopt_missing_columns_shallowly(
+        self, peer_addr: str, board_uuid: str,
+    ) -> bool:
+        """Create peer columns first without bypassing per-card policy."""
+        changed = False
+        for event in self.session.analyze_peer_transitions(
+            peer_addr, board_uuid,
+        ):
+            if event["type"] != "local_missing_node":
+                continue
+            peer_node = self.session.get_cached_peer_subtree(
+                peer_addr, event.get("node_uuid"),
+            )
+            if (
+                not peer_node
+                or peer_node.data.get("type") != "kanban_column"
+            ):
+                continue
+            result = self.session.accept_peer_node(
+                peer_addr,
+                peer_node.uuid,
+                adopt_descendants=False,
+            )
+            changed = changed or result.status == "ok"
+        return changed
+
     def _adopt_originator_agenda_changes(self, peer_addr: str,
                                           board_uuid: str) -> bool:
         """Make an agenda item's originator authoritative on every peer."""
@@ -616,7 +638,13 @@ class KanbanLogic:
             if (not authority_node
                     or authority_node.data.get("type") != "agenda_item"):
                 continue
-            if authority_node.data.get("author") != originator_uuid:
+            originator_change = (
+                authority_node.data.get("author") == originator_uuid
+            )
+            order_only_change = self._agenda_order_only_change(
+                local_node, peer_node,
+            )
+            if not originator_change and not order_only_change:
                 continue
             # The originator is authoritative even when a revert makes the
             # generic one-hop hash classifier call the recipient's value
@@ -626,6 +654,25 @@ class KanbanLogic:
             )
             changed = changed or result.status == "ok"
         return changed
+
+    @staticmethod
+    def _agenda_order_only_change(
+        local_node: ProtocolNode | None,
+        peer_node: ProtocolNode | None,
+    ) -> bool:
+        if not local_node or not peer_node:
+            return False
+        if (
+            local_node.deleted != peer_node.deleted
+            or local_node.weights != peer_node.weights
+            or local_node.parent_uuid != peer_node.parent_uuid
+        ):
+            return False
+        local_data = dict(local_node.data)
+        peer_data = dict(peer_node.data)
+        local_order = local_data.pop("order", None)
+        peer_order = peer_data.pop("order", None)
+        return local_data == peer_data and local_order != peer_order
 
     def _auto_adopt_allows_node(self, mode: str, node: ProtocolNode | None) -> bool:
         if mode == "always":
@@ -680,14 +727,28 @@ class KanbanLogic:
                 changed = self.adopt_incoming_changes(board) or changed
         return changed
 
-    def transition_events(self, board_uuid: str | None = None) -> list[dict]:
+    def transition_events(
+        self, board_uuid: str | None = None, network: dict | None = None,
+    ) -> list[dict]:
         board = self.ensure_board()
         board_uuid = board_uuid or board.uuid
         events = []
         for addr in sorted(self.session.peer_perspectives):
             if not self.session.peer_discusses_node(addr, board.uuid):
                 continue
+            liveness = self._peer_liveness(addr, board_uuid, network)
             for event in self.session.analyze_peer_transitions(addr, board_uuid):
+                if not self._is_displayed_divergence(addr, event):
+                    continue
+                # A stale relay peer cannot yet react to a local revision.
+                # Keep its cached perspective, but do not turn that expected
+                # silence into a lamp/counter entry.  Confirmed divergences and
+                # incoming peer changes remain visible.
+                if (
+                    event["type"] == "in_transition"
+                    and liveness.get("state") == "stale"
+                ):
+                    continue
                 event["changes"] = (
                     [] if event["type"] == "in_agreement"
                     else self.describe_peer_changes(
@@ -696,6 +757,27 @@ class KanbanLogic:
                 )
                 events.append(event)
         return events
+
+    def _is_displayed_divergence(self, peer_addr: str, event: dict) -> bool:
+        node_uuid = event.get("node_uuid")
+        local = self.session.protocol.index.get(node_uuid)
+        peer = self.session.get_cached_peer_subtree(peer_addr, node_uuid)
+        node = local or peer
+        return bool(
+            node and node.data.get("type") in DISPLAYED_DIVERGENCE_TYPES
+        )
+
+    def _peer_liveness(
+        self, peer_addr: str, topic_uuid: str, network: dict | None = None,
+    ) -> dict:
+        peer_info = ((network or {}).get("peers") or {}).get(peer_addr) or {}
+        if peer_info.get("channel_liveness") is not None:
+            return peer_info["channel_liveness"]
+        manager = self._channel_manager()
+        resolver = getattr(manager, "peer_liveness_for_address", None)
+        if not resolver:
+            return {"state": "unknown"}
+        return resolver(peer_addr, topic_uuid) or {"state": "unknown"}
 
     def describe_peer_changes(self, peer_addr: str,
                               node_uuid: str | None) -> list[dict]:
@@ -1059,6 +1141,9 @@ class KanbanLogic:
 
     def set_agenda_item_priority(self, item_uuid: str, priority: str | None) -> SessionResult:
         return self.session.set_agenda_item_priority(item_uuid, priority)
+
+    def move_agenda_item(self, item_uuid: str, index: int) -> SessionResult:
+        return self.session.move_agenda_item(item_uuid, index)
 
     @staticmethod
     def _order_between(low: float | None, high: float | None) -> float | None:
