@@ -15,7 +15,7 @@ def build_routes(logic, runtime, config: dict) -> list[Route]:
         result = await asyncio.to_thread(logic.on_peer_update)
         if result.value:
             await asyncio.to_thread(
-                runtime.channel_manager.execute_effects, result.effects,
+                runtime.deliver_effects, result.effects,
             )
             runtime.notify_change()
         return JSONResponse(json_value(logic.board_payload(auto_adopt=False)))
@@ -23,7 +23,9 @@ def build_routes(logic, runtime, config: dict) -> list[Route]:
     async def api_auto_adopt(request: Request):
         data = await request.json()
         return await _json_result(
-            runtime, logic.set_auto_adopt_mode(data.get("mode", "always")),
+            runtime, logic.set_auto_adopt_mode(
+                data.get("mode", "always"), data.get("board_uuid"),
+            ),
         )
 
     async def api_create_board(request: Request):
@@ -64,7 +66,7 @@ def build_routes(logic, runtime, config: dict) -> list[Route]:
         deliveries = []
         if result.status == "ok":
             deliveries = await asyncio.to_thread(
-                runtime.channel_manager.execute_effects, result.effects,
+                runtime.deliver_effects, result.effects,
             )
             runtime.notify_change()
         view = application_result_view(result, deliveries)
@@ -158,7 +160,7 @@ def build_routes(logic, runtime, config: dict) -> list[Route]:
     async def api_create_agenda_item(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.create_agenda_item(
-            data.get("text", ""), data.get("priority"),
+            data.get("text", ""), data.get("priority"), data.get("board_uuid"),
         ))
 
     async def api_delete_agenda_item(request: Request):
@@ -212,7 +214,7 @@ async def _json_result(runtime, result) -> JSONResponse:
     deliveries = []
     if result.status == "ok":
         deliveries = await asyncio.to_thread(
-            runtime.channel_manager.execute_effects, result.effects,
+            runtime.deliver_effects, result.effects,
         )
         runtime.notify_change()
     view = application_result_view(result, deliveries)

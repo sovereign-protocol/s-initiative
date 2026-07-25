@@ -45,21 +45,20 @@ def wait_for_server(port: int) -> None:
 
 
 def connect_over_http(host_port: int, guest_port: int, board_uuid: str) -> dict:
-    """Connect two live servers the way the UI does: fetch a connect token
-    from the host and hand it to the guest's /api/connect.
+    """Connect two live servers through Core's collaboration API.
 
     Replaces the removed address-based /api/kanban/invite +
     /api/kanban/boards/share endpoints, which had no UI caller left.
     """
     token = request_json(
         "POST",
-        f"http://127.0.0.1:{host_port}/api/connect_token",
-        {"topic_uuids": [board_uuid]},
+        f"http://127.0.0.1:{host_port}/api/core/invitations",
+        {"topic_uuid": board_uuid, "channel_ref": "http"},
         timeout=20,
     )
     return request_json(
         "POST",
-        f"http://127.0.0.1:{guest_port}/api/connect",
+        f"http://127.0.0.1:{guest_port}/api/core/invitations/accept",
         {"token": token},
         timeout=20,
     )

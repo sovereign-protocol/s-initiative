@@ -62,10 +62,10 @@ DISPLAYED_DIVERGENCE_TYPES = frozenset({
 
 class KanbanLogic:
     def __init__(self, session: Session, config: dict | None = None,
-                 channel_manager=None):
+                 collaboration=None):
         self.session = session
         self.config = config or {}
-        self.channel_manager = channel_manager
+        self.collaboration = collaboration
         # Revision ownership must exist before the first board/card mutation.
         # Session.identity bootstraps its own origin without recursion.
         self.session.identity
@@ -81,9 +81,6 @@ class KanbanLogic:
             on_peer_update=self.on_peer_update,
         )
 
-    def _channel_manager(self):
-        return self.channel_manager
-
     def board_payload(self, auto_adopt: bool = True) -> dict:
         board = self.ensure_board()
         if auto_adopt:
@@ -91,7 +88,6 @@ class KanbanLogic:
             board = self.ensure_board()
         network = self._network_info(board.uuid)
         events = self.transition_events(board.uuid, network)
-        channel_manager = self._channel_manager()
         return {
             "address": self.session.address,
             "board": board.to_dict(),
@@ -113,8 +109,6 @@ class KanbanLogic:
             "transition_by_node": self.transition_by_node(events),
             "agenda_items": [item.to_dict() for item in self.agenda_items(board)],
             "comments_by_card": self._comments_by_card(board),
-            "channel_targets": channel_manager.list_targets() if channel_manager else [],
-            "channel_target_id": channel_manager.target_for_topic(board.uuid) if channel_manager else None,
         }
 
     def _comments_by_card(self, board: ProtocolNode) -> dict:
@@ -142,10 +136,9 @@ class KanbanLogic:
         return out
 
     def _network_info(self, board_uuid: str | None = None) -> dict:
-        channel_manager = self._channel_manager()
         return (
-            channel_manager.network_info(board_uuid)
-            if channel_manager else self.session.get_network_info()
+            self.collaboration.network_info(board_uuid)
+            if self.collaboration else self.session.get_network_info()
         )
 
     # The policy is Session's; Kanban only adds the two modes that are judged
@@ -162,8 +155,15 @@ class KanbanLogic:
             self.session.auto_adopt_mode(board.uuid, fallback)
         )
 
-    def set_auto_adopt_mode(self, mode: str) -> SessionResult:
-        board = self.ensure_board()
+    def set_auto_adopt_mode(
+        self, mode: str, board_uuid: str | None = None,
+    ) -> SessionResult:
+        board = (
+            self.session.protocol.index.get(board_uuid)
+            if board_uuid else self.ensure_board()
+        )
+        if not board or board.data.get("type") != "kanban_board":
+            return SessionResult("error", reason="board not found")
         normalized = self._normalize_auto_adopt_mode(mode)
         return self.session.set_auto_adopt_mode(
             board.uuid, normalized, AUTO_ADOPT_MODES,
@@ -279,12 +279,11 @@ class KanbanLogic:
         board = self.session.protocol.index.get(board_uuid)
         if not board or board.data.get("type") != "kanban_board":
             return SessionResult("error", reason="board not found")
-        channel_manager = self._channel_manager()
-        if channel_manager:
-            channel_manager.assign_topic_target(board_uuid, None)
+        release = self.session.end_topic_sharing(board_uuid)
         result = self.session.delete(board.uuid)
         if result.status != "ok":
             return result
+        result.effects = [*release.effects, *result.effects]
         remaining = [item for item in self.boards() if item.uuid != board_uuid]
         if remaining:
             self._remember_board(remaining[0].uuid)
@@ -309,18 +308,16 @@ class KanbanLogic:
         board = self.session.protocol.index.get(board_uuid) if board_uuid else self.ensure_board()
         if not board or board.data.get("type") != "kanban_board":
             return SessionResult("error", reason="board not found")
-        # Detach the board before the peer check: token creation may already
-        # have armed channel publication even when nobody accepted it yet.
-        channel_manager = self._channel_manager()
-        if channel_manager is not None:
-            channel_manager.assign_topic_target(board.uuid, None)
         board_peers = [
             peer for peer, topics in sorted(self.session.peer_topic_sets.items())
             if board.uuid in topics
         ]
         if not board_peers:
-            return SessionResult("ok", value={"topic_uuids": []})
-        leave_result = self.session.leave_topic(board.uuid)
+            release = self.session.end_topic_sharing(board.uuid)
+            return SessionResult(
+                "ok", value={"topic_uuids": []}, effects=release.effects,
+            )
+        leave_result = self.session.end_topic_sharing(board.uuid)
         effects = list(leave_result.effects)
         removed_topics = {board.uuid}
         any_board_remaining = any(
@@ -773,8 +770,9 @@ class KanbanLogic:
         peer_info = ((network or {}).get("peers") or {}).get(peer_addr) or {}
         if peer_info.get("channel_liveness") is not None:
             return peer_info["channel_liveness"]
-        manager = self._channel_manager()
-        resolver = getattr(manager, "peer_liveness_for_address", None)
+        resolver = getattr(
+            self.collaboration, "peer_liveness_for_address", None,
+        )
         if not resolver:
             return {"state": "unknown"}
         return resolver(peer_addr, topic_uuid) or {"state": "unknown"}
@@ -1131,9 +1129,18 @@ class KanbanLogic:
         board = board or self.ensure_board()
         return self.session.agenda_items(board.uuid)
 
-    def create_agenda_item(self, text: str, priority: str | None = None) -> SessionResult:
+    def create_agenda_item(
+        self, text: str, priority: str | None = None,
+        board_uuid: str | None = None,
+    ) -> SessionResult:
+        board = (
+            self.session.protocol.index.get(board_uuid)
+            if board_uuid else self.ensure_board()
+        )
+        if not board or board.data.get("type") != "kanban_board":
+            return SessionResult("error", reason="board not found")
         return self.session.create_agenda_item(
-            self.ensure_board().uuid, text, priority,
+            board.uuid, text, priority,
         )
 
     def delete_agenda_item(self, item_uuid: str) -> SessionResult:

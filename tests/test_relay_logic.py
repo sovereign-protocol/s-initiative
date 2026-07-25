@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from sovereign.blob_store import BlobStore
 from sovereign.channel import ChannelManager
+from sovereign.collaboration import CollaborationService
 from sovereign.mailbox_channel import MailboxChannel
 from sovereign.profile import CoreProfileService
 from s_kanban.logic import KanbanLogic as _KanbanLogic
@@ -1919,7 +1920,10 @@ class RelayLogicTests(unittest.TestCase):
             manager = RelayManager(session_a, config)
             channels = ChannelManager(session_a)
             channels.register(MailboxChannel(manager))
-            kanban_a = KanbanLogic(session_a, config, channels)
+            collaboration = CollaborationService(session_a, channels)
+            kanban_a = KanbanLogic(
+                session_a, config, collaboration.application_view,
+            )
             board_uuid = kanban_a.create_board("Shared Board").value
             target_id = manager.list_targets()[0]["id"]
             manager.assign_topic_target(board_uuid, target_id)
@@ -1927,6 +1931,7 @@ class RelayLogicTests(unittest.TestCase):
             self.assertIn(board_uuid, connection._state["shared"])
 
             result = kanban_a.unshare_board(board_uuid=board_uuid)
+            collaboration.execute_effects(result.effects)
 
             self.assertEqual(result.status, "ok")
             self.assertEqual(connection._state["shared"], [])
