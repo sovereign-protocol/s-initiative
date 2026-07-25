@@ -18,6 +18,32 @@ python -m venv .venv
 Open <http://127.0.0.1:9305>. Direct HTTP is intended for LAN/VPN use. Local
 folder and SFTP mailbox channels are configured through relay targets.
 
+## Desktop window
+
+The same host can draw into its own window instead of a browser tab:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[desktop]"
+.\.venv\Scripts\s-kanban-desktop.exe
+```
+
+The window picks a free port at start-up, so boards are kept in a per-user
+directory (`%LOCALAPPDATA%\S-Kanban` on Windows) rather than beside the port
+number. Pass a config file to override anything, including `storage_file`.
+
+### Building the executable
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install pyinstaller
+.\.venv\Scripts\pyinstaller.exe S-Kanban.spec
+```
+
+The result is `dist/S-Kanban.exe`, bundling this application and the Core it
+runs on. Building it for your own use carries no distribution obligations.
+Passing that executable to anyone else does: `sovereign` is
+LGPL-3.0-or-later, so its notices and relinking terms travel with the binary.
+Publish source or wheels unless you have checked those terms.
+
 ## License
 
 Application software and assets are Apache-2.0. Documentation is CC-BY-4.0.
