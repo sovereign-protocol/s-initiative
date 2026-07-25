@@ -6,8 +6,35 @@ build-backend = "setuptools.build_meta"
 name = "s-kanban"
 version = "0.1.0a1"
 description = "S-Kanban reference application for Sovereign Core"
+readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "LICENSES/*"]
+keywords = ["local-first", "collaboration", "sovereign-protocol"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.14",
+  "Operating System :: Microsoft :: Windows",
+]
 dependencies = ["sovereign-protocol>=0.1.0,<0.2"]
+
+# A package whose argument is auditability must say where its source is.
+[project.urls]
+Homepage = "https://github.com/sovereign-protocol/s-kanban"
+Source = "https://github.com/sovereign-protocol/s-kanban"
+Issues = "https://github.com/sovereign-protocol/s-kanban/issues"
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+# The window only. Everything else works headless, so this stays optional and
+# the launcher explains the install when it is missing.
+desktop = ["pywebview>=5,<6"]
+
+[project.scripts]
+s-kanban-desktop = "s_kanban.desktop:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -18,3 +45,6 @@ include = ["s_kanban*"]
 
 [tool.setuptools.package-data]
 "s_kanban.assets" = ["*.css", "*.html", "*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
