@@ -1250,7 +1250,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         connect(left, right, board)
 
         unshare = left.logic.unshare_board(board)
-        left.channel_manager.execute_effects(unshare.effects)
+        left.collaboration.execute_effects(unshare.effects)
 
         self.assertEqual(unshare.status, "ok")
         self.assertNotIn(right.address, left.session.members)
@@ -1268,7 +1268,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         connect(left, right, second)
 
         unshare = left.logic.unshare_board(first)
-        left.channel_manager.execute_effects(unshare.effects)
+        left.collaboration.execute_effects(unshare.effects)
 
         self.assertEqual(unshare.status, "ok")
         self.assertIn(right.address, left.session.members)
@@ -1293,7 +1293,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         connect(left, right, board)
 
         unshare = left.logic.unshare_board(board)
-        left.channel_manager.execute_effects(unshare.effects)
+        left.collaboration.execute_effects(unshare.effects)
 
         self.assertEqual(unshare.status, "ok")
         self.assertNotIn(middle.address, left.session.members)
@@ -1301,7 +1301,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertNotIn(left.address, middle.session.members)
         self.assertNotIn(left.address, right.session.members)
 
-    def test_board_share_through_middle_peer_meshes_existing_board_members(self):
+    def test_board_share_through_middle_does_not_create_implicit_http_mesh(self):
         first = self.runtime(8328)
         middle = self.runtime(8329)
         third = self.runtime(8330)
@@ -1326,17 +1326,20 @@ class KanbanNewLogicTests(unittest.TestCase):
             shared_board.uuid,
             third.session.peer_topic_sets[first.address],
         )
-        self.assertIn(
-            shared_board.uuid,
-            first.session.peer_topic_sets[third.address],
+        self.assertNotIn(first.address, third.session.members)
+        self.assertIsNone(
+            third.session.peer_channel_for_topic(
+                first.address, shared_board.uuid,
+            ),
         )
+        self.assertNotIn(third.address, first.session.peer_topic_sets)
         self.assertNotIn(middle_private_board, third.session.protocol.index)
         self.assertNotIn(
             middle_private_board,
             third.session.peer_topic_sets.get(first.address, set()),
         )
 
-    def test_indirect_board_share_carries_known_peer_identities(self):
+    def test_indirect_board_share_does_not_fetch_identity_without_a_route(self):
         first = self.runtime(8345)
         middle = self.runtime(8346)
         third = self.runtime(8347)
@@ -1358,10 +1361,14 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertEqual(share["status"], "ok")
         users = {user["address"]: user for user in third.logic.users()}
-        self.assertEqual(users[first.address]["name"], "Alice")
-        self.assertEqual(users[first.address]["picture"], "https://example.test/a.png")
+        self.assertNotIn(first.address, users)
+        self.assertIsNone(
+            third.session.peer_channel_for_topic(
+                first.address, shared_board.uuid,
+            ),
+        )
 
-    def test_existing_board_member_receives_new_member_profile(self):
+    def test_existing_board_member_is_not_auto_connected_to_new_member(self):
         first = self.runtime(8350)
         middle = self.runtime(8351)
         third = self.runtime(8352)
@@ -1383,7 +1390,8 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertEqual(share["status"], "ok")
         users = {user["address"]: user for user in middle.logic.users()}
-        self.assertEqual(users[third.address]["name"], "Cynthia")
+        self.assertNotIn(third.address, users)
+        self.assertNotIn(third.address, middle.session.members)
 
     def test_kanban_caches_topic_for_an_inactive_application(self):
         left = self.runtime(8324)
@@ -1444,20 +1452,20 @@ class KanbanNewLogicTests(unittest.TestCase):
         updated = runtime.session.get_node(card.uuid)
         self.assertEqual(updated.data["participants"], ["owner-2", "participant-2"])
 
-    def test_update_card_rejects_stale_expected_state_hash(self):
+    def test_update_card_rejects_stale_expected_content_hash(self):
         # Review U-3 lost-update guard.
         runtime = self.runtime(8319)
         board = runtime.logic.ensure_board()
         column = runtime.logic.columns(board)[0]
         card = runtime.logic.create_card(column.uuid, "Task", "", []).value
-        stale_hash = card.state_hash
+        stale_hash = card.content_hash
 
         # Someone else changes the card first.
         runtime.logic.update_card(card.uuid, "Changed by peer", "", [])
 
         # A save carrying the now-stale hash is rejected...
         rejected = runtime.logic.update_card(
-            card.uuid, "My edit", "", [], expected_state_hash=stale_hash,
+            card.uuid, "My edit", "", [], expected_content_hash=stale_hash,
         )
         self.assertEqual(rejected.status, "error")
         self.assertIn("changed while you were editing", rejected.reason)
@@ -1466,15 +1474,40 @@ class KanbanNewLogicTests(unittest.TestCase):
         )
 
         # ...but with the current hash it goes through.
-        current = runtime.session.get_node(card.uuid).state_hash
+        current = runtime.session.get_node(card.uuid).content_hash
         accepted = runtime.logic.update_card(
-            card.uuid, "My edit", "", [], expected_state_hash=current,
+            card.uuid, "My edit", "", [], expected_content_hash=current,
         )
         self.assertEqual(accepted.status, "ok")
 
         # And with no hash at all it stays last-write-wins (back-compat).
         nohash = runtime.logic.update_card(card.uuid, "No-hash edit", "", [])
         self.assertEqual(nohash.status, "ok")
+
+    def test_commenting_does_not_block_saving_the_open_card(self):
+        # A comment is a child node, so it moves the card's state_hash while
+        # leaving its own fields untouched. Guarding on the subtree hash made
+        # the user's own comment reject their own save.
+        runtime = self.runtime(8320)
+        board = runtime.logic.ensure_board()
+        column = runtime.logic.columns(board)[0]
+        card = runtime.logic.create_card(column.uuid, "Task", "", []).value
+        opened_with = card.content_hash
+
+        runtime.logic.create_card_comment(card.uuid, "A note while editing")
+
+        reloaded = runtime.session.get_node(card.uuid)
+        self.assertNotEqual(reloaded.state_hash, card.state_hash)
+        self.assertEqual(reloaded.content_hash, opened_with)
+
+        saved = runtime.logic.update_card(
+            card.uuid, "Renamed", "", [], expected_content_hash=opened_with,
+        )
+
+        self.assertEqual(saved.status, "ok")
+        self.assertEqual(
+            runtime.session.get_node(card.uuid).data["name"], "Renamed",
+        )
 
     def test_card_owner_must_be_a_participant(self):
         runtime = self.runtime(8366)
@@ -1733,6 +1766,30 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(
             [item.uuid for item in logic.agenda_items()],
             [third.uuid, first.uuid, second.uuid],
+        )
+
+    def test_move_agenda_item_between_peers_that_appended_concurrently(self):
+        # Two peers each append at max+1 and land on the same order value.
+        # Dropping between them has no fraction to occupy, and the created_at
+        # tiebreak used to place the item elsewhere while reporting success.
+        runtime = self.runtime(8405)
+        logic: KanbanLogic = runtime.logic
+        first = logic.create_agenda_item("First").value
+        second = logic.create_agenda_item("Second").value
+        third = logic.create_agenda_item("Third").value
+        fourth = logic.create_agenda_item("Fourth").value
+        for item in (third, fourth):
+            node = logic.session.protocol.index[item.uuid]
+            data = dict(node.data)
+            data["order"] = 4.0
+            logic.session.modify(node.uuid, data, node.weights)
+
+        result = logic.move_agenda_item(first.uuid, 2)
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(
+            [item.uuid for item in logic.agenda_items()],
+            [second.uuid, third.uuid, first.uuid, fourth.uuid],
         )
 
     def test_move_legacy_agenda_item_uses_unshifted_fallback_order(self):

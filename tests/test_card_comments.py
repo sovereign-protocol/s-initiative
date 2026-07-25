@@ -126,5 +126,109 @@ class CardCommentTests(unittest.TestCase):
             self.assertIn(from_b.uuid, runtime.session.protocol.index)
 
 
+class CardAttachmentTests(unittest.TestCase):
+    runtime = staticmethod(CardCommentTests.runtime)
+    _board_card = CardCommentTests._board_card
+    _pair = CardCommentTests._pair
+
+    @staticmethod
+    def _reference(runtime, payload: bytes = b"report-bytes", name="report.pdf"):
+        blob_id = runtime.blob_store.write_blob(payload)
+        return {
+            "id": "attachment-1",
+            "role": "attachment",
+            "blob_id": blob_id,
+            "name": name,
+            "size": len(payload),
+            "mime": "application/pdf",
+        }
+
+    def test_attach_list_and_remove_a_file(self):
+        rt = self.runtime(8420)
+        _board, card = self._board_card(rt)
+        reference = self._reference(rt)
+
+        node = rt.logic.create_card_attachment(card.uuid, reference).value
+
+        files = rt.logic.board_payload()["attachments_by_card"][card.uuid]
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0]["name"], "report.pdf")
+        self.assertEqual(files[0]["size"], len(b"report-bytes"))
+        self.assertEqual(files[0]["url"], f"/api/blob/{reference['blob_id']}")
+        self.assertEqual(files[0]["author"], rt.logic.user_profile().uuid)
+
+        self.assertEqual(rt.logic.delete_card_attachment(node.uuid).status, "ok")
+        self.assertNotIn(
+            card.uuid, rt.logic.board_payload()["attachments_by_card"],
+        )
+
+    def test_a_reference_without_a_real_blob_id_is_rejected(self):
+        rt = self.runtime(8421)
+        _board, card = self._board_card(rt)
+
+        self.assertEqual(
+            rt.logic.create_card_attachment(card.uuid, {}).status, "error",
+        )
+        self.assertEqual(
+            rt.logic.create_card_attachment(
+                card.uuid, {"id": "x", "blob_id": "not-a-hash", "size": 1},
+            ).status,
+            "error",
+        )
+
+    def test_attaching_a_file_does_not_diverge_the_card(self):
+        # Same reasoning as comments: a file is a child node, so it moves the
+        # card's subtree hash while leaving its own content untouched.
+        left, right = self._pair(8422, 8423)
+        board = left.logic.ensure_board()
+        column = left.logic.columns(board)[0]
+        card = left.logic.create_card(column.uuid, "Card", "", []).value
+        connect(left, right, board.uuid)
+        right.logic.set_auto_adopt_mode("never")
+
+        left.logic.create_card_attachment(card.uuid, self._reference(left))
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        payload = right.logic.board_payload()
+
+        card_transition = payload["transition_by_node"].get(card.uuid, {}).get("type")
+        self.assertIn(card_transition, (None, "in_agreement"))
+
+    def test_only_the_author_can_remove_an_attachment(self):
+        left, right = self._pair(8424, 8425)
+        board = left.logic.ensure_board()
+        column = left.logic.columns(board)[0]
+        card = left.logic.create_card(column.uuid, "Card", "", []).value
+        connect(left, right, board.uuid)
+        right.logic.set_auto_adopt_mode("always")
+
+        node = left.logic.create_card_attachment(
+            card.uuid, self._reference(left),
+        ).value
+        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        right.logic.board_payload()
+
+        self.assertIn(node.uuid, right.session.protocol.index)
+        self.assertEqual(
+            right.logic.delete_card_attachment(node.uuid).status, "error",
+        )
+
+    def test_attached_file_is_reachable_as_a_blob_reference(self):
+        # Core's GC/transfer walker must see a card attachment without any
+        # Kanban-specific knowledge, or the bytes would be collected as
+        # unreferenced while the card still points at them.
+        from sovereign.blob_store import referenced_blob_ids
+
+        rt = self.runtime(8426)
+        board, card = self._board_card(rt)
+        reference = self._reference(rt)
+
+        rt.logic.create_card_attachment(card.uuid, reference)
+
+        self.assertIn(
+            reference["blob_id"],
+            referenced_blob_ids(rt.session.protocol.index[board.uuid]),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

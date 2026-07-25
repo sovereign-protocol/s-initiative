@@ -15,16 +15,6 @@
     <header class="topbar"><div id="shell"></div></header>
 
     <template id="kanbanHeaderControls">
-      <div class="board-title">
-        <select id="boardQuickSwitch" title="Switch board"></select>
-        <input id="boardName" />
-        <button id="boardSwitchBtn" class="icon-btn board-switch-btn" type="button" title="Switch board" aria-label="Switch board">
-          <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">
-            <path d="M6 9l6 6 6-6"></path>
-          </svg>
-        </button>
-        <div id="boardSwitchMenu" class="board-switch-menu"></div>
-      </div>
       <div id="boardAdoptTools" class="adopt-tools"></div>
       <div id="autoAdoptHeaderControl" class="auto-adopt-header-control">
         <span id="autoAdoptIndicator" class="auto-adopt-square" title="Auto-adopt"></span>
@@ -47,7 +37,15 @@
         <p id="cardPerspectiveMeta" class="perspective-meta"></p>
         <label>Name<input id="cardName" /></label>
         <label>Description<textarea id="cardDescription" rows="5"></textarea></label>
-        <label>Owner<select id="cardOwner"></select></label>
+        <div class="card-owner-row">
+          <label>Owner<select id="cardOwner"></select></label>
+          <div class="card-files">
+            <span class="card-files-label">Files</span>
+            <input id="cardFileInput" type="file" hidden />
+            <button type="button" id="attachFileBtn">Attach file…</button>
+          </div>
+        </div>
+        <div id="cardAttachmentList" class="attachment-list"></div>
         <label>Members</label>
         <div id="participantPicker" class="user-picker"></div>
         <div id="cardComments" class="card-comments">
@@ -262,44 +260,6 @@
         return `${Math.floor(seconds / 86400)}d ago`;
       }
 
-      function renderBoardQuickSwitch() {
-        const select = el("boardQuickSwitch");
-        const menu = el("boardSwitchMenu");
-        const boards = state.boards || [];
-        select.replaceChildren();
-        menu.replaceChildren();
-        for (const board of boards) {
-          const opt = document.createElement("option");
-          opt.value = board.uuid;
-          opt.textContent = board.data.name || "Kanban Board";
-          select.append(opt);
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "board-switch-option";
-          button.textContent = board.data.name || "Kanban Board";
-          button.disabled = board.uuid === state.board.uuid;
-          button.onclick = () => {
-            closeBoardSwitchMenu();
-            selectBoard(board.uuid);
-          };
-          menu.append(button);
-        }
-        select.value = state.board.uuid;
-      }
-
-      function openBoardSwitchMenu() {
-        el("boardSwitchMenu").classList.add("open");
-      }
-
-      function closeBoardSwitchMenu() {
-        el("boardSwitchMenu").classList.remove("open");
-      }
-
-      function toggleBoardSwitchMenu() {
-        const menu = el("boardSwitchMenu");
-        menu.classList.contains("open") ? closeBoardSwitchMenu() : openBoardSwitchMenu();
-      }
-
       function selectBoard(boardUuid) {
         if (!boardUuid || boardUuid === state.board.uuid) return;
         run(
@@ -396,17 +356,27 @@
         try {
           state = await api("/api/kanban/board");
 
-          // Fokus-Schutz: Das Board-Namen-Feld beim Tippen nicht überschreiben
-          const boardNameInput = el("boardName");
-          if (document.activeElement !== boardNameInput) {
-            boardNameInput.value = state.board.data.name || "Kanban Board";
-          }
-          sizeBoardNameInput();
+          // Core owns the same title-plus-switcher control for every topic app.
+          SovereignShell.setTopicSelector({
+            label: "Board",
+            topics: (state.boards || []).map((board) => ({
+              uuid: board.uuid,
+              title: board.data.name || "Kanban Board",
+            })),
+            selectedUuid: state.board.uuid,
+            onSelect: selectBoard,
+            onRename: (name) => run(
+              () => api("/api/kanban/boards/rename", {
+                board_uuid: state.board.uuid,
+                name,
+              }),
+              "Board renamed",
+            ),
+          });
 
           renderAutoAdoptIndicator();
           renderBoardAdoptTools();
 
-          renderBoardQuickSwitch();
           renderNetwork();
           renderSelfAvatar();
 
@@ -999,6 +969,7 @@
         el("deleteCardBtn").style.display = modalCard && isLocal ? "inline-block" : "none";
         renderCardPerspectiveSwitcher();
         renderCardComments();
+        renderCardAttachments();
       }
 
       function formatCommentTime(iso) {
@@ -1088,6 +1059,110 @@
         }
       }
 
+      function formatFileSize(bytes) {
+        const size = Number(bytes) || 0;
+        if (size < 1024) return size + " B";
+        if (size < 1024 * 1024) return (size / 1024).toFixed(1) + " KB";
+        return (size / (1024 * 1024)).toFixed(1) + " MB";
+      }
+
+      function renderCardAttachments() {
+        const section = el("cardAttachmentList");
+        const attachRow = el("attachFileBtn");
+        // Files hang off a saved card, so - like comments - they appear only
+        // for an existing card in the local perspective.
+        const editable = modalCard && modalPerspectiveKey === "local";
+        attachRow.disabled = !editable;
+        section.replaceChildren();
+        if (!editable) {
+          section.style.display = "none";
+          return;
+        }
+        section.style.display = "block";
+        const myId = state.user_profile?.uuid;
+        const files = (state.attachments_by_card || {})[modalCard.uuid] || [];
+        if (!files.length) {
+          const empty = document.createElement("p");
+          empty.className = "attachment-empty";
+          empty.textContent = "No files attached.";
+          section.append(empty);
+          return;
+        }
+        for (const file of files) {
+          const row = document.createElement("div");
+          row.className = "attachment";
+          const link = document.createElement("a");
+          link.className = "attachment-name";
+          link.href = file.url;
+          // Core serves a non-image blob as an octet-stream attachment, but
+          // name the download here so it keeps the name it was uploaded with.
+          link.download = file.name;
+          link.textContent = file.name;
+          link.title = `${file.name} (${file.mime})`;
+          const meta = document.createElement("span");
+          meta.className = "attachment-meta";
+          meta.textContent = formatFileSize(file.size)
+            + (file.author_label ? " · " + file.author_label : "");
+          row.append(link, meta);
+          if (file.author && file.author === myId) {
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.className = "attachment-delete";
+            remove.textContent = "Remove";
+            remove.onclick = () => deleteAttachment(file.uuid);
+            row.append(remove);
+          }
+          section.append(row);
+        }
+      }
+
+      async function attachSelectedFile(file) {
+        if (!modalCard || !file) return;
+        try {
+          // Bytes go to Core's blob endpoint; only the reference goes to
+          // Kanban, so the application never handles the payload itself.
+          const response = await fetch("/api/blob", {
+            method: "POST",
+            headers: {
+              "Content-Type": file.type || "application/octet-stream",
+            },
+            body: file,
+          });
+          const stored = await response.json();
+          if (!response.ok) {
+            throw new Error(stored.reason || "Could not upload the file.");
+          }
+          await api("/api/kanban/cards/attachments/create", {
+            card_uuid: modalCard.uuid,
+            attachment: {
+              id: crypto.randomUUID(),
+              role: "attachment",
+              blob_id: stored.blob_id,
+              name: file.name,
+              size: stored.size,
+              mime: stored.mime,
+            },
+          });
+          await loadBoard();
+          renderCardAttachments();
+          showToast("File attached");
+        } catch (error) {
+          showToast(error.message, true);
+        }
+      }
+
+      async function deleteAttachment(attachmentUuid) {
+        try {
+          await api("/api/kanban/cards/attachments/delete", {
+            attachment_uuid: attachmentUuid,
+          });
+          await loadBoard();
+          renderCardAttachments();
+        } catch (error) {
+          showToast(error.message, true);
+        }
+      }
+
       function renderCardPerspectiveSwitcher() {
         const switcher = el("cardPerspectiveSwitcher");
         switcher.replaceChildren();
@@ -1119,7 +1194,7 @@
           // overwriting a peer's merged edit. On conflict keep the modal
           // open so nothing typed is lost - the next poll shows the merged
           // card underneath, and re-opening edits against it.
-          payload.expected_state_hash = modalCard.state_hash;
+          payload.expected_content_hash = modalCard.content_hash;
           try {
             await api("/api/kanban/cards/update", payload);
           } catch (error) {
@@ -1148,6 +1223,13 @@
       };
       el("cancelCardBtn").onclick = () => el("cardModal").close();
       el("addCommentBtn").onclick = addComment;
+      el("attachFileBtn").onclick = () => el("cardFileInput").click();
+      el("cardFileInput").onchange = async (event) => {
+        const [file] = event.target.files || [];
+        // Clear first so re-picking the same file still fires a change.
+        event.target.value = "";
+        await attachSelectedFile(file);
+      };
 
       function setModalFooterMode(mode) {
         const done = mode === "done";
@@ -1461,7 +1543,6 @@
       // Hand the application's own header controls to the shell before it
       // renders, so they land in its regions rather than beside it.
       const kanbanControls = el("kanbanHeaderControls").content;
-      const boardTitle = kanbanControls.querySelector(".board-title");
       const adoptTools = kanbanControls.querySelector("#boardAdoptTools");
       const autoAdoptIndicator = kanbanControls.querySelector("#autoAdoptHeaderControl");
 
@@ -1470,20 +1551,6 @@
         applicationId: "kanban",
         topicUuid: () => state?.board?.uuid || "",
         state: () => state || {},
-        // Scope the cluster to this board, and let Kanban supply the faces.
-        peerAddresses: () => (state?.board ? boardPeerAddresses() : []),
-        describePeer: (addr) => {
-          const user = userForParticipant(addr);
-          const presence = peerPresence(addr);
-          return {
-            label: peerLabel(addr),
-            picture: user?.picture ? cssUrl(user.picture) : "",
-            online: presence.online,
-            // The connections pane shows this per peer; Kanban's presence
-            // text is richer than "Online/Offline" (relay heartbeat age).
-            status: presence.metaText,
-          };
-        },
         // The pane is the shell's; Kanban supplies where its routes live and
         // the two extra modes judged against card ownership, which Core
         // stores without interpreting.
@@ -1506,64 +1573,15 @@
           return node ? (node.data.name || node.data.text || '') : '';
         },
         revealNode: (uuid) => highlightCard(uuid),
-        // Kanban had no board-creation affordance of its own - only the
-        // overview could make one. Create with a default name and let the
-        // header's editable title rename it in place.
-        onCreateTopic: () => run(
-          async () => {
-            const created = await api("/api/kanban/boards/create", { name: "New board" });
-            await api("/api/kanban/boards/select", { board_uuid: created.value });
-          },
-          "Board created - click its name to rename it",
-        ),
         onChanged: () => loadBoard(),
       });
-      SovereignShell.setTopicRegion(boardTitle);
       SovereignShell.setAppActions(adoptTools, autoAdoptIndicator);
 
       el("autoAdoptHeaderControl").onclick = () => SovereignShell.openConnectionPanel();
-      el("boardSwitchBtn").onclick = (event) => {
-        event.stopPropagation();
-        toggleBoardSwitchMenu();
-      };
-      el("boardQuickSwitch").onchange = () => selectBoard(el("boardQuickSwitch").value);
       document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") {
-          SovereignShell.closeCollab();
-          closeBoardSwitchMenu();
-        }
-      });
-      document.addEventListener("click", (event) => {
-        const target = event.target instanceof Element ? event.target : event.target.parentElement;
-        if (!target?.closest(".board-title")) closeBoardSwitchMenu();
+        if (event.key === "Escape") SovereignShell.closeCollab();
       });
 
-
-      function sizeBoardNameInput() {
-        const input = el("boardName");
-        const canvas = (sizeBoardNameInput._canvas ??= document.createElement("canvas"));
-        const ctx = canvas.getContext("2d");
-        const style = getComputedStyle(input);
-        ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-        const textWidth = ctx.measureText(input.value || "").width;
-        const extra =
-          parseFloat(style.paddingLeft) +
-          parseFloat(style.paddingRight) +
-          parseFloat(style.borderLeftWidth) +
-          parseFloat(style.borderRightWidth) +
-          6;
-        input.style.width = `${Math.ceil(textWidth + extra)}px`;
-      }
-      el("boardName").oninput = sizeBoardNameInput;
-      el("boardName").onchange = () =>
-        run(
-          () =>
-            api("/api/kanban/boards/rename", {
-              board_uuid: state.board.uuid,
-              name: el("boardName").value,
-            }),
-          "Board renamed",
-        );
       async function selectBoardFromUrl() {
         const params = new URLSearchParams(window.location.search);
         const boardUuid = params.get("board");

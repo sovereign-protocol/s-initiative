@@ -116,7 +116,7 @@ def build_routes(logic, runtime, config: dict) -> list[Route]:
             data.get("description", ""),
             _participants(data.get("participants")),
             data.get("owner"),
-            expected_state_hash=data.get("expected_state_hash"),
+            expected_content_hash=data.get("expected_content_hash"),
         ))
 
     async def api_delete_card(request: Request):
@@ -139,6 +139,21 @@ def build_routes(logic, runtime, config: dict) -> list[Route]:
         data = await request.json()
         return await _json_result(
             runtime, logic.delete_card_comment(data["comment_uuid"]),
+        )
+
+    async def api_create_card_attachment(request: Request):
+        # The bytes already went to Core's own /api/blob endpoint, which owns
+        # the size limit and content addressing. Only the reference reaches
+        # the application.
+        data = await request.json()
+        return await _json_result(runtime, logic.create_card_attachment(
+            data["card_uuid"], data.get("attachment") or {},
+        ))
+
+    async def api_delete_card_attachment(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.delete_card_attachment(data["attachment_uuid"]),
         )
 
     async def api_adopt(request: Request):
@@ -201,6 +216,8 @@ def build_routes(logic, runtime, config: dict) -> list[Route]:
         Route("/api/kanban/cards/move", api_move_card, methods=["POST"]),
         Route("/api/kanban/cards/comments/create", api_create_card_comment, methods=["POST"]),
         Route("/api/kanban/cards/comments/delete", api_delete_card_comment, methods=["POST"]),
+        Route("/api/kanban/cards/attachments/create", api_create_card_attachment, methods=["POST"]),
+        Route("/api/kanban/cards/attachments/delete", api_delete_card_attachment, methods=["POST"]),
         Route("/api/kanban/adopt", api_adopt, methods=["POST"]),
         Route("/api/kanban/rollback", api_rollback, methods=["POST"]),
         Route("/api/kanban/agenda/create", api_create_agenda_item, methods=["POST"]),

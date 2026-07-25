@@ -1082,6 +1082,49 @@ class RelayLogicTests(unittest.TestCase):
             self.assertFalse(any(topic == unrelated for topic, _peer in applied))
             self.assertIsNone(session_b.get_cached_peer_subtree("relay:A", unrelated))
 
+    def test_scoped_poll_caches_avatar_blob_carried_by_presence(self):
+        # A scoped connection never enumerates the peer's identity topic, so
+        # the profile only ever arrives through the presence heartbeat. The
+        # reference used to sync while the bytes never did, leaving the peer
+        # rendered as bare initials.
+        with tempfile.TemporaryDirectory() as relay_root, \
+                tempfile.TemporaryDirectory() as state_dir, \
+                tempfile.TemporaryDirectory() as blobs_a, \
+                tempfile.TemporaryDirectory() as blobs_b:
+            session_a = Session("addr-a")
+            store_a = BlobStore(blobs_a)
+            data = b"GIF89a-avatar"
+            blob_id = store_a.write_blob(data)
+            CoreProfileService(session_a).set_avatar({
+                "id": "avatar-1", "role": "avatar", "blob_id": blob_id,
+                "name": "avatar.gif", "size": len(data), "mime": "image/gif",
+            })
+            kanban_a = KanbanLogic(session_a, {})
+            wanted = kanban_a.create_board("Wanted").value
+            relay_a = RelayLogic(
+                session_a, self._relay_config(relay_root, "A", state_dir),
+                blob_store=store_a,
+            )
+            relay_a.set_scoped_topics({wanted})
+            relay_a.publish_due_topics()
+            relay_a.write_presence()
+
+            session_b = Session("addr-b")
+            store_b = BlobStore(blobs_b)
+            relay_b = RelayLogic(
+                session_b, self._relay_config(relay_root, "B", state_dir),
+                blob_store=store_b,
+            )
+            relay_b.set_scoped_topics({wanted})
+            relay_b.mark_topics_desired([wanted])
+
+            relay_b.poll_and_apply()
+
+            # The identity topic is deliberately outside the scope that was
+            # polled, so this can only have come from the heartbeat.
+            self.assertNotIn(session_a.identity.uuid, {wanted})
+            self.assertEqual(store_b.read_blob(blob_id), data)
+
     def test_scoped_connection_ignores_relay_peers_from_other_targets(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session = Session("addr-a")
@@ -1337,7 +1380,14 @@ class RelayLogicTests(unittest.TestCase):
     def test_relay_acknowledgement_confirms_divergence_without_timer(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = KanbanLogic(session_a, {})
+            kanban_a = KanbanLogic(
+                session_a, {},
+                types.SimpleNamespace(
+                    peer_liveness_for_address=lambda _addr, _topic: {
+                        "state": "alive",
+                    },
+                ),
+            )
             board_uuid = kanban_a.create_board("Shared").value
             board_a = kanban_a.ensure_board()
             card = kanban_a.create_card(
@@ -1373,7 +1423,14 @@ class RelayLogicTests(unittest.TestCase):
     def test_peer_observation_waits_for_matching_changed_snapshot(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = KanbanLogic(session_a, {})
+            kanban_a = KanbanLogic(
+                session_a, {},
+                types.SimpleNamespace(
+                    peer_liveness_for_address=lambda _addr, _topic: {
+                        "state": "alive",
+                    },
+                ),
+            )
             board_uuid = kanban_a.create_board("Shared").value
             card = kanban_a.create_card(
                 kanban_a.columns(kanban_a.ensure_board())[0].uuid,
@@ -1444,7 +1501,7 @@ class RelayLogicTests(unittest.TestCase):
         )
         session.apply_peer_subtree("relay:B", peer_board, None)
         session.note_indirect_peer_topic("relay:B", board_uuid)
-        session.note_peer_channel("relay:B", "mailbox")
+        session.bind_peer_topic_channel("relay:B", board_uuid, "mailbox")
 
         kanban.update_card(card.uuid, "After", "", [], None)
         alive = kanban.transition_by_node(
@@ -1878,10 +1935,11 @@ class RelayLogicTests(unittest.TestCase):
             kanban = KanbanLogic(session, config, channels)
             relay = manager.primary
             # A relay peer with a cached perspective + a stubbed liveness.
-            bob = ProtocolNode({"type": "kanban_board", "name": "Bob board"})
-            bob.refresh_hashes()
+            board = kanban.ensure_board()
+            bob = ProtocolNode.from_dict(board.to_dict())
             session.apply_peer_subtree("relay:B", bob, None)
-            session.note_peer_channel("relay:B", "mailbox")
+            session.note_indirect_peer_topic("relay:B", board.uuid)
+            session.bind_peer_topic_channel("relay:B", board.uuid, "mailbox")
             relay._own_presence_mtime = 100.0
             relay.storage.read_presence_with_mtime = lambda peer_id: (
                 {"poll_interval_seconds": 3}, 99.0,
@@ -2285,6 +2343,11 @@ class RelayLogicTests(unittest.TestCase):
             # exactly as accept_connect_token's http path would have
             # registered her, before relay ever enters the picture.
             session_b.add_peer("http://addr-a-direct", board_uuid)
+            session_b.bind_peer_topics_channel(
+                "http://addr-a-direct",
+                {board_uuid, kanban_a.user_profile().uuid},
+                "http",
+            )
             session_b.apply_peer_identity_snapshot(
                 "http://addr-a-direct", kanban_a.user_profile().to_dict(),
             )
@@ -2304,15 +2367,7 @@ class RelayLogicTests(unittest.TestCase):
                 kanban_a.user_profile().data["identity_key"],
             )
 
-    def test_poll_and_apply_keeps_ignoring_a_redundant_peers_later_topics(self):
-        # Regression, caught live: once a peer is confirmed redundant,
-        # remove_peer wipes relay:<peer>'s cached content - under the old
-        # content-walking check that erased the very evidence redundancy
-        # detection needed, so a topic published *after* that point (e.g.
-        # a board that only starts publishing a few polls later) looked
-        # like a brand-new, never-proven-redundant peer and got freely
-        # re-applied. The registry entry survives remove_peer, so the
-        # suppression holds for late-arriving topics too.
+    def test_direct_route_does_not_suppress_relay_for_another_topic(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
             kanban_a = KanbanLogic(session_a, {})
@@ -2322,14 +2377,16 @@ class RelayLogicTests(unittest.TestCase):
 
             session_b = Session("addr-b")
             session_b.add_peer("http://addr-a-direct", "some-shared-topic")
+            session_b.bind_peer_topic_channel(
+                "http://addr-a-direct", "some-shared-topic", "http",
+            )
             session_b.apply_peer_identity_snapshot(
                 "http://addr-a-direct", kanban_a.user_profile().to_dict(),
             )
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
 
-            relay_b.poll_and_apply()  # may apply identity (registry learns)
-            relay_b.poll_and_apply()  # detects + removes it
-            self.assertNotIn("relay:A", session_b.peer_topic_sets)
+            relay_b.poll_and_apply()
+            relay_b.poll_and_apply()
 
             # Ann only creates (and so only publishes) a board after that.
             board_uuid = kanban_a.create_board("Shared Board").value
@@ -2337,8 +2394,14 @@ class RelayLogicTests(unittest.TestCase):
             relay_b.mark_topics_desired([board_uuid])
             relay_b.poll_and_apply()
 
-            self.assertNotIn("relay:A", session_b.peer_topic_sets)
-            self.assertNotIn("relay:A", session_b.peer_perspectives)
+            self.assertIn(
+                board_uuid,
+                session_b.peer_topic_sets.get("relay:A", set()),
+            )
+            self.assertEqual(
+                session_b.peer_channel_for_topic("relay:A", board_uuid),
+                "mailbox",
+            )
 
     def test_poll_and_apply_resumes_after_direct_peer_disconnects(self):
         # Redundancy is a live check, not a permanent verdict: it requires
@@ -2356,6 +2419,11 @@ class RelayLogicTests(unittest.TestCase):
 
             session_b = Session("addr-b")
             session_b.add_peer("http://addr-a-direct", "some-shared-topic")
+            session_b.bind_peer_topics_channel(
+                "http://addr-a-direct",
+                {"some-shared-topic", kanban_a.user_profile().uuid},
+                "http",
+            )
             session_b.apply_peer_identity_snapshot(
                 "http://addr-a-direct", kanban_a.user_profile().to_dict(),
             )

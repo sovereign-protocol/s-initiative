@@ -45,7 +45,7 @@ from typing import Any
 
 from sovereign import (
     ApplicationRegistration, ProtocolNode, Session, SessionResult,
-    avatar_attachment,
+    avatar_attachment, canonical_attachments,
 )
 
 
@@ -109,6 +109,7 @@ class KanbanLogic:
             "transition_by_node": self.transition_by_node(events),
             "agenda_items": [item.to_dict() for item in self.agenda_items(board)],
             "comments_by_card": self._comments_by_card(board),
+            "attachments_by_card": self._attachments_by_card(board),
         }
 
     def _comments_by_card(self, board: ProtocolNode) -> dict:
@@ -133,6 +134,32 @@ class KanbanLogic:
                     }
                     for comment in comments
                 ]
+        return out
+
+    def _attachments_by_card(self, board: ProtocolNode) -> dict:
+        # Same shape and reasoning as _comments_by_card: the files live in the
+        # board tree as card children and sync with the board topic; this is
+        # only the convenient view for the modal, with the download URL Core
+        # already serves resolved for each blob.
+        names = {user["id"]: user["name"] for user in self.users() if user.get("id")}
+        out = {}
+        for column in self.columns(board):
+            for card in self.cards(column):
+                entries = []
+                for node in self.card_attachments(card):
+                    for item in canonical_attachments(node.data.get("attachments")):
+                        entries.append({
+                            "uuid": node.uuid,
+                            "name": item["name"],
+                            "size": item["size"],
+                            "mime": item["mime"],
+                            "url": f"/api/blob/{item['blob_id']}",
+                            "author": node.data.get("author"),
+                            "author_label": names.get(node.data.get("author"), ""),
+                            "created_at": node.created_at,
+                        })
+                if entries:
+                    out[card.uuid] = entries
         return out
 
     def _network_info(self, board_uuid: str | None = None) -> dict:
@@ -426,17 +453,22 @@ class KanbanLogic:
                     description: str = "",
                     participants: list[str] | None = None,
                     owner: str | None = None,
-                    expected_state_hash: str | None = None) -> SessionResult:
+                    expected_content_hash: str | None = None) -> SessionResult:
         card = self._node(card_uuid, "kanban_card")
         if not card:
             return SessionResult("error", reason="card not found")
         # Lost-update guard (review U-3): the modal captured the card's
-        # state_hash when it opened; if the card changed since (a peer
+        # content_hash when it opened; if the card changed since (a peer
         # edit landed, or auto-adopt merged one) we'd silently overwrite
         # that with the stale form values. Reject instead so the user can
         # re-open against the merged card. Optional - callers that don't
         # pass a hash keep the old last-write-wins behavior.
-        if expected_state_hash is not None and expected_state_hash != card.state_hash:
+        # Deliberately content_hash, not state_hash: only the fields this
+        # form actually edits may block a save. state_hash also covers the
+        # card's children, so a comment - which this very class documents as
+        # touching the subtree hash but not the card's own revision - would
+        # otherwise lock the user out of saving their own edit.
+        if expected_content_hash is not None and expected_content_hash != card.content_hash:
             return SessionResult("error", reason="card changed while you were editing")
         participants = participants or []
         data = dict(card.data)
@@ -492,6 +524,46 @@ class KanbanLogic:
         if comment.data.get("author") != self.user_profile().uuid:
             return SessionResult("error", reason="only the author can delete a comment")
         return self.session.delete(comment.uuid)
+
+    def create_card_attachment(self, card_uuid: str,
+                               attachment: dict) -> SessionResult:
+        # A child node, not a field on the card, for the same reason comments
+        # are: two people attaching at once then set-union merge instead of
+        # diverging the card's own content. Core's blob machinery walks every
+        # node's "attachments", so publication, peer fetch and GC need no
+        # Kanban-specific knowledge.
+        card = self._node(card_uuid, "kanban_card")
+        if not card:
+            return SessionResult("error", reason="card not found")
+        references = canonical_attachments([attachment])
+        if not references:
+            return SessionResult("error", reason="a valid file reference is required")
+        return self.session.create_child(
+            card.uuid,
+            {
+                "type": "card_attachment",
+                "author": self.user_profile().uuid,
+                "attachments": references,
+            },
+            {},
+        )
+
+    def card_attachments(self, card: ProtocolNode) -> list[ProtocolNode]:
+        return sorted(
+            [child for child in card.live_children()
+             if child.data.get("type") == "card_attachment"],
+            key=lambda node: node.created_at,
+        )
+
+    def delete_card_attachment(self, attachment_uuid: str) -> SessionResult:
+        attachment = self._node(attachment_uuid, "card_attachment")
+        if not attachment:
+            return SessionResult("error", reason="attachment not found")
+        if attachment.data.get("author") != self.user_profile().uuid:
+            return SessionResult(
+                "error", reason="only the author can remove an attachment",
+            )
+        return self.session.delete(attachment.uuid)
 
     def move_card(self, card_uuid: str, column_uuid: str, index: int) -> SessionResult:
         card = self._node(card_uuid, "kanban_card")
@@ -737,13 +809,14 @@ class KanbanLogic:
             for event in self.session.analyze_peer_transitions(addr, board_uuid):
                 if not self._is_displayed_divergence(addr, event):
                     continue
-                # A stale relay peer cannot yet react to a local revision.
-                # Keep its cached perspective, but do not turn that expected
-                # silence into a lamp/counter entry.  Confirmed divergences and
-                # incoming peer changes remain visible.
+                # A peer without a live, explicitly selected topic channel
+                # cannot yet react to a local revision. Keep its cached
+                # perspective, but do not turn that expected silence into a
+                # lamp/counter entry. Confirmed divergences and incoming peer
+                # changes remain visible.
                 if (
                     event["type"] == "in_transition"
-                    and liveness.get("state") == "stale"
+                    and liveness.get("state") != "alive"
                 ):
                     continue
                 event["changes"] = (
