@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE", "LICENSES/*"]
-dependencies = ["sovereign-core>=0.1.0,<0.2"]
+dependencies = ["sovereign-protocol>=0.1.0,<0.2"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]
