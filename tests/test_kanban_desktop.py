@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from s_kanban import desktop as kanban_desktop
 from sovereign import desktop
@@ -103,6 +103,11 @@ class DesktopWindowSessionTests(unittest.TestCase):
         def create_window(title, url, **kwargs):
             opened["title"] = title
             opened["url"] = url
+            # Real pywebview returns a window object, and Core hooks its
+            # events.shown to darken the native titlebar. Returning None
+            # made this fake diverge from the thing it stands in for, so a
+            # Core change that is correct against pywebview broke it here.
+            return MagicMock()
 
         def start():
             # The window would load this URL, so proving it serves here is
