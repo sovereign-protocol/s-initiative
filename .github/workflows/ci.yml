@@ -11,3 +11,31 @@ jobs:
       - run: python -m pip install ".[test]"
       - run: python -m pip check
       - run: python -m pytest -q
+
+  executable:
+    # Proves S-Kanban.spec still builds. Without this the spec rots silently:
+    # it names hidden imports and a webview backend that only a real freeze
+    # exercises, and nothing else in CI touches it.
+    #
+    # The binary is deliberately NOT uploaded. Shipping a frozen executable
+    # that bundles LGPL Core is distribution, which
+    # DESIGN_REPOSITORY_LICENSING keeps behind a focused licence review that
+    # has not happened. The same document permits precisely this: exercising
+    # the spec as technical verification, which is not a release artifact.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python -m pip install ".[desktop]" pyinstaller
+      - run: pyinstaller S-Kanban.spec --noconfirm
+      - name: Check the executable was produced
+        shell: pwsh
+        run: |
+          $exe = "dist/S-Kanban.exe"
+          if (-not (Test-Path $exe)) { throw "no executable at $exe" }
+          $size = (Get-Item $exe).Length
+          # A bootloader with nothing attached still lands on disk, so an
+          # existence check alone would pass on an empty bundle.
+          if ($size -lt 5MB) { throw "implausibly small: $size bytes" }
+          "built $exe ($([math]::Round($size/1MB,1)) MB)"
