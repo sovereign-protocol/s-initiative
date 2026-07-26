@@ -1082,6 +1082,42 @@ class RelayLogicTests(unittest.TestCase):
             self.assertFalse(any(topic == unrelated for topic, _peer in applied))
             self.assertIsNone(session_b.get_cached_peer_subtree("relay:A", unrelated))
 
+    def test_blob_transfer_is_traced(self):
+        # The avatar bug was invisible in trace logs: every other sync step
+        # emitted events, the blob path emitted none, so a reference that
+        # arrived without its bytes left nothing to find.
+        with tempfile.TemporaryDirectory() as relay_root,                 tempfile.TemporaryDirectory() as state_dir,                 tempfile.TemporaryDirectory() as blobs:
+            events = []
+            session = Session("addr-a")
+            session.trace_event = lambda kind, **fields: events.append((kind, fields))
+            store = BlobStore(blobs)
+            data = b"GIF89a-avatar"
+            blob_id = store.write_blob(data)
+            relay = RelayLogic(
+                session, self._relay_config(relay_root, "A", state_dir),
+                blob_store=store,
+            )
+            relay.storage.write_blob(blob_id, data)
+
+            store.delete_blob(blob_id)
+            relay._cache_blobs([blob_id])
+            cached = [f for k, f in events if k == "relay.blob_cached"]
+            self.assertEqual(len(cached), 1)
+            self.assertEqual(cached[0]["blob_id"], blob_id)
+            self.assertEqual(cached[0]["size"], len(data))
+
+            events.clear()
+            relay._cache_blobs(["sha256:" + "0" * 64])
+            self.assertEqual(
+                [k for k, _ in events], ["relay.blob_missing"],
+            )
+
+            events.clear()
+            relay._cache_blobs(["not-a-blob-id"])
+            self.assertEqual(
+                [k for k, _ in events], ["relay.blob_rejected"],
+            )
+
     def test_scoped_poll_caches_avatar_blob_carried_by_presence(self):
         # A scoped connection never enumerates the peer's identity topic, so
         # the profile only ever arrives through the presence heartbeat. The
