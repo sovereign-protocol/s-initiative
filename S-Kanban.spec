@@ -8,10 +8,14 @@ dependency:
     pip install pyinstaller
     pyinstaller S-Kanban.spec
 
-Only this application and the Core it runs on are collected. The other
-Sovereign applications live in their own repositories and are deliberately
-not bundled: pulling them in here would cross both a repository and a
-licence boundary for no gain.
+Only this application and the Core it runs on are collected, because this is
+S-Kanban's executable. The other Sovereign applications live in their own
+repositories, and S-Kanban's CI could not resolve them anyway. Personal
+Cockpit owns the spec that bundles all of them, since the Cockpit is what
+such a binary opens.
+
+Not a licensing constraint: every Sovereign application is Apache-2.0, so a
+combined binary crosses no boundary that Core's LGPL has not already set.
 
 Distribution note. `sovereign` is LGPL-3.0-or-later, so shipping this
 executable to anyone else carries the licence's notice and

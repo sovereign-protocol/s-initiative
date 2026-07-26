@@ -78,7 +78,12 @@ class PackagingTests(unittest.TestCase):
         self.assertTrue(collected.isdisjoint(
             {"kanban_logic", "relay_logic", "boardofboards_logic"},
         ))
-        # Applications from the other repositories cross a licence boundary.
+        # This spec builds S-Kanban's own executable, so it collects this
+        # application and the Core it runs on, and nothing else. The reason
+        # is scope, not licensing: every application is Apache-2.0, so a
+        # combined binary crosses no licence boundary that Core's LGPL has
+        # not already set. Personal Cockpit owns the spec that bundles all
+        # of them, because the Cockpit is what such a binary opens.
         self.assertTrue(collected.isdisjoint(set(OTHER_APPLICATIONS)))
 
 
