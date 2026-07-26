@@ -18,6 +18,27 @@
   --blue-dark: #84bbff;
 }
 
+/* Light theme. Only these tokens move - the rest of this file already reads
+   every colour through them, which is what makes a second palette a block
+   rather than a rewrite. The warm gray identity is kept: the same hue family
+   as the dark palette, lightened, so Kanban still does not look like the
+   Cockpit (U2). */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f3f2ef;
+  --surface: #ffffff;
+  --surface-2: #e9e8e4;
+  --card: #ffffff;
+  --text: #1c1b19;
+  --muted: #6b675f;
+  --border: rgba(0, 0, 0, 0.14);
+  --border-strong: rgba(0, 0, 0, 0.24);
+  --shadow: 0 14px 34px rgba(0, 0, 0, 0.10);
+  --warning: #8a5a00;
+  --blue: #0b63b6;
+  --blue-dark: #0a4d8c;
+}
+
 * { box-sizing: border-box; }
 
 body {
