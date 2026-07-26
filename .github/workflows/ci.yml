@@ -39,3 +39,26 @@ jobs:
           # existence check alone would pass on an empty bundle.
           if ($size -lt 5MB) { throw "implausibly small: $size bytes" }
           "built $exe ($([math]::Round($size/1MB,1)) MB)"
+
+      - name: Check the executable actually starts
+        shell: pwsh
+        run: |
+          # Building proved nothing about starting. A console=False build has
+          # no stdout, and uvicorn's default log config called isatty() on it,
+          # so the executable crashed on launch while this job stayed green.
+          # --check builds the runtime and the server, then returns before
+          # opening a window, so a runner with no desktop session can run it.
+          #
+          # Deliberately no output redirection: redirecting hands the process
+          # real stream handles and hides the very condition being tested.
+          # Start-Process is then required, because a GUI-subsystem executable
+          # detaches and never sets $LASTEXITCODE.
+          $proc = Start-Process -FilePath "dist/S-Kanban.exe" -ArgumentList "--check" -PassThru
+          if (-not $proc.WaitForExit(120000)) {
+            $proc.Kill()
+            throw "the executable did not exit within 120s"
+          }
+          if ($proc.ExitCode -ne 0) {
+            throw "the executable failed to start: exit $($proc.ExitCode)"
+          }
+          "started cleanly"
