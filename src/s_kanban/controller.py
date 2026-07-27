@@ -58,24 +58,6 @@ def build_routes(logic, runtime, config: dict) -> list[Route]:
         data = await request.json()
         return await _json_result(runtime, logic.delete_board(data["board_uuid"]))
 
-    async def api_unshare_board(request: Request):
-        data = await request.json()
-        result = await asyncio.to_thread(
-            logic.unshare_board, data.get("board_uuid"),
-        )
-        deliveries = []
-        if result.status == "ok":
-            deliveries = await asyncio.to_thread(
-                runtime.deliver_effects, result.effects,
-            )
-            runtime.notify_change()
-        view = application_result_view(result, deliveries)
-        payload = dict(view.payload)
-        value = payload.pop("value", None)
-        if view.ok and isinstance(value, dict):
-            payload.update(value)
-        return JSONResponse(payload, status_code=200 if view.ok else 409)
-
     async def api_create_column(request: Request):
         data = await request.json()
         return await _json_result(
@@ -205,7 +187,6 @@ def build_routes(logic, runtime, config: dict) -> list[Route]:
         Route("/api/kanban/boards/set_objective", api_set_board_objective, methods=["POST"]),
         Route("/api/kanban/boards/copy", api_copy_board, methods=["POST"]),
         Route("/api/kanban/boards/delete", api_delete_board, methods=["POST"]),
-        Route("/api/kanban/boards/unshare", api_unshare_board, methods=["POST"]),
         Route("/api/kanban/columns/create", api_create_column, methods=["POST"]),
         Route("/api/kanban/columns/rename", api_rename_column, methods=["POST"]),
         Route("/api/kanban/columns/delete", api_delete_column, methods=["POST"]),

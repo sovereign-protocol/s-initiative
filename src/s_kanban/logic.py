@@ -300,9 +300,10 @@ class KanbanLogic:
                              effects=self.session.sync_effects(clone.uuid))
 
     def delete_board(self, board_uuid: str) -> SessionResult:
-        boards = self.boards()
-        if len(boards) <= 1:
-            return SessionResult("error", reason="cannot delete the last board")
+        # The last board goes too. Refusing it left no way to clear a host
+        # of boards it no longer wants, and there is nothing to protect:
+        # ensure_board() makes a fresh empty one the next time the board
+        # view is opened, exactly as it does on a first run.
         board = self.session.protocol.index.get(board_uuid)
         if not board or board.data.get("type") != "kanban_board":
             return SessionResult("error", reason="board not found")
@@ -312,8 +313,11 @@ class KanbanLogic:
             return result
         result.effects = [*release.effects, *result.effects]
         remaining = [item for item in self.boards() if item.uuid != board_uuid]
-        if remaining:
-            self._remember_board(remaining[0].uuid)
+        # Clearing the selection matters when nothing is left: a board still
+        # awaiting its peers' confirmation stays in the index as a deleted
+        # node, and a remembered uuid would hand that corpse back as the
+        # current board instead of letting ensure_board() start a new one.
+        self._remember_board(remaining[0].uuid if remaining else "")
         return result
 
     def _create_board_node(self, name: str) -> ProtocolNode:
@@ -330,41 +334,6 @@ class KanbanLogic:
                 {},
             )
         return self.session.get_node(board.uuid) or board
-
-    def unshare_board(self, board_uuid: str | None = None) -> SessionResult:
-        board = self.session.protocol.index.get(board_uuid) if board_uuid else self.ensure_board()
-        if not board or board.data.get("type") != "kanban_board":
-            return SessionResult("error", reason="board not found")
-        board_peers = [
-            peer for peer, topics in sorted(self.session.peer_topic_sets.items())
-            if board.uuid in topics
-        ]
-        if not board_peers:
-            release = self.session.end_topic_sharing(board.uuid)
-            return SessionResult(
-                "ok", value={"topic_uuids": []}, effects=release.effects,
-            )
-        leave_result = self.session.end_topic_sharing(board.uuid)
-        effects = list(leave_result.effects)
-        removed_topics = {board.uuid}
-        any_board_remaining = any(
-            self._is_kanban_board_topic(self.session.protocol.index.get(topic_uuid))
-            for topics in self.session.peer_topic_sets.values()
-            for topic_uuid in topics
-        )
-        if not any_board_remaining:
-            profile_topics = sorted({
-                topic_uuid
-                for topics in self.session.peer_topic_sets.values()
-                for topic_uuid in topics
-            })
-            removed_topics.update(profile_topics)
-            effects.extend(self.session.disconnect().effects)
-        return SessionResult(
-            "ok",
-            value={"topic_uuids": sorted(removed_topics)},
-            effects=effects,
-        )
 
     def user_profile(self) -> ProtocolNode:
         return self.session.identity
@@ -1368,11 +1337,6 @@ class KanbanLogic:
             node.data.get("type") == "kanban_app"
             and node.data.get("name") == KANBAN_APP_NAME
         )
-
-    def _is_kanban_board_topic(self, node: ProtocolNode | None) -> bool:
-        if not node:
-            return False
-        return node.data.get("type") == "kanban_board"
 
     def _is_shared_user_topic(self, node: ProtocolNode | None) -> bool:
         return self.session.is_identity_node(node)
