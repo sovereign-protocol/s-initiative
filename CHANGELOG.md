@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Fixed: an agenda drop could succeed and then immediately revert.** A
+  client no longer adopts the stale order a peer published just before seeing
+  the move; the peer still adopts the mover's new order on its next cycle.
 - Expanded facade API v1 with explicit board, card, agenda, reaction, and
   policy commands for optional consumers. Returned nodes remain snapshots.
 - Card and column moves now use Core's shared cross-parent fractional ordering.

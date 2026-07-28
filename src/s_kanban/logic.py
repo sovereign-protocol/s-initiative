@@ -701,7 +701,15 @@ class KanbanLogic:
             order_only_change = self._agenda_order_only_change(
                 local_node, peer_node,
             )
-            if not originator_change and not order_only_change:
+            if order_only_change:
+                # Accept a peer's new ordering, never the stale ordering it
+                # published just before this client moved the item. Both
+                # clients publish before either polls, so the mover will see
+                # that stale copy as local_made_changes; accepting every
+                # order difference here immediately undid a successful drop.
+                if event["type"] != "peer_made_changes":
+                    continue
+            elif not originator_change:
                 continue
             # The originator is authoritative even when a revert makes the
             # generic one-hop hash classifier call the recipient's value

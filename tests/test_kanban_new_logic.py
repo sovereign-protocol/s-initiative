@@ -243,6 +243,45 @@ class KanbanNewLogicTests(unittest.TestCase):
             [second.uuid, first.uuid],
         )
 
+    def test_stale_peer_order_does_not_undo_the_movers_drop(self):
+        left = self.runtime(8406)
+        right = self.runtime(8407)
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        first = left.logic.create_agenda_item("First").value
+        second = left.logic.create_agenda_item("Second").value
+        third = left.logic.create_agenda_item("Third").value
+        fourth = left.logic.create_agenda_item("Fourth").value
+        # Concurrent appends can legitimately tie. Moving into that exhausted
+        # gap renumbers the whole agenda, matching the live trace.
+        for item in (third, fourth):
+            node = left.session.protocol.index[item.uuid]
+            left.session.modify(
+                node.uuid, {**node.data, "order": 4.0}, node.weights,
+            )
+        sync(left, right)
+        right.logic.board_payload()
+        before = [item.uuid for item in right.logic.agenda_items()]
+        expected = [before[1], before[2], before[0], before[3]]
+
+        result = right.logic.move_agenda_item(first.uuid, 2)
+        sync(left, right)
+        # The relay cycle gives right the copy left published immediately
+        # before seeing this move. Processing it must not undo the drop.
+        right.logic.board_payload()
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(
+            [item.uuid for item in right.logic.agenda_items()],
+            expected,
+        )
+        left.logic.board_payload()
+        self.assertEqual(
+            [item.uuid for item in left.logic.agenda_items()],
+            expected,
+        )
+
     def test_agenda_changes_are_not_displayed_as_board_divergences(self):
         left = self.runtime(8402)
         right = self.runtime(8403)
