@@ -7,8 +7,6 @@ window.
 
 from __future__ import annotations
 
-import sys
-
 from sovereign import desktop_main
 
 from .application import APPLICATION_MANIFEST

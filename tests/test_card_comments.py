@@ -1,20 +1,16 @@
-import tempfile
 import unittest
-from pathlib import Path
 
-import app_server
-from tests.test_kanban_new_logic import MemoryHttpClient, connect
+from tests.relay_clients import (
+    connect, relay_runtime, shared_relay_root, sync,
+)
 
 
 class CardCommentTests(unittest.TestCase):
-    @staticmethod
-    def runtime(port: int):
-        directory = tempfile.TemporaryDirectory()
-        config = app_server.load_config(None, "kanban")
-        config["storage_file"] = str(Path(directory.name) / f"{port}.json")
-        runtime = app_server.create_runtime(port, config)
-        runtime._test_tmp = directory
-        return runtime
+    def setUp(self):
+        self._relay_root = shared_relay_root(self)
+
+    def runtime(self, port: int):
+        return relay_runtime(self, port, self._relay_root)
 
     def _board_card(self, runtime):
         board = runtime.logic.ensure_board()
@@ -23,12 +19,7 @@ class CardCommentTests(unittest.TestCase):
         return board, card
 
     def _pair(self, port_a, port_b):
-        left = self.runtime(port_a)
-        right = self.runtime(port_b)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
-        return left, right
+        return self.runtime(port_a), self.runtime(port_b)
 
     def test_create_list_and_delete_comment(self):
         rt = self.runtime(8401)
@@ -67,7 +58,7 @@ class CardCommentTests(unittest.TestCase):
         right.logic.set_auto_adopt_mode("never")
 
         left.logic.create_card_comment(card.uuid, "note")
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         payload = right.logic.board_payload()
 
         card_transition = payload["transition_by_node"].get(card.uuid, {}).get("type")
@@ -82,7 +73,7 @@ class CardCommentTests(unittest.TestCase):
         right.logic.set_auto_adopt_mode("always")
 
         comment = left.logic.create_card_comment(card.uuid, "A's note").value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         self.assertIn(comment.uuid, right.session.protocol.index)
@@ -97,7 +88,7 @@ class CardCommentTests(unittest.TestCase):
         right.logic.set_auto_adopt_mode("not_owner")
 
         comment = left.logic.create_card_comment(card.uuid, "hi from A").value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         self.assertIn(comment.uuid, right.session.protocol.index)
@@ -116,9 +107,9 @@ class CardCommentTests(unittest.TestCase):
         from_b = right.logic.create_card_comment(card.uuid, "from B").value
 
         for _ in range(2):
-            left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+            sync(left, right)
             right.logic.board_payload()
-            right.adapter.execute_effects(right.session.sync_effects(board.uuid))
+            sync(left, right)
             left.logic.board_payload()
 
         for runtime in (left, right):
@@ -127,7 +118,8 @@ class CardCommentTests(unittest.TestCase):
 
 
 class CardAttachmentTests(unittest.TestCase):
-    runtime = staticmethod(CardCommentTests.runtime)
+    setUp = CardCommentTests.setUp
+    runtime = CardCommentTests.runtime
     _board_card = CardCommentTests._board_card
     _pair = CardCommentTests._pair
 
@@ -187,7 +179,7 @@ class CardAttachmentTests(unittest.TestCase):
         right.logic.set_auto_adopt_mode("never")
 
         left.logic.create_card_attachment(card.uuid, self._reference(left))
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         payload = right.logic.board_payload()
 
         card_transition = payload["transition_by_node"].get(card.uuid, {}).get("type")
@@ -204,7 +196,7 @@ class CardAttachmentTests(unittest.TestCase):
         node = left.logic.create_card_attachment(
             card.uuid, self._reference(left),
         ).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         self.assertIn(node.uuid, right.session.protocol.index)

@@ -1,18 +1,12 @@
-import tempfile
 import unittest
-from pathlib import Path
 
-import app_server
-from tests.test_kanban_new_logic import MemoryHttpClient, connect
+from tests.relay_clients import connect, relay_runtime, shared_relay_root
 
 
 class KanbanGuardTests(unittest.TestCase):
     def test_local_change_is_not_rolled_back_by_stale_peer_view(self):
         left = self.runtime(9201)
         right = self.runtime(9202)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right, board.uuid)
         column = left.logic.columns(board)[0]
@@ -34,14 +28,11 @@ class KanbanGuardTests(unittest.TestCase):
             "in_agreement",
         )
 
-    @staticmethod
-    def runtime(port: int):
-        directory = tempfile.TemporaryDirectory()
-        config = app_server.load_config(None, "kanban")
-        config["storage_file"] = str(Path(directory.name) / f"{port}.json")
-        runtime = app_server.create_runtime(port, config)
-        runtime._test_tmp = directory
-        return runtime
+    def setUp(self):
+        self._relay_root = shared_relay_root(self)
+
+    def runtime(self, port: int):
+        return relay_runtime(self, port, self._relay_root)
 
 
 if __name__ == "__main__":

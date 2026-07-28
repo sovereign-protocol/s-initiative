@@ -1,17 +1,17 @@
-"""Versioned public query facade exposed by S-Kanban."""
+"""Versioned public query/command facade exposed by S-Kanban."""
 
 from __future__ import annotations
 
 from sovereign import ProtocolNode
 
-from .logic import AUTO_ADOPT_MODES, KanbanLogic
+from .logic import KanbanLogic
 
 
 KANBAN_FACADE_API_VERSION = 1
 
 
 class KanbanFacade:
-    """Stable query surface for optional cross-application consumers."""
+    """Stable facade returning detached node snapshots and command results."""
 
     def __init__(self, logic: KanbanLogic):
         self._logic = logic
@@ -38,19 +38,72 @@ class KanbanFacade:
         return self._logic.transition_by_node(events)
 
     def collaboration_context(self, topic_uuid: str) -> dict:
-        board = self._logic.session.get_node(topic_uuid)
-        if not board or board.data.get("type") != "kanban_board":
-            return {}
-        network = self._logic._network_info(topic_uuid)
-        events = self._logic.transition_events(topic_uuid, network)
-        return {
-            "agenda_items": [
-                item.to_dict() for item in self._logic.session.agenda_items(topic_uuid)
-            ],
-            "transition_events": events,
-            "transition_by_node": self._logic.transition_by_node(events),
-            "identity_uuid": self._logic.session.identity.uuid,
-            "known_identities": self._logic.session.known_identities(),
-            "auto_adopt_mode": self._logic.auto_adopt_mode(board),
-            "auto_adopt_modes": list(AUTO_ADOPT_MODES),
-        }
+        return self._logic.collaboration_context(topic_uuid)
+
+    def create_board(self, name: str = "Kanban Board"):
+        return self._logic.create_board(name)
+
+    def copy_board(self, board_uuid: str):
+        return self._logic.copy_board(board_uuid)
+
+    def rename_board(self, board_uuid: str, name: str):
+        return self._logic.rename_board(board_uuid, name)
+
+    def delete_board(self, board_uuid: str):
+        return self._logic.delete_board(board_uuid)
+
+    def set_board_objective(self, board_uuid: str, objective: str):
+        return self._logic.set_board_objective(board_uuid, objective)
+
+    def move_card(self, card_uuid: str, column_uuid: str, index: int):
+        return self._logic.move_card(card_uuid, column_uuid, index)
+
+    def update_card(
+        self, card_uuid: str, name: str, description: str = "",
+        participants: list[str] | None = None, owner: str | None = None,
+        expected_content_hash: str | None = None,
+    ):
+        return self._logic.update_card(
+            card_uuid, name, description, participants, owner,
+            expected_content_hash,
+        )
+
+    def delete_card(self, card_uuid: str):
+        return self._logic.delete_card(card_uuid)
+
+    def accept_peer_node(
+        self, source_addr: str, node_uuid: str, adopt_absence: bool = False,
+    ):
+        return self._logic.accept_peer_node(
+            source_addr, node_uuid, adopt_absence,
+        )
+
+    def rollback_peer_node(
+        self, source_addr: str, node_uuid: str,
+        rollback_absence: bool = False,
+    ):
+        return self._logic.rollback_peer_node(
+            source_addr, node_uuid, rollback_absence,
+        )
+
+    def create_agenda_item(
+        self, text: str, priority: str | None = None,
+        board_uuid: str | None = None,
+    ):
+        return self._logic.create_agenda_item(text, priority, board_uuid)
+
+    def delete_agenda_item(self, item_uuid: str):
+        return self._logic.delete_agenda_item(item_uuid)
+
+    def set_agenda_item_priority(
+        self, item_uuid: str, priority: str | None,
+    ):
+        return self._logic.set_agenda_item_priority(item_uuid, priority)
+
+    def move_agenda_item(self, item_uuid: str, index: int):
+        return self._logic.move_agenda_item(item_uuid, index)
+
+    def set_auto_adopt_mode(
+        self, mode: str, board_uuid: str | None = None,
+    ):
+        return self._logic.set_auto_adopt_mode(mode, board_uuid)

@@ -5,9 +5,6 @@ import unittest
 from pathlib import Path
 
 import app_server
-from sovereign.protocol import protocol_tree_envelope
-from sovereign.session import Session
-from sovereign.transport import HttpTransportAdapter
 
 
 class _JsonRequest:
@@ -17,23 +14,6 @@ class _JsonRequest:
 
     async def json(self):
         return self._payload
-
-
-class _HttpClient:
-    def __init__(self, profile):
-        self.profile = profile
-        self.join_payload = None
-
-    def get_json(self, url, timeout=5):
-        return protocol_tree_envelope(self.profile)
-
-    def post_json(self, url, payload, timeout=5):
-        if url.endswith("/p2p/join"):
-            self.join_payload = payload
-        return {
-            "status": "ok",
-            "topic_members": {self.profile.uuid: ["http://peer"]},
-        }
 
 
 class CoreProfileTests(unittest.TestCase):
@@ -75,24 +55,6 @@ class CoreProfileTests(unittest.TestCase):
         self.assertEqual(payload["profile"]["data"]["type"], "shared_user_profile")
         self.assertIn("/api/core/profile/avatar", routes)
         self.assertNotIn("/api/kanban/profile", routes)
-
-    def test_zero_application_direct_join_accepts_profile_as_peer_cache_only(self):
-        local = Session("http://local")
-        peer = Session("http://peer")
-        peer.set_identity("Bob")
-        peer_profile = peer.identity
-        local_profile_uuid = local.identity.uuid
-        http = _HttpClient(peer_profile)
-        adapter = HttpTransportAdapter(local, http, logger=lambda _: None)
-
-        result = adapter.join_discussion("http://peer", peer_profile.uuid)
-
-        self.assertEqual(result["status"], "ok")
-        self.assertNotIn(peer_profile.uuid, local.protocol.index)
-        self.assertIn(local_profile_uuid, local.protocol.index)
-        cached = local.get_cached_peer_subtree("http://peer", peer_profile.uuid)
-        self.assertEqual(cached.data["display_name"], "Bob")
-        self.assertIn(local_profile_uuid, http.join_payload["topic_uuids"])
 
 
 if __name__ == "__main__":

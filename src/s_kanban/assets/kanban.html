@@ -84,6 +84,7 @@
       </menu>
     </dialog>
 
+    <script src="/shared-api.js"></script>
     <script src="/shared.js"></script>
     <script>
       let state = null;
@@ -176,18 +177,7 @@
         }
       }
 
-      async function api(path, body) {
-        const response = await fetch(path, {
-          method: body === undefined ? "GET" : "POST",
-          headers: body === undefined ? {} : { "Content-Type": "application/json" },
-          body: body === undefined ? undefined : JSON.stringify(body),
-        });
-        const payload = await response.json();
-        if (!response.ok || payload.status === "error") {
-          throw new Error(payload.reason || "Request failed");
-        }
-        return payload;
-      }
+      const api = SovereignApi.request;
 
       function renderNetwork() {
         // The shell draws the cluster; Kanban only says which peers belong

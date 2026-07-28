@@ -52,11 +52,14 @@ from sovereign import (
 DEFAULT_COLUMNS = ["To Do", "Doing", "Done"]
 KANBAN_APP_NAME = "S-Kanban"
 KANBAN_APPLICATION_ID = "kanban"
-ORDER_GAP_EPSILON = 1e-9
 AUTO_ADOPT_MODES = ("always", "not_owner", "not_member", "never")
 AGENDA_PRIORITIES = ("high", "medium", "low")
 DISPLAYED_DIVERGENCE_TYPES = frozenset({
     "kanban_board", "kanban_column", "kanban_card",
+})
+OWNED_NODE_TYPES = frozenset({
+    *DISPLAYED_DIVERGENCE_TYPES,
+    "agenda_item", "card_attachment", "card_comment",
 })
 
 
@@ -97,7 +100,9 @@ class KanbanLogic:
             "network": network,
             "peers": {
                 addr: tree.to_dict()
-                for addr, tree in sorted(self.session.peer_perspectives.items())
+                for addr, tree in sorted(
+                    self.session.peer_perspectives_for_topic().items(),
+                )
             },
             "auto_adopt_mode": self.auto_adopt_mode(board),
             # The shell renders the adoption control and the agenda, so it
@@ -168,6 +173,27 @@ class KanbanLogic:
             if self.collaboration else self.session.get_network_info()
         )
 
+    def network_info(self, board_uuid: str | None = None) -> dict:
+        return self._network_info(board_uuid)
+
+    def collaboration_context(self, topic_uuid: str) -> dict:
+        board = self._node(topic_uuid, "kanban_board")
+        if not board:
+            return {}
+        network = self.network_info(topic_uuid)
+        events = self.transition_events(topic_uuid, network)
+        return {
+            "agenda_items": [
+                item.to_dict() for item in self.session.agenda_items(topic_uuid)
+            ],
+            "transition_events": events,
+            "transition_by_node": self.transition_by_node(events),
+            "identity_uuid": self.session.identity.uuid,
+            "known_identities": self.session.known_identities(),
+            "auto_adopt_mode": self.auto_adopt_mode(board),
+            "auto_adopt_modes": list(AUTO_ADOPT_MODES),
+        }
+
     # The policy is Session's; Kanban only adds the two modes that are judged
     # against card ownership. Settings saved before the move still live under
     # this application's metadata, so they are read through rather than reset.
@@ -186,10 +212,10 @@ class KanbanLogic:
         self, mode: str, board_uuid: str | None = None,
     ) -> SessionResult:
         board = (
-            self.session.protocol.index.get(board_uuid)
+            self._node(board_uuid, "kanban_board")
             if board_uuid else self.ensure_board()
         )
-        if not board or board.data.get("type") != "kanban_board":
+        if not board:
             return SessionResult("error", reason="board not found")
         normalized = self._normalize_auto_adopt_mode(mode)
         return self.session.set_auto_adopt_mode(
@@ -210,9 +236,8 @@ class KanbanLogic:
         remembered = self.session.protocol.index.get(remembered_uuid) if remembered_uuid else None
         if explicit and remembered and remembered.data.get("type") == "kanban_board":
             return remembered
-        for topic_uuid in sorted(self.session.active_topic_uuids):
-            active = self.session.protocol.index.get(topic_uuid)
-            if active and active.data.get("type") == "kanban_board":
+        for active in self.session.active_topics():
+            if active.data.get("type") == "kanban_board":
                 self._remember_board(active.uuid)
                 return active
             if active and self._is_kanban_app_topic(active):
@@ -242,12 +267,11 @@ class KanbanLogic:
     def create_board(self, name: str = "Kanban Board") -> SessionResult:
         board = self._create_board_node(name or "Kanban Board")
         self._remember_board(board.uuid, explicit=True)
-        return SessionResult("ok", value=board.uuid,
-                             effects=self.session.sync_effects(self._kanban_container().uuid))
+        return SessionResult("ok", value=board.uuid)
 
     def select_board(self, board_uuid: str) -> SessionResult:
-        board = self.session.protocol.index.get(board_uuid)
-        if not board or board.data.get("type") != "kanban_board":
+        board = self._node(board_uuid, "kanban_board")
+        if not board:
             return SessionResult("error", reason="board not found")
         self._remember_board(board.uuid, explicit=True)
         return SessionResult("ok", value=board.uuid)
@@ -268,24 +292,24 @@ class KanbanLogic:
         return accepted
 
     def rename_board(self, board_uuid: str, name: str) -> SessionResult:
-        board = self.session.protocol.index.get(board_uuid)
-        if not board or board.data.get("type") != "kanban_board":
+        board = self._node(board_uuid, "kanban_board")
+        if not board:
             return SessionResult("error", reason="board not found")
         data = dict(board.data)
         data["name"] = name or "Kanban Board"
         return self.session.modify(board.uuid, data, board.weights)
 
     def set_board_objective(self, board_uuid: str, objective: str) -> SessionResult:
-        board = self.session.protocol.index.get(board_uuid)
-        if not board or board.data.get("type") != "kanban_board":
+        board = self._node(board_uuid, "kanban_board")
+        if not board:
             return SessionResult("error", reason="board not found")
         data = dict(board.data)
         data["objective"] = objective or ""
         return self.session.modify(board.uuid, data, board.weights)
 
     def copy_board(self, board_uuid: str) -> SessionResult:
-        board = self.session.protocol.index.get(board_uuid)
-        if not board or board.data.get("type") != "kanban_board":
+        board = self._node(board_uuid, "kanban_board")
+        if not board:
             return SessionResult("error", reason="board not found")
         container = self._kanban_container()
         result = self.session.copy(board.uuid, container.uuid)
@@ -296,16 +320,15 @@ class KanbanLogic:
         data["name"] = f"{data.get('name', 'Kanban Board')} copy"
         self.session.modify(clone.uuid, data, clone.weights)
         self._remember_board(clone.uuid, explicit=True)
-        return SessionResult("ok", value=clone.uuid,
-                             effects=self.session.sync_effects(clone.uuid))
+        return SessionResult("ok", value=clone.uuid)
 
     def delete_board(self, board_uuid: str) -> SessionResult:
         # The last board goes too. Refusing it left no way to clear a host
         # of boards it no longer wants, and there is nothing to protect:
         # ensure_board() makes a fresh empty one the next time the board
         # view is opened, exactly as it does on a first run.
-        board = self.session.protocol.index.get(board_uuid)
-        if not board or board.data.get("type") != "kanban_board":
+        board = self._node(board_uuid, "kanban_board")
+        if not board:
             return SessionResult("error", reason="board not found")
         release = self.session.end_topic_sharing(board_uuid)
         result = self.session.delete(board.uuid)
@@ -340,12 +363,7 @@ class KanbanLogic:
 
     def users(self) -> list[dict]:
         users = [self._user_info(self.session.address, self.user_profile())]
-        # Union with peer_perspectives, not just members - a relay-only
-        # peer (e.g. "relay:B") never goes through add_peer (deliberately;
-        # see Session.note_indirect_peer_topic), so it would never appear here
-        # if this only looked at members. Their identity is still visible
-        # via the ordinary peer_perspectives cache, same as any HTTP peer's.
-        addrs = (self.session.members | set(self.session.peer_perspectives)) - {self.session.address}
+        addrs = set(self.session.peer_addresses()) - {self.session.address}
         for addr in sorted(addrs):
             profile = self._find_peer_user_profile(addr)
             users.append(self._user_info(addr, profile, self._peer_profile_uuid(addr, profile)))
@@ -364,14 +382,14 @@ class KanbanLogic:
 
     def create_column(self, name: str) -> SessionResult:
         board = self.ensure_board()
-        existing = self.columns(board)
-        last_order = float(existing[-1].data.get("order", 0)) if existing else None
         return self.session.create_child(
             board.uuid,
             {
                 "type": "kanban_column",
                 "name": name or "Column",
-                "order": self._order_between(last_order, None),
+                "order": self.session.next_child_order(
+                    board.uuid, "kanban_column",
+                ),
             },
             {},
         )
@@ -385,15 +403,19 @@ class KanbanLogic:
         return self.session.modify(column.uuid, data, column.weights)
 
     def delete_column(self, column_uuid: str) -> SessionResult:
-        return self.session.delete(column_uuid)
+        column = self._node(column_uuid, "kanban_column")
+        if not column:
+            return SessionResult("error", reason="column not found")
+        return self.session.delete(column.uuid)
 
     def move_column(self, column_uuid: str, index: int) -> SessionResult:
         board = self.ensure_board()
         column = self._node(column_uuid, "kanban_column")
         if not column or column.parent_uuid != board.uuid:
             return SessionResult("error", reason="column not found")
-        siblings = [item for item in self.columns(board) if item.uuid != column_uuid]
-        return self._place_in_order(column, siblings, index)
+        return self.session.move_child_to_parent_index(
+            column.uuid, board.uuid, index,
+        )
 
     def create_card(self, column_uuid: str, name: str,
                     description: str = "",
@@ -402,8 +424,6 @@ class KanbanLogic:
         column = self._node(column_uuid, "kanban_column")
         if not column:
             return SessionResult("error", reason="column not found")
-        existing = self.cards(column)
-        last_order = float(existing[-1].data.get("order", 0)) if existing else None
         participants = participants or []
         return self.session.create_child(
             column.uuid,
@@ -413,7 +433,9 @@ class KanbanLogic:
                 "description": description or "",
                 "participants": participants,
                 "owner": self._normalize_owner(owner, participants),
-                "order": self._order_between(last_order, None),
+                "order": self.session.next_child_order(
+                    column.uuid, "kanban_card",
+                ),
             },
             {},
         )
@@ -540,32 +562,29 @@ class KanbanLogic:
         if not card or not column:
             return SessionResult("error", reason="card or column not found")
 
-        def operation():
-            moved = self.session.move_child(card.uuid, column.uuid, index)
-            if moved.status != "ok":
-                return moved
-            effects = list(moved.effects)
-            fresh_column = self.session.protocol.index[column.uuid]
-            fresh_card = self.session.protocol.index[card.uuid]
-            siblings = [item for item in self.cards(fresh_column) if item.uuid != card.uuid]
-            placed = self._place_in_order(fresh_card, siblings, index)
-            if placed.status != "ok":
-                return placed
-            effects.extend(placed.effects)
-            return SessionResult("ok", value=True, effects=effects)
-
-        return operation()
+        return self.session.move_child_to_parent_index(
+            card.uuid, column.uuid, index,
+        )
 
     def accept_peer_node(self, source_addr: str, node_uuid: str,
                          adopt_absence: bool = False) -> SessionResult:
         # Session adopts an existing node's own fields shallowly (containers
         # keep their cards) and grafts only a brand-new subtree - no
         # kanban-specific container handling is needed anymore.
+        local_exists = node_uuid in self.session.protocol.index
+        if ((local_exists and not self.owns_node(node_uuid))
+                or (not adopt_absence
+                    and not self.owns_node(node_uuid, source_addr))):
+            return SessionResult("error", reason="node is not part of a Kanban board")
         return self.session.accept_peer_node(source_addr, node_uuid, adopt_absence)
 
     def rollback_peer_node(self, source_addr: str,
                            node_uuid: str,
                            rollback_absence: bool = False) -> SessionResult:
+        if (not self.owns_node(node_uuid)
+                or (not rollback_absence
+                    and not self.owns_node(node_uuid, source_addr))):
+            return SessionResult("error", reason="node is not part of a Kanban board")
         return self.session.rollback_peer_node(
             source_addr, node_uuid, rollback_absence,
         )
@@ -591,7 +610,7 @@ class KanbanLogic:
             return True
 
         changed = False
-        for addr in sorted(self.session.peer_perspectives):
+        for addr in self.session.peer_addresses():
             if not self.session.peer_discusses_node(addr, board.uuid):
                 continue
             # Collaboration topics belong to their author and always follow
@@ -744,11 +763,7 @@ class KanbanLogic:
         changed = self.adopt_all_incoming_changes()
         if not changed:
             return SessionResult("ok", value=False)
-        return SessionResult(
-            "ok",
-            value=True,
-            effects=self.session.sync_effects(None),
-        )
+        return SessionResult("ok", value=True)
 
     def adopt_all_incoming_changes(self) -> bool:
         changed = False
@@ -771,7 +786,7 @@ class KanbanLogic:
         board = self.ensure_board()
         board_uuid = board_uuid or board.uuid
         events = []
-        for addr in sorted(self.session.peer_perspectives):
+        for addr in self.session.peer_addresses():
             if not self.session.peer_discusses_node(addr, board.uuid):
                 continue
             liveness = self._peer_liveness(addr, board_uuid, network)
@@ -1148,7 +1163,7 @@ class KanbanLogic:
         peer_addr = event.get("peer_addr")
         return bool(
             origin and peer_addr
-            and self.session.peer_identity_key.get(peer_addr) == origin
+            and self.session.peer_identity_key_for_address(peer_addr) == origin
         )
 
     def columns(self, board: ProtocolNode | None = None) -> list[ProtocolNode]:
@@ -1176,68 +1191,83 @@ class KanbanLogic:
         board_uuid: str | None = None,
     ) -> SessionResult:
         board = (
-            self.session.protocol.index.get(board_uuid)
+            self._node(board_uuid, "kanban_board")
             if board_uuid else self.ensure_board()
         )
-        if not board or board.data.get("type") != "kanban_board":
+        if not board:
             return SessionResult("error", reason="board not found")
         return self.session.create_agenda_item(
             board.uuid, text, priority,
         )
 
     def delete_agenda_item(self, item_uuid: str) -> SessionResult:
+        if not self.owns_node(item_uuid):
+            return SessionResult("error", reason="agenda item not found")
         return self.session.delete_agenda_item(item_uuid)
 
     def set_agenda_item_priority(self, item_uuid: str, priority: str | None) -> SessionResult:
+        if not self.owns_node(item_uuid):
+            return SessionResult("error", reason="agenda item not found")
         return self.session.set_agenda_item_priority(item_uuid, priority)
 
     def move_agenda_item(self, item_uuid: str, index: int) -> SessionResult:
+        if not self.owns_node(item_uuid):
+            return SessionResult("error", reason="agenda item not found")
         return self.session.move_agenda_item(item_uuid, index)
-
-    @staticmethod
-    def _order_between(low: float | None, high: float | None) -> float | None:
-        if low is None and high is None:
-            return 0.0
-        if low is None:
-            return high - 1.0
-        if high is None:
-            return low + 1.0
-        if high - low < ORDER_GAP_EPSILON:
-            return None
-        return (low + high) / 2.0
-
-    def _place_in_order(self, moved: ProtocolNode, siblings: list[ProtocolNode],
-                        index: int) -> SessionResult:
-        index = max(0, min(index, len(siblings)))
-        low = float(siblings[index - 1].data.get("order", 0)) if index > 0 else None
-        high = float(siblings[index].data.get("order", 0)) if index < len(siblings) else None
-        new_order = self._order_between(low, high)
-        if new_order is None:
-            ordered = list(siblings)
-            ordered.insert(index, moved)
-            return self._reorder(ordered)
-        data = dict(moved.data)
-        data["order"] = new_order
-        return self.session.modify(moved.uuid, data, moved.weights)
-
-    def _reorder(self, nodes: list[ProtocolNode]) -> SessionResult:
-        effects = []
-        for order, node in enumerate(nodes):
-            if node.data.get("order") == order:
-                continue
-            data = dict(node.data)
-            data["order"] = order
-            result = self.session.modify(node.uuid, data, node.weights)
-            if result.status != "ok":
-                return result
-            effects.extend(result.effects)
-        return SessionResult("ok", value=True, effects=effects)
 
     def _node(self, uuid: str, node_type: str) -> ProtocolNode | None:
         node = self.session.protocol.index.get(uuid)
-        if node and node.data.get("type") == node_type:
+        if (
+            node
+            and node.data.get("type") == node_type
+            and self.owns_node(uuid)
+        ):
             return node
         return None
+
+    def owns_node(self, node_uuid: str, peer_addr: str | None = None) -> bool:
+        """Whether one side's node belongs to a Kanban topic and schema."""
+        if peer_addr is not None:
+            node = self.session.get_cached_peer_subtree(peer_addr, node_uuid)
+            if not node or node.data.get("type") not in OWNED_NODE_TYPES:
+                return False
+            topic_uuids = set(
+                self.session.peer_topics_for_node(peer_addr, node_uuid),
+            )
+            if local_topic := self._local_kanban_topic(node_uuid):
+                topic_uuids.add(local_topic.uuid)
+            return any(
+                (topic := self.session.get_cached_peer_subtree(peer_addr, topic_uuid))
+                and topic.data.get("type") == "kanban_board"
+                and self._subtree_contains(topic, node_uuid)
+                for topic_uuid in topic_uuids
+            )
+
+        node = self.session.protocol.index.get(node_uuid)
+        if not node or node.data.get("type") not in OWNED_NODE_TYPES:
+            return False
+        return self._local_kanban_topic(node_uuid) is not None
+
+    def _local_kanban_topic(self, node_uuid: str) -> ProtocolNode | None:
+        node = self.session.protocol.index.get(node_uuid)
+        if not node:
+            return None
+        seen = set()
+        current = node
+        while current and current.uuid not in seen:
+            seen.add(current.uuid)
+            if current.data.get("type") == "kanban_board":
+                parent = self.session.protocol.index.get(current.parent_uuid)
+                return current if self._is_kanban_app_topic(parent) else None
+            current = self.session.protocol.index.get(current.parent_uuid)
+        return None
+
+    @staticmethod
+    def _subtree_contains(root: ProtocolNode, node_uuid: str) -> bool:
+        return root.uuid == node_uuid or any(
+            KanbanLogic._subtree_contains(child, node_uuid)
+            for child in root.children
+        )
 
     def _remember_board(self, board_uuid: str, explicit: bool = False) -> None:
         metadata = self._metadata()
@@ -1246,18 +1276,16 @@ class KanbanLogic:
             metadata["board_selection_explicit"] = True
 
     def _metadata(self) -> dict:
-        apps = self.session.app_metadata.setdefault("apps", {})
-        return apps.setdefault(KANBAN_APPLICATION_ID, {})
+        return self.session.application_metadata(KANBAN_APPLICATION_ID)
 
     def _kanban_container(self) -> ProtocolNode:
         return self._folder(self._apps_folder(), KANBAN_APP_NAME, "kanban_app")
 
     def _kanban_containers(self) -> list[ProtocolNode]:
         active = [
-            self.session.protocol.index[uuid]
-            for uuid in sorted(self.session.active_topic_uuids)
-            if uuid in self.session.protocol.index
-            and self._is_kanban_app_topic(self.session.protocol.index[uuid])
+            topic
+            for topic in self.session.active_topics()
+            if self._is_kanban_app_topic(topic)
         ]
         if active:
             return active
@@ -1294,15 +1322,14 @@ class KanbanLogic:
     def _peer_profile_uuid(self, address: str, profile: ProtocolNode | None = None) -> str:
         if profile:
             return profile.uuid
-        for topic_uuid in self.session.fetch_topic_uuids(address):
+        for topic_uuid in self.session.peer_topic_uuids(address):
             cached = self.session.get_cached_peer_subtree(address, topic_uuid)
             if cached and self._is_shared_user_topic(cached):
                 return cached.uuid
         # No "assume it's the profile if it's not a board we recognize"
         # fallback here on purpose: that used to be safe when a peer's only
-        # ever-fetched topics were exactly one board plus one profile
-        # (join_discussion's own accept-time guarantee), but an indirect channel now
-        # tracks every topic a peer publishes via peer_topic_sets - a board
+        # ever-fetched topics were exactly one board plus one profile, but a
+        # mailbox channel may track every topic a peer publishes - a board
         # this side never grafted locally has no entry in
         # self.session.protocol.index either, so "not a board" and "is the
         # profile" stopped meaning the same thing. Returning "" (unknown
@@ -1342,13 +1369,4 @@ class KanbanLogic:
         return self.session.is_identity_node(node)
 
     def _is_active_discussion_node(self, node_uuid: str) -> bool:
-        return any(
-            self.session._is_descendant_or_self(topic_uuid, node_uuid)
-            for topic_uuid in self.session.active_topic_uuids
-        )
-
-
-def create_logic(session: Session, config: dict) -> KanbanLogic:
-    logic = KanbanLogic(session, config)
-    session.register_application(logic.application_registration())
-    return logic
+        return self.session.is_node_in_active_topic(node_uuid)

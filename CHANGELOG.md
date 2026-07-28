@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Expanded facade API v1 with explicit board, card, agenda, reaction, and
+  policy commands for optional consumers. Returned nodes remain snapshots.
+- Card and column moves now use Core's shared cross-parent fractional ordering.
+- Application code uses Session queries and metadata namespaces instead of
+  mutable registries.
+- Mutation and peer-reaction routes now reject nodes outside a Kanban board,
+  including same-typed nodes under another application's topic.
+- Core retired the direct HTTP channel, so a board is shared over a relay or
+  not at all. Two internal call sites went with it: `users()` read
+  `Session.members`, which no longer exists (it now uses the public peer
+  projection), and three logic methods returned sync effects nothing can deliver.
+  No behaviour changed for a board already shared over a relay. The live
+  two-server integration tests now stand up a shared folder and connect
+  through it, which is the route users take.
+- The multi-client tests connect over a relay folder instead of an
+  in-process HTTP stand-in. `MemoryHttpClient` delivered a peer's message by
+  calling the other runtime's handler; the new `tests/relay_clients.py`
+  gives each client its own target on one shared folder, and a `sync()` the
+  test calls when a cycle should happen. Slower - about 17s across the suite
+  - and it exercises the route people actually use. Behaviour unchanged; see
+  Core's `DESIGN_TOPIC_HOME_CHANNELS.md` section 3.
 - The last board can be deleted. `delete_board` refused when only one board
   remained, which left no way to clear a host of boards it no longer wants.
   Nothing depended on a board existing: opening the board view calls

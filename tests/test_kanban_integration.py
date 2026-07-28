@@ -44,16 +44,37 @@ def wait_for_server(port: int) -> None:
     raise RuntimeError(f"server on {port} did not start: {last_error}")
 
 
-def connect_over_http(host_port: int, guest_port: int, board_uuid: str) -> dict:
-    """Connect two live servers through Core's collaboration API.
+def add_relay(port: int, relay_root: str) -> str:
+    """Give a live server a relay target, as Manage channels would."""
+    created = request_json(
+        "POST",
+        f"http://127.0.0.1:{port}/api/core/channels",
+        {
+            "kind": "mailbox", "type": "local_relay",
+            "name": f"relay {port}", "root": relay_root,
+        },
+        timeout=20,
+    )
+    # The channel row's ref, which is how every later call names it.
+    return f"mailbox:{created['value']}"
 
-    Replaces the removed address-based /api/kanban/invite +
-    /api/kanban/boards/share endpoints, which had no UI caller left.
+
+def connect_over_relay(host_port: int, guest_port: int, board_uuid: str,
+                       host_channel: str) -> dict:
+    """Connect two live servers through Core's collaboration API: the host
+    uses its relay for the board, composes an invitation, the guest accepts.
     """
+    used = request_json(
+        "POST",
+        f"http://127.0.0.1:{host_port}/api/core/topics/{board_uuid}/channels",
+        {"channel_ref": host_channel, "action": "use"},
+        timeout=20,
+    )
+    assert used.get("status") != "error", used
     token = request_json(
         "POST",
         f"http://127.0.0.1:{host_port}/api/core/invitations",
-        {"topic_uuid": board_uuid, "channel_ref": "http"},
+        {"topic_uuid": board_uuid, "channel_ref": host_channel},
         timeout=20,
     )
     return request_json(
@@ -116,6 +137,10 @@ class ServerIntegrationTests(unittest.TestCase):
             try:
                 wait_for_server(port_a)
                 wait_for_server(port_b)
+                relay_root = str(tmp_path / "relay")
+                Path(relay_root).mkdir()
+                channel_a = add_relay(port_a, relay_root)
+                add_relay(port_b, relay_root)
 
                 board_a = request_json(
                     "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
@@ -132,7 +157,9 @@ class ServerIntegrationTests(unittest.TestCase):
                     },
                 )
 
-                share = connect_over_http(port_a, port_b, board_a["uuid"])
+                share = connect_over_relay(
+                    port_a, port_b, board_a["uuid"], channel_a,
+                )
                 self.assertEqual(share["status"], "ok")
 
                 deadline = time.monotonic() + 10
@@ -150,14 +177,22 @@ class ServerIntegrationTests(unittest.TestCase):
 
                 self.assertIn("Synced Card", card_names(final_a["board"]))
                 self.assertIn("Synced Card", card_names(final_b["board"]))
-                self.assertEqual(
-                    sorted(final_a["network"]["members"]),
-                    [f"http://127.0.0.1:{port_a}", f"http://127.0.0.1:{port_b}"],
-                )
-                self.assertEqual(
-                    sorted(final_b["network"]["members"]),
-                    [f"http://127.0.0.1:{port_a}", f"http://127.0.0.1:{port_b}"],
-                )
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    final_a = request_json(
+                        "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                    )
+                    final_b = request_json(
+                        "GET", f"http://127.0.0.1:{port_b}/api/kanban/board"
+                    )
+                    if (
+                        final_a["network"]["peer_addresses"]
+                        and final_b["network"]["peer_addresses"]
+                    ):
+                        break
+                    time.sleep(0.2)
+                self.assertEqual(len(final_a["network"]["peer_addresses"]), 1)
+                self.assertEqual(len(final_b["network"]["peer_addresses"]), 1)
             finally:
                 for process in processes:
                     process.terminate()
@@ -203,10 +238,16 @@ class ServerIntegrationTests(unittest.TestCase):
             try:
                 wait_for_server(port_a)
                 wait_for_server(port_b)
+                relay_root = str(tmp_path / "relay")
+                Path(relay_root).mkdir()
+                channel_a = add_relay(port_a, relay_root)
+                add_relay(port_b, relay_root)
                 board_a = request_json(
                     "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
                 )["board"]
-                share = connect_over_http(port_a, port_b, board_a["uuid"])
+                share = connect_over_relay(
+                    port_a, port_b, board_a["uuid"], channel_a,
+                )
                 self.assertEqual(share["status"], "ok")
                 request_json(
                     "POST",
@@ -285,10 +326,16 @@ class ServerIntegrationTests(unittest.TestCase):
             try:
                 wait_for_server(port_a)
                 wait_for_server(port_b)
+                relay_root = str(tmp_path / "relay")
+                Path(relay_root).mkdir()
+                channel_a = add_relay(port_a, relay_root)
+                add_relay(port_b, relay_root)
                 board_a = request_json(
                     "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
                 )["board"]
-                share = connect_over_http(port_a, port_b, board_a["uuid"])
+                share = connect_over_relay(
+                    port_a, port_b, board_a["uuid"], channel_a,
+                )
                 self.assertEqual(share["status"], "ok")
                 request_json(
                     "POST",
@@ -308,9 +355,17 @@ class ServerIntegrationTests(unittest.TestCase):
                     },
                 )
                 card_uuid = create["value"]["uuid"]
-                raw_b = request_json(
-                    "GET", f"http://127.0.0.1:{port_b}/api/protocol"
-                )
+                # A relay carries the card on its own poll, so wait for it to
+                # arrive before moving it - the point of the test is the move,
+                # not how quickly the first version got there.
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    raw_b = request_json(
+                        "GET", f"http://127.0.0.1:{port_b}/api/protocol"
+                    )
+                    if find_card_parent(raw_b, "Moved Card") == source_uuid:
+                        break
+                    time.sleep(0.2)
                 self.assertEqual(find_card_parent(raw_b, "Moved Card"), source_uuid)
                 request_json(
                     "POST",
@@ -321,9 +376,14 @@ class ServerIntegrationTests(unittest.TestCase):
                         "index": 0,
                     },
                 )
-                raw_b = request_json(
-                    "GET", f"http://127.0.0.1:{port_b}/api/protocol"
-                )
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    raw_b = request_json(
+                        "GET", f"http://127.0.0.1:{port_b}/api/protocol"
+                    )
+                    if find_card_parent(raw_b, "Moved Card") == target_uuid:
+                        break
+                    time.sleep(0.2)
                 self.assertEqual(find_card_parent(raw_b, "Moved Card"), target_uuid)
 
                 deadline = time.monotonic() + 10
@@ -341,18 +401,26 @@ class ServerIntegrationTests(unittest.TestCase):
                     target_uuid,
                 )
 
-                deadline = time.monotonic() + 10
+                def peer_view(payload):
+                    # Keyed by B's publication identity, not its URL: over a
+                    # relay a peer is who it publishes as.
+                    for addr, tree in (payload.get("peers") or {}).items():
+                        if addr.startswith("relay:"):
+                            return tree
+                    return None
+
+                deadline = time.monotonic() + 20
                 final_a = None
                 while time.monotonic() < deadline:
                     final_a = request_json(
                         "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
                     )
-                    peer = final_a["peers"].get(f"http://127.0.0.1:{port_b}")
+                    peer = peer_view(final_a)
                     if peer and find_card_parent(peer, "Moved Card") == target_uuid:
                         break
                     time.sleep(0.2)
 
-                peer = final_a["peers"].get(f"http://127.0.0.1:{port_b}")
+                peer = peer_view(final_a)
                 self.assertEqual(find_card_parent(peer, "Moved Card"), target_uuid)
             finally:
                 for process in processes:
@@ -370,10 +438,10 @@ class ServerIntegrationTests(unittest.TestCase):
 
     def test_hub_joining_two_unrelated_boards_does_not_cross_introduce_peers(self):
         # Reproduces a real reported bug: A and C each have their own,
-        # unrelated board. B connects to both via "Connect via token"
-        # (/api/join_discussion) as two separate actions. A and C never
-        # connect to each other and share nothing - so neither should ever
-        # learn about the other, even though B legitimately knows both.
+        # unrelated board, on their own relay. B accepts an invitation from
+        # each, as two separate actions. A and C never share a relay and
+        # never share a topic - so neither should ever learn about the
+        # other, even though B legitimately knows both.
         port_a = free_port()
         port_b = free_port()
         port_c = free_port()
@@ -406,6 +474,12 @@ class ServerIntegrationTests(unittest.TestCase):
                 wait_for_server(port_a)
                 wait_for_server(port_b)
                 wait_for_server(port_c)
+                relay_a = str(tmp_path / "relay-a")
+                relay_c = str(tmp_path / "relay-c")
+                Path(relay_a).mkdir()
+                Path(relay_c).mkdir()
+                channel_a = add_relay(port_a, relay_a)
+                channel_c = add_relay(port_c, relay_c)
 
                 board_a = request_json(
                     "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
@@ -414,26 +488,16 @@ class ServerIntegrationTests(unittest.TestCase):
                     "GET", f"http://127.0.0.1:{port_c}/api/kanban/board"
                 )["board"]
 
-                join_a = request_json(
-                    "POST", f"http://127.0.0.1:{port_b}/api/join_discussion",
-                    {
-                        "address": f"http://127.0.0.1:{port_a}",
-                        "topic_uuids": [board_a["uuid"]],
-                    },
-                    timeout=20,
+                join_a = connect_over_relay(
+                    port_a, port_b, board_a["uuid"], channel_a,
                 )
                 self.assertEqual(join_a["status"], "ok")
-                join_c = request_json(
-                    "POST", f"http://127.0.0.1:{port_b}/api/join_discussion",
-                    {
-                        "address": f"http://127.0.0.1:{port_c}",
-                        "topic_uuids": [board_c["uuid"]],
-                    },
-                    timeout=20,
+                join_c = connect_over_relay(
+                    port_c, port_b, board_c["uuid"], channel_c,
                 )
                 self.assertEqual(join_c["status"], "ok")
 
-                time.sleep(1.0)
+                time.sleep(2.0)
 
                 final_a = request_json(
                     "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
@@ -442,13 +506,31 @@ class ServerIntegrationTests(unittest.TestCase):
                     "GET", f"http://127.0.0.1:{port_c}/api/kanban/board"
                 )
 
-                self.assertEqual(
-                    sorted(final_a["network"]["members"]),
-                    [f"http://127.0.0.1:{port_a}", f"http://127.0.0.1:{port_b}"],
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    final_a = request_json(
+                        "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                    )
+                    final_c = request_json(
+                        "GET", f"http://127.0.0.1:{port_c}/api/kanban/board"
+                    )
+                    if (
+                        final_a["network"]["peer_addresses"]
+                        and final_c["network"]["peer_addresses"]
+                    ):
+                        break
+                    time.sleep(0.2)
+
+                # One peer each, and it is B in both cases: A and C have no
+                # relay and no topic in common, so neither can see the other.
+                self.assertEqual(len(final_a["network"]["peer_addresses"]), 1)
+                self.assertEqual(len(final_c["network"]["peer_addresses"]), 1)
+                self.assertNotIn(
+                    board_c["uuid"], final_a["board"].get("children", []),
                 )
                 self.assertEqual(
-                    sorted(final_c["network"]["members"]),
-                    [f"http://127.0.0.1:{port_b}", f"http://127.0.0.1:{port_c}"],
+                    final_a["network"]["peer_addresses"],
+                    final_c["network"]["peer_addresses"],
                 )
             finally:
                 for process in processes:

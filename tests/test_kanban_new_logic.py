@@ -1,93 +1,12 @@
-import tempfile
 import time
 import unittest
-from pathlib import Path
 
-import app_server
 from s_kanban.logic import KanbanLogic
 from sovereign.protocol import ProtocolNode
 from sovereign.session import Session
-
-
-def connect(host, guest, board_uuid: str | None = None) -> dict:
-    """Wire two runtimes the way the app actually does: `guest` accepts a
-    connect token offering `host`'s http channel.
-
-    Replaces the removed address-based invite/share_board flow, which had no
-    UI caller left. Omit board_uuid to share only the host's identity (the
-    old `invite`); pass one to share a board too (the old `share_board`).
-    """
-    profile_uuid = host.logic.user_profile().uuid
-    topic_uuids = [profile_uuid] if board_uuid is None else [board_uuid, profile_uuid]
-    for topic_uuid in topic_uuids:
-        host.session.start_discussion(topic_uuid)
-    result = guest.channel_manager.accept_invitation(
-        host.session.identity.to_dict(),
-        topic_uuids,
-        [{"type": "http", "descriptor_version": 1, "address": host.address}],
-    )
-    return result.value if result.ok else {
-        "status": "error", "reason": result.reason,
-    }
-
-
-class MemoryHttpClient:
-    def __init__(self, runtimes):
-        self.runtimes = runtimes
-
-    def get_json(self, url: str, timeout: float = 5) -> dict:
-        runtime, path = self._split(url)
-        if path.startswith("/p2p/subtree/"):
-            payload, status = runtime.adapter.p2p_subtree(path.rsplit("/", 1)[1])
-            if status != 200:
-                raise RuntimeError(payload.get("reason", "not found"))
-            return payload
-        raise RuntimeError(f"unexpected GET {path}")
-
-    def post_json(self, url: str, payload: dict,
-                  timeout: float = 5) -> dict:
-        runtime, path = self._split(url)
-        if path == "/api/join_discussion":
-            join = getattr(runtime.logic, "join_discussion", None)
-            if join:
-                return join(
-                    runtime,
-                    payload["address"],
-                    payload.get("topic_uuid"),
-                    payload.get("topic_uuids"),
-                )
-            return runtime.adapter.join_discussion(
-                payload["address"],
-                payload.get("topic_uuid"),
-                payload.get("topic_uuids"),
-            )
-        if path == "/p2p/join":
-            response, status = runtime.adapter.p2p_join(payload)
-            if status != 200:
-                raise RuntimeError(response.get("reason", "join failed"))
-            return response
-        if path == "/p2p/sync_status":
-            response, status = runtime.adapter.p2p_sync_status(payload)
-            if status != 200:
-                raise RuntimeError(response.get("reason", "sync failed"))
-            return response
-        if path == "/p2p/announce":
-            response, status = runtime.adapter.p2p_announce(payload)
-            if status != 200:
-                raise RuntimeError(response.get("reason", "announce failed"))
-            return response
-        if path == "/p2p/leave":
-            response, status = runtime.adapter.p2p_leave(payload)
-            if status != 200:
-                raise RuntimeError(response.get("reason", "leave failed"))
-            return response
-        raise RuntimeError(f"unexpected POST {path}")
-
-    def _split(self, url):
-        for address in sorted(self.runtimes, key=len, reverse=True):
-            if url.startswith(address):
-                return self.runtimes[address], url[len(address):]
-        raise RuntimeError(f"unknown address in {url}")
+from tests.relay_clients import (
+    connect, relay_runtime, shared_relay_root, sync,
+)
 
 
 class KanbanNewLogicTests(unittest.TestCase):
@@ -195,9 +114,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_two_clients_auto_adopt_collaborate(self):
         left = self.runtime(8303)
         right = self.runtime(8304)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         right.logic.ensure_board()
 
@@ -211,7 +127,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         column = left.logic.columns(board)[0]
         card = left.logic.create_card(column.uuid, "Shared", "", []).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         self.assertIn(card.uuid, right.session.protocol.index)
@@ -220,16 +136,13 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_agenda_priority_always_follows_its_originator(self):
         left = self.runtime(8393)
         right = self.runtime(8394)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("never")
 
         item = left.logic.create_agenda_item("Discuss priority", "high").value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         # Simulate a stale/non-author copy that diverged from the same
@@ -243,18 +156,18 @@ class KanbanNewLogicTests(unittest.TestCase):
         left_payload = left.session.get_subtree(board.uuid)
         right_payload = right.session.get_subtree(board.uuid)
         left.session.apply_peer_subtree(
-            right.address,
+            right.peer_addr,
             ProtocolNode.from_dict(right_payload["subtree"]),
             right_payload["parent_uuid"],
         )
         right.session.apply_peer_subtree(
-            left.address,
+            left.peer_addr,
             ProtocolNode.from_dict(left_payload["subtree"]),
             left_payload["parent_uuid"],
         )
 
         self.assertEqual(
-            right.session.analyze_peer_transitions(left.address, item.uuid)[0]["type"],
+            right.session.analyze_peer_transitions(left.peer_addr, item.uuid)[0]["type"],
             "divergence",
         )
         self.assertTrue(right.logic.adopt_incoming_changes())
@@ -266,28 +179,25 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_agenda_priority_revert_to_none_follows_its_originator(self):
         left = self.runtime(8397)
         right = self.runtime(8398)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("never")
         item = left.logic.create_agenda_item("Radar").value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         left.logic.set_agenda_item_priority(item.uuid, "high")
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
         self.assertEqual(
             right.session.protocol.index[item.uuid].data["priority"], "high",
         )
 
         left.logic.set_agenda_item_priority(item.uuid, None)
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         self.assertEqual(
-            right.session.analyze_peer_transitions(left.address, item.uuid)[0]["type"],
+            right.session.analyze_peer_transitions(left.peer_addr, item.uuid)[0]["type"],
             "peer_made_changes",
         )
         right.logic.board_payload()
@@ -299,14 +209,11 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_non_originator_cannot_change_agenda_priority(self):
         left = self.runtime(8395)
         right = self.runtime(8396)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
         item = left.logic.create_agenda_item("Owned by left", "low").value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         result = right.logic.set_agenda_item_priority(item.uuid, "high")
@@ -317,20 +224,17 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_non_originator_can_reorder_agenda_and_order_propagates(self):
         left = self.runtime(8399)
         right = self.runtime(8400)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
         left.logic.set_auto_adopt_mode("never")
         first = left.logic.create_agenda_item("First").value
         second = left.logic.create_agenda_item("Second").value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         result = right.logic.move_agenda_item(second.uuid, 0)
-        right.adapter.execute_effects(right.session.sync_effects(board.uuid))
+        sync(left, right)
         left.logic.board_payload()
 
         self.assertEqual(result.status, "ok")
@@ -342,16 +246,13 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_agenda_changes_are_not_displayed_as_board_divergences(self):
         left = self.runtime(8402)
         right = self.runtime(8403)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
         item = left.logic.create_agenda_item("Discuss later").value
         payload = left.session.get_subtree(board.uuid)
         right.session.apply_peer_subtree(
-            left.address,
+            left.peer_addr,
             ProtocolNode.from_dict(payload["subtree"]),
             payload["parent_uuid"],
         )
@@ -365,20 +266,17 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_two_clients_auto_adopt_card_move(self):
         left = self.runtime(8313)
         right = self.runtime(8314)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
         card = left.logic.create_card(first.uuid, "Move me", "", []).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         left.logic.move_card(card.uuid, second.uuid, 0)
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         self.assertEqual(right.session.protocol.index[card.uuid].parent_uuid, second.uuid)
@@ -386,19 +284,16 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_does_not_rollback_opposing_local_move(self):
         left = self.runtime(8325)
         right = self.runtime(8326)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
         card = left.logic.create_card(second.uuid, "Opposing move", "", []).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
         left.logic.move_card(card.uuid, first.uuid, 0)
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
         self.assertEqual(right.session.protocol.index[card.uuid].parent_uuid, first.uuid)
 
@@ -410,9 +305,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_accepts_newer_move_back_after_agreement(self):
         left = self.runtime(8327)
         right = self.runtime(8328)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
@@ -420,10 +312,10 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
         card = left.logic.create_card(second.uuid, "Move back", "", []).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
         left.logic.move_card(card.uuid, first.uuid, 0)
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
         self.assertEqual(right.session.protocol.index[card.uuid].parent_uuid, first.uuid)
 
@@ -431,7 +323,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.logic.move_card(card.uuid, second.uuid, 0)
         payload = right.session.get_subtree(board.uuid)
         left.session.apply_peer_subtree(
-            right.address,
+            right.peer_addr,
             ProtocolNode.from_dict(payload["subtree"]),
             payload["parent_uuid"],
         )
@@ -442,9 +334,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_accepts_second_move_by_same_origin_after_agreement(self):
         left = self.runtime(8401)
         right = self.runtime(8402)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right, board.uuid)
         left.logic.set_auto_adopt_mode("always")
@@ -453,27 +342,27 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         # Right authors the card and remains its origin through two moves.
         card = right.logic.create_card(done.uuid, "Move twice", "", []).value
-        right.adapter.execute_effects(right.session.sync_effects(board.uuid))
+        sync(left, right)
         left.logic.board_payload()
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         right.logic.move_card(card.uuid, doing.uuid, 0)
-        right.adapter.execute_effects(right.session.sync_effects(board.uuid))
+        sync(left, right)
         left.logic.board_payload()
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
         agreed_seq = right.session.protocol.index[card.uuid].revision_seq
 
         right.logic.move_card(card.uuid, todo.uuid, 0)
         moved = right.session.protocol.index[card.uuid]
         self.assertGreater(moved.revision_seq, agreed_seq)
-        right.adapter.execute_effects(right.session.sync_effects(board.uuid))
+        sync(left, right)
 
         incoming = next(
             event
             for event in left.session.analyze_peer_transitions(
-                right.address, board.uuid,
+                right.peer_addr, board.uuid,
             )
             if event["node_uuid"] == card.uuid
         )
@@ -492,9 +381,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_not_owner_skips_only_cards_i_own(self):
         left = self.runtime(8369)
         right = self.runtime(8370)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
@@ -508,13 +394,13 @@ class KanbanNewLogicTests(unittest.TestCase):
         owned_by_peer = left.logic.create_card(
             column.uuid, "Owned by peer", "", [right_id], owner=left_id,
         ).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         right.logic.set_auto_adopt_mode("not_owner")
         left.logic.update_card(owned_by_me.uuid, "Renamed (owned by me)", "", [right_id], owner=right_id)
         left.logic.update_card(owned_by_peer.uuid, "Renamed (owned by peer)", "", [right_id], owner=left_id)
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         self.assertEqual(
@@ -528,9 +414,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_not_member_skips_any_card_im_on(self):
         left = self.runtime(8371)
         right = self.runtime(8372)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
@@ -543,13 +426,13 @@ class KanbanNewLogicTests(unittest.TestCase):
         not_involved = left.logic.create_card(
             column.uuid, "Not involved", "", [],
         ).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         right.logic.set_auto_adopt_mode("not_member")
         left.logic.update_card(im_a_member.uuid, "Renamed (member)", "", [right_id])
         left.logic.update_card(not_involved.uuid, "Renamed (uninvolved)", "", [])
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         self.assertEqual(
@@ -563,9 +446,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_not_member_auto_adopts_new_empty_column_and_its_order(self):
         left = self.runtime(8375)
         right = self.runtime(8376)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
@@ -574,7 +454,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         column = left.logic.create_column("Peer column").value
         left.logic.move_column(column.uuid, 0)
         expected = left.session.protocol.index[column.uuid]
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
 
         payload = right.logic.board_payload()
 
@@ -591,9 +471,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_not_member_adopts_new_column_then_filters_its_cards(self):
         left = self.runtime(8377)
         right = self.runtime(8378)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
@@ -607,7 +484,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         allowed = left.logic.create_card(
             column.uuid, "Uninvolved", "", [],
         ).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
 
         right.logic.board_payload()
 
@@ -623,9 +500,6 @@ class KanbanNewLogicTests(unittest.TestCase):
         # as a divergence to resolve by hand; both it and my card survive.
         left = self.runtime(8373)
         right = self.runtime(8374)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
@@ -635,7 +509,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         my_card = left.logic.create_card(
             column.uuid, "Right's card", "", [right_id], owner=right_id,
         ).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
         self.assertIn(column.uuid, right.session.protocol.index)
         self.assertIn(my_card.uuid, right.session.protocol.index)
@@ -645,7 +519,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         # Two sync rounds: the first has right decline the column deletion, the
         # second gives a prune the chance to (wrongly) collect it if it hadn't.
         for _ in range(2):
-            left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+            sync(left, right)
             right.logic.board_payload()
 
         self.assertIn(column.uuid, right.session.protocol.index)
@@ -657,13 +531,6 @@ class KanbanNewLogicTests(unittest.TestCase):
         left = self.runtime(8356)
         middle = self.runtime(8357)
         right = self.runtime(8358)
-        client = MemoryHttpClient({
-            left.address: left,
-            middle.address: middle,
-            right.address: right,
-        })
-        for runtime in (left, middle, right):
-            runtime.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, middle, board.uuid)
         connect(middle, right, board.uuid)
@@ -672,19 +539,17 @@ class KanbanNewLogicTests(unittest.TestCase):
         first, second = left.logic.columns(board)[:2]
 
         def tick():
+            sync(left, middle, right)
             for runtime in (left, middle, right):
-                result = runtime.logic.on_peer_update()
-                runtime.adapter.execute_effects(result.effects)
+                runtime.logic.on_peer_update()
 
         card = left.logic.create_card(first.uuid, "Move through chain", "", []).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
         for _ in range(3):
             tick()
         self.assertIn(card.uuid, middle.session.protocol.index)
         self.assertIn(card.uuid, right.session.protocol.index)
 
-        result = left.logic.move_card(card.uuid, second.uuid, 0)
-        left.adapter.execute_effects(result.effects)
+        left.logic.move_card(card.uuid, second.uuid, 0)
         for _ in range(5):
             tick()
 
@@ -697,24 +562,21 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_move_keeps_exported_hashes_valid(self):
         left = self.runtime(8315)
         right = self.runtime(8316)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
         first, second = left.logic.columns(board)[:2]
 
         card = left.logic.create_card(first.uuid, "Hash safe", "", []).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
-        right.adapter.execute_effects(right.session.sync_effects(board.uuid))
+        sync(left, right)
         left.logic.board_payload()
 
         left.logic.move_card(card.uuid, second.uuid, 0)
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
-        right.adapter.execute_effects(right.session.sync_effects(board.uuid))
+        sync(left, right)
         left.logic.board_payload()
 
         for runtime in (left, right):
@@ -725,9 +587,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_off_keeps_difference_until_adopt(self):
         left = self.runtime(8305)
         right = self.runtime(8306)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
@@ -735,7 +594,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         column = left.logic.columns(board)[0]
         card = left.logic.create_card(column.uuid, "Needs adopt", "", []).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         self.assertNotIn(card.uuid, right.session.protocol.index)
@@ -744,7 +603,7 @@ class KanbanNewLogicTests(unittest.TestCase):
             payload["transition_by_node"][card.uuid]["type"],
             "local_missing_node",
         )
-        adopt = right.logic.accept_peer_node(left.address, card.uuid)
+        adopt = right.logic.accept_peer_node(left.peer_addr, card.uuid)
         self.assertEqual(adopt.status, "ok")
         self.assertIn(card.uuid, right.session.protocol.index)
 
@@ -776,9 +635,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_adopting_column_fields_preserves_changed_cards(self):
         left = self.runtime(8373)
         right = self.runtime(8374)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         column = left.logic.columns(board)[0]
         card = left.logic.create_card(column.uuid, "Original card", "", []).value
@@ -787,10 +643,10 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         left.logic.rename_column(column.uuid, "Renamed column")
         left.logic.update_card(card.uuid, "Peer card", "", [])
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
-        adopted = right.logic.accept_peer_node(left.address, column.uuid)
+        adopted = right.logic.accept_peer_node(left.peer_addr, column.uuid)
 
         self.assertEqual(adopted.status, "ok")
         self.assertEqual(
@@ -805,9 +661,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_adopting_board_fields_preserves_columns_and_cards(self):
         left = self.runtime(8375)
         right = self.runtime(8376)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         column = left.logic.columns(board)[0]
         card = left.logic.create_card(column.uuid, "Original card", "", []).value
@@ -817,10 +670,10 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.logic.rename_board(board.uuid, "Renamed board")
         left.logic.rename_column(column.uuid, "Peer column")
         left.logic.update_card(card.uuid, "Peer card", "", [])
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
-        adopted = right.logic.accept_peer_node(left.address, board.uuid)
+        adopted = right.logic.accept_peer_node(left.peer_addr, board.uuid)
 
         self.assertEqual(adopted.status, "ok")
         self.assertEqual(
@@ -839,9 +692,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_new_shared_board_defaults_to_auto_adopt_always(self):
         left = self.runtime(8361)
         right = self.runtime(8362)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
 
         share = connect(left, right, board.uuid)
@@ -853,9 +703,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_reconnecting_existing_board_retains_auto_adopt_setting(self):
         left = self.runtime(8367)
         right = self.runtime(8368)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("not_member")
@@ -868,9 +715,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_adopt_peer_absence_deletes_local_card(self):
         left = self.runtime(8344)
         right = self.runtime(8345)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("never")
@@ -884,7 +728,7 @@ class KanbanNewLogicTests(unittest.TestCase):
             "in_transition",
         )
         adopt = right.logic.accept_peer_node(
-            left.address,
+            left.peer_addr,
             card.uuid,
             adopt_absence=True,
         )
@@ -895,28 +739,25 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_moved_card_transition_collapses_missing_pair(self):
         left = self.runtime(8346)
         right = self.runtime(8347)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right, board.uuid)
         right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
         card = left.logic.create_card(first.uuid, "Move me", "", []).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
         right.logic.set_auto_adopt_mode("never")
 
         left.logic.move_card(card.uuid, second.uuid, 0)
         ProtocolNode.from_dict(left.session.protocol.root.to_dict())
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         payload = right.logic.board_payload()
 
         self.assertEqual(
             payload["transition_by_node"][card.uuid]["type"],
             "peer_made_changes",
         )
-        adopt = right.logic.accept_peer_node(left.address, card.uuid)
+        adopt = right.logic.accept_peer_node(left.peer_addr, card.uuid)
         self.assertEqual(adopt.status, "ok")
         self.assertEqual(
             right.session.protocol.index[card.uuid].parent_uuid,
@@ -927,9 +768,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_transition_event_prevents_stale_peer_rollback(self):
         left = self.runtime(8307)
         right = self.runtime(8308)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
@@ -1028,9 +866,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_structured_peer_changes_describe_card_fields_people_and_move(self):
         left = self.runtime(8317)
         right = self.runtime(8318)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         left.profile.set_profile("Alice")
         right.profile.set_profile("Bob")
         alice = left.logic.user_profile().uuid
@@ -1042,7 +877,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         card = left.logic.create_card(
             first.uuid, "Radar", "Initial", [alice], alice,
         ).value
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
         right.logic.board_payload()
         right.logic.set_auto_adopt_mode("never")
 
@@ -1050,9 +885,9 @@ class KanbanNewLogicTests(unittest.TestCase):
             card.uuid, "Radar", "Revised", [alice, bob], bob,
         )
         left.logic.move_card(card.uuid, second.uuid, 0)
-        left.adapter.execute_effects(left.session.sync_effects(board.uuid))
+        sync(left, right)
 
-        changes = right.logic.describe_peer_changes(left.address, card.uuid)
+        changes = right.logic.describe_peer_changes(left.peer_addr, card.uuid)
         by_field = {change["field"]: change for change in changes}
 
         self.assertEqual(
@@ -1131,9 +966,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_profile_topic_is_under_shared_user_data_and_not_adopted(self):
         left = self.runtime(8333)
         right = self.runtime(8334)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         left.profile.set_profile("Alice", "")
 
         board = left.logic.ensure_board()
@@ -1148,7 +980,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertNotIn(left_profile.uuid, right.session.protocol.index)
         self.assertNotEqual(left_profile.uuid, right_profile.uuid)
         self.assertEqual(
-            right.session.get_cached_peer_subtree(left.address, left_profile.uuid).data["display_name"],
+            right.session.get_cached_peer_subtree(left.peer_addr, left_profile.uuid).data["display_name"],
             "Alice",
         )
 
@@ -1158,7 +990,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.profile.set_profile("Alice", "")
         peer_identity = ProtocolNode.from_dict(left.logic.user_profile().to_dict())
         right.session.apply_peer_subtree(
-            left.address,
+            left.peer_addr,
             peer_identity,
             peer_identity.parent_uuid,
         )
@@ -1171,9 +1003,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_connect_shares_board_and_profile_topics(self):
         left = self.runtime(8322)
         right = self.runtime(8323)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         left.logic.ensure_board()
         left.profile.set_profile("Alice", "")
 
@@ -1181,7 +1010,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         result = connect(left, right, board.uuid)
 
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["channels_used"], ["http"])
+        self.assertEqual(result["channels_used"], ["mailbox"])
         # A share carries the board *and* the sharer's profile, so each side
         # ends up tracking the other's identity topic as well as the board.
         left_identity = left.logic.user_profile().uuid
@@ -1191,16 +1020,21 @@ class KanbanNewLogicTests(unittest.TestCase):
             "shared_user_profile",
         )
         self.assertIn(board.uuid, right.session.protocol.index)
-        self.assertIn(right.address, left.session.members)
-        self.assertIn(right_identity, left.session.fetch_topic_uuids(right.address))
-        self.assertIn(left_identity, right.session.fetch_topic_uuids(left.address))
+        self.assertIn(board.uuid, left.session.peer_topic_sets[right.peer_addr])
+        # Each side ends up holding the other's profile. The invitee is given
+        # the inviter's identity topic outright; the inviter reads the
+        # invitee's from the heartbeat it writes beside its publications,
+        # which is what makes the invitee appear on the board at all.
+        self.assertIsNotNone(right.session.get_cached_peer_subtree(
+            left.peer_addr, left_identity,
+        ))
+        self.assertEqual(
+            left.session.peer_identity(right.peer_addr).uuid, right_identity,
+        )
 
     def test_connect_adds_selected_board_topic(self):
         left = self.runtime(8326)
         right = self.runtime(8327)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.ensure_board()
         connect(left, right)
 
@@ -1208,50 +1042,40 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertEqual(share["status"], "ok")
         self.assertIn(board.uuid, right.session.protocol.index)
-        self.assertIn(board.uuid, left.session.fetch_topic_uuids(right.address))
-        self.assertIn(board.uuid, right.session.fetch_topic_uuids(left.address))
-        for topic_uuid in right.session.fetch_topic_uuids(left.address):
+        self.assertIn(board.uuid, left.session.peer_topic_sets[right.peer_addr])
+        self.assertIn(board.uuid, right.session.peer_topic_sets[left.peer_addr])
+        for topic_uuid in right.session.peer_topic_sets[left.peer_addr]:
             if topic_uuid != left.logic.user_profile().uuid:
                 self.assertIn(topic_uuid, left.session.protocol.index)
         self.assertIsNotNone(
-            right.session.get_cached_peer_subtree(left.address, left.logic.user_profile().uuid)
+            right.session.get_cached_peer_subtree(left.peer_addr, left.logic.user_profile().uuid)
         )
-        for topic_uuid in left.session.fetch_topic_uuids(right.address):
+        for topic_uuid in left.session.peer_topic_sets[right.peer_addr]:
             if topic_uuid != right.logic.user_profile().uuid:
                 self.assertIn(topic_uuid, right.session.protocol.index)
         self.assertIsNotNone(
-            left.session.get_cached_peer_subtree(right.address, right.logic.user_profile().uuid)
+            left.session.get_cached_peer_subtree(right.peer_addr, right.logic.user_profile().uuid)
         )
 
     def test_share_board_connects_identity_when_needed(self):
         left = self.runtime(8335)
         right = self.runtime(8336)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board = left.logic.create_board("Glow").value
 
         share = connect(left, right, board)
 
         self.assertEqual(share["status"], "ok")
         self.assertIn(board, right.session.protocol.index)
-        self.assertIn(right.address, left.session.members)
-        self.assertIn(left.address, right.session.members)
-        self.assertIn(board, left.session.peer_topic_sets[right.address])
-        self.assertIn(board, right.session.peer_topic_sets[left.address])
+        self.assertIn(board, left.session.peer_topic_sets[right.peer_addr])
+        self.assertIn(board, right.session.peer_topic_sets[left.peer_addr])
 
-    def test_board_share_through_middle_does_not_create_implicit_http_mesh(self):
+    def test_a_board_shared_onward_does_not_carry_the_sharer_s_other_boards(self):
+        # The middle client passes on a board it was given. What travels is
+        # that board: its own private one stays private, and so does every
+        # topic nobody assigned to the channel.
         first = self.runtime(8328)
         middle = self.runtime(8329)
         third = self.runtime(8330)
-        client = MemoryHttpClient({
-            first.address: first,
-            middle.address: middle,
-            third.address: third,
-        })
-        first.adapter.http = client
-        middle.adapter.http = client
-        third.adapter.http = client
         shared_board = first.logic.ensure_board()
         middle_private_board = middle.logic.create_board("Middle private").value
         connect(first, middle)
@@ -1261,37 +1085,28 @@ class KanbanNewLogicTests(unittest.TestCase):
         share = connect(middle, third, shared_board.uuid)
 
         self.assertEqual(share["status"], "ok")
-        self.assertIn(
-            shared_board.uuid,
-            third.session.peer_topic_sets[first.address],
-        )
-        self.assertNotIn(first.address, third.session.members)
-        self.assertIsNone(
-            third.session.peer_channel_for_topic(
-                first.address, shared_board.uuid,
-            ),
-        )
-        self.assertNotIn(third.address, first.session.peer_topic_sets)
+        self.assertIn(shared_board.uuid, third.session.protocol.index)
         self.assertNotIn(middle_private_board, third.session.protocol.index)
         self.assertNotIn(
             middle_private_board,
-            third.session.peer_topic_sets.get(first.address, set()),
+            third.session.peer_topic_sets.get(middle.peer_addr, set()),
+        )
+        self.assertNotIn(
+            middle_private_board,
+            third.session.peer_topic_sets.get(first.peer_addr, set()),
         )
 
-    def test_indirect_board_share_does_not_fetch_identity_without_a_route(self):
+    def test_a_board_shared_onward_carries_only_that_board_from_its_owner(self):
+        # third is given one board by middle. It ends up seeing first, who
+        # also writes that board - people on a shared topic are visible on
+        # it, and have to be, or the board shows anonymous authors. What it
+        # does not get is anything else first has.
         first = self.runtime(8345)
         middle = self.runtime(8346)
         third = self.runtime(8347)
-        client = MemoryHttpClient({
-            first.address: first,
-            middle.address: middle,
-            third.address: third,
-        })
-        first.adapter.http = client
-        middle.adapter.http = client
-        third.adapter.http = client
         first.profile.set_profile("Alice", "https://example.test/a.png")
         shared_board = first.logic.ensure_board()
+        first_private_board = first.logic.create_board("First private").value
         connect(first, middle)
         connect(first, middle, shared_board.uuid)
         connect(middle, third)
@@ -1299,26 +1114,16 @@ class KanbanNewLogicTests(unittest.TestCase):
         share = connect(middle, third, shared_board.uuid)
 
         self.assertEqual(share["status"], "ok")
-        users = {user["address"]: user for user in third.logic.users()}
-        self.assertNotIn(first.address, users)
-        self.assertIsNone(
-            third.session.peer_channel_for_topic(
-                first.address, shared_board.uuid,
-            ),
+        self.assertEqual(
+            third.session.peer_topic_sets.get(first.peer_addr, set()),
+            {shared_board.uuid},
         )
+        self.assertNotIn(first_private_board, third.session.protocol.index)
 
-    def test_existing_board_member_is_not_auto_connected_to_new_member(self):
+    def test_a_second_person_on_a_board_is_not_introduced_to_the_first(self):
         first = self.runtime(8350)
         middle = self.runtime(8351)
         third = self.runtime(8352)
-        client = MemoryHttpClient({
-            first.address: first,
-            middle.address: middle,
-            third.address: third,
-        })
-        first.adapter.http = client
-        middle.adapter.http = client
-        third.adapter.http = client
         first.profile.set_profile("Alice", "")
         middle.profile.set_profile("Bob", "")
         third.profile.set_profile("Cynthia", "")
@@ -1329,27 +1134,34 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertEqual(share["status"], "ok")
         users = {user["address"]: user for user in middle.logic.users()}
-        self.assertNotIn(third.address, users)
-        self.assertNotIn(third.address, middle.session.members)
+        self.assertNotIn(third.peer_addr, users)
+        self.assertIsNone(
+            middle.session.get_cached_peer_subtree(
+                third.peer_addr, third.logic.user_profile().uuid,
+            ),
+        )
 
     def test_kanban_caches_topic_for_an_inactive_application(self):
         left = self.runtime(8324)
         right = self.runtime(8325)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
+        # A topic S-Kanban knows nothing about, published by a client that
+        # does. The invitee caches it and mounts nothing.
         other = left.session.create_child(
             left.session.protocol.root.uuid,
             {"type": "folder", "name": "Not S-Kanban"},
             {},
         ).value
+        left.session.shared_topics.register(
+            "test-folders", {"folder"}, lambda: [other.uuid],
+            left.session.accept_topic_invitation,
+        )
 
-        result = right.adapter.join_discussion(left.address, other.uuid)
+        result = connect(left, right, other.uuid)
 
         self.assertEqual(result["status"], "ok")
         self.assertNotIn(other.uuid, right.session.protocol.index)
         self.assertIsNotNone(right.session.get_cached_peer_subtree(
-            left.address, other.uuid,
+            left.peer_addr, other.uuid,
         ))
         self.assertIn(other.uuid, right.session.pending_topic_invitations)
 
@@ -1487,22 +1299,16 @@ class KanbanNewLogicTests(unittest.TestCase):
         left = self.runtime(8353)
         middle = self.runtime(8354)
         right = self.runtime(8355)
-        client = MemoryHttpClient({
-            left.address: left,
-            middle.address: middle,
-            right.address: right,
-        })
         for runtime in (left, middle, right):
-            runtime.adapter.http = client
             runtime.profile.set_profile(runtime.address, "")
         board = left.logic.ensure_board()
         connect(left, middle, board.uuid)
         connect(left, right, board.uuid)
 
         def tick():
+            sync(left, middle, right)
             for runtime in (left, middle, right):
-                result = runtime.logic.on_peer_update()
-                runtime.adapter.execute_effects(result.effects)
+                runtime.logic.on_peer_update()
 
         def card_ids(runtime):
             out = []
@@ -1517,8 +1323,7 @@ class KanbanNewLogicTests(unittest.TestCase):
             (right, "C card"),
         ):
             column = runtime.logic.columns(runtime.logic.ensure_board())[0]
-            result = runtime.logic.create_card(column.uuid, name, "", [])
-            runtime.adapter.execute_effects(result.effects)
+            runtime.logic.create_card(column.uuid, name, "", [])
             tick()
 
         self.assertEqual(len(card_ids(left)), 3)
@@ -1531,8 +1336,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.logic.set_auto_adopt_mode("always")
 
         for card_uuid in list(card_ids(left)):
-            result = left.logic.delete_card(card_uuid)
-            left.adapter.execute_effects(result.effects)
+            left.logic.delete_card(card_uuid)
             tick()
 
         self.assertEqual(card_ids(left), [])
@@ -1542,9 +1346,6 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_updates_board_not_currently_selected(self):
         left = self.runtime(8319)
         right = self.runtime(8320)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
         board1 = left.logic.ensure_board()
         board2 = left.logic.create_board("Board 2").value
         left.logic.select_board(board1.uuid)
@@ -1560,7 +1361,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         column = left.logic.columns(board1)[0]
         card = left.logic.create_card(column.uuid, "Board 1 card", "", []).value
-        left.adapter.execute_effects(left.session.sync_effects(board1.uuid))
+        sync(left, right)
         right.logic.board_payload()
 
         self.assertIn(card.uuid, right.session.protocol.index)
@@ -1821,14 +1622,11 @@ class KanbanNewLogicTests(unittest.TestCase):
             [node.uuid for node in logic.boards()], [replacement.uuid],
         )
 
-    @staticmethod
-    def runtime(port: int):
-        directory = tempfile.TemporaryDirectory()
-        config = app_server.load_config(None, "kanban")
-        config["storage_file"] = str(Path(directory.name) / f"{port}.json")
-        runtime = app_server.create_runtime(port, config)
-        runtime._test_tmp = directory
-        return runtime
+    def setUp(self):
+        self._relay_root = shared_relay_root(self)
+
+    def runtime(self, port: int):
+        return relay_runtime(self, port, self._relay_root)
 
 
 
