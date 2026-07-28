@@ -2004,10 +2004,11 @@ class RelayLogicTests(unittest.TestCase):
             self.assertEqual(relay_a._state["shared"], [])
             self.assertFalse(relay_a.has_active_relationship())
 
-    def test_unshare_board_unmarks_relay_shared(self):
-        # The kanban unshare hook: even with no peers yet (token issued,
-        # never accepted), unsharing must unassign the board from its target
-        # and stop relay publishing it.
+    def test_stopping_the_channel_unmarks_relay_shared(self):
+        # Even with no peers yet (token issued, never accepted), "stop using"
+        # must unassign the board from its target and stop relay publishing
+        # it. This used to be reached through KanbanLogic.unshare_board, which
+        # no interface ever called; the channel action is the live path.
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
             config = self._relay_config(relay_root, "A", state_dir)
@@ -2024,10 +2025,11 @@ class RelayLogicTests(unittest.TestCase):
             connection = manager.connection_for_target(target_id)
             self.assertIn(board_uuid, connection._state["shared"])
 
-            result = kanban_a.unshare_board(board_uuid=board_uuid)
-            collaboration.execute_effects(result.effects)
+            result = collaboration.set_topic_channel(
+                board_uuid, f"mailbox:{target_id}", False,
+            )
 
-            self.assertEqual(result.status, "ok")
+            self.assertTrue(result.ok, result.reason)
             self.assertEqual(connection._state["shared"], [])
             self.assertIsNone(manager.target_for_topic(board_uuid))
 

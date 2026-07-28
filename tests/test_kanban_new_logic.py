@@ -1240,67 +1240,6 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertIn(board, left.session.peer_topic_sets[right.address])
         self.assertIn(board, right.session.peer_topic_sets[left.address])
 
-    def test_unshare_board_disconnects_when_no_board_remains(self):
-        left = self.runtime(8337)
-        right = self.runtime(8338)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
-        board = left.logic.create_board("Glow").value
-        connect(left, right, board)
-
-        unshare = left.logic.unshare_board(board)
-        left.collaboration.execute_effects(unshare.effects)
-
-        self.assertEqual(unshare.status, "ok")
-        self.assertNotIn(right.address, left.session.members)
-        self.assertNotIn(left.address, right.session.members)
-
-    def test_unshare_board_keeps_identity_when_another_board_remains(self):
-        left = self.runtime(8339)
-        right = self.runtime(8340)
-        client = MemoryHttpClient({left.address: left, right.address: right})
-        left.adapter.http = client
-        right.adapter.http = client
-        first = left.logic.create_board("Glow").value
-        second = left.logic.create_board("Flow").value
-        connect(left, right, first)
-        connect(left, right, second)
-
-        unshare = left.logic.unshare_board(first)
-        left.collaboration.execute_effects(unshare.effects)
-
-        self.assertEqual(unshare.status, "ok")
-        self.assertIn(right.address, left.session.members)
-        self.assertIn(left.address, right.session.members)
-        self.assertNotIn(first, left.session.peer_topic_sets[right.address])
-        self.assertIn(second, left.session.peer_topic_sets[right.address])
-
-    def test_unshare_board_removes_topic_for_all_board_peers(self):
-        left = self.runtime(8341)
-        middle = self.runtime(8342)
-        right = self.runtime(8343)
-        client = MemoryHttpClient({
-            left.address: left,
-            middle.address: middle,
-            right.address: right,
-        })
-        left.adapter.http = client
-        middle.adapter.http = client
-        right.adapter.http = client
-        board = left.logic.create_board("Glow").value
-        connect(left, middle, board)
-        connect(left, right, board)
-
-        unshare = left.logic.unshare_board(board)
-        left.collaboration.execute_effects(unshare.effects)
-
-        self.assertEqual(unshare.status, "ok")
-        self.assertNotIn(middle.address, left.session.members)
-        self.assertNotIn(right.address, left.session.members)
-        self.assertNotIn(left.address, middle.session.members)
-        self.assertNotIn(left.address, right.session.members)
-
     def test_board_share_through_middle_does_not_create_implicit_http_mesh(self):
         first = self.runtime(8328)
         middle = self.runtime(8329)
@@ -1853,6 +1792,34 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertEqual(out["node-1"]["priority"], 6)
         self.assertEqual(out["node-1"]["events"][0]["priority"], 6)
+
+    def test_the_last_board_can_be_deleted(self):
+        # Refusing this left a host with no way to clear boards it no longer
+        # wants; nothing downstream needs a board to exist.
+        runtime = self.runtime(8386)
+        logic: KanbanLogic = runtime.logic
+        board = logic.ensure_board()
+
+        result = logic.delete_board(board.uuid)
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(logic.boards(), [])
+
+    def test_deleting_the_last_board_forgets_the_selection(self):
+        # A remembered uuid would otherwise hand back the deleted board,
+        # which survives in the index until its peers confirm the deletion.
+        runtime = self.runtime(8387)
+        logic: KanbanLogic = runtime.logic
+        deleted = logic.ensure_board()
+
+        logic.delete_board(deleted.uuid)
+        replacement = logic.ensure_board()
+
+        self.assertNotEqual(replacement.uuid, deleted.uuid)
+        self.assertFalse(replacement.deleted)
+        self.assertEqual(
+            [node.uuid for node in logic.boards()], [replacement.uuid],
+        )
 
     @staticmethod
     def runtime(port: int):
