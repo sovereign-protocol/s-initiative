@@ -10,6 +10,38 @@ from tests.relay_clients import (
 
 
 class KanbanNewLogicTests(unittest.TestCase):
+    def test_board_snapshot_never_consults_transport_under_session(self):
+        class NoTransport:
+            def network_info(self, _topic_uuid=None):
+                raise AssertionError("transport reached from Session snapshot")
+
+            def peer_liveness_for_address(self, _peer, _topic_uuid=None):
+                raise AssertionError("transport reached from Session snapshot")
+
+        session = Session("local")
+        logic = KanbanLogic(session, collaboration=NoTransport())
+        board = logic.ensure_board()
+
+        with session.lock:
+            snapshot = logic.board_snapshot()
+
+        payload = logic.merge_board_observation(snapshot, {"peers": {}})
+        self.assertEqual(snapshot["topic_uuid"], board.uuid)
+        self.assertEqual(payload["network"], {"peers": {}})
+
+    def test_board_payload_does_not_create_a_missing_board(self):
+        session = Session("local")
+        logic = KanbanLogic(session)
+        before = session.export_protocol_root()
+        metadata_before = session.app_metadata
+
+        payload = logic.board_payload()
+
+        self.assertIsNone(payload["board"])
+        self.assertEqual(payload["boards"], [])
+        self.assertEqual(session.export_protocol_root(), before)
+        self.assertEqual(session.app_metadata, metadata_before)
+
     def test_default_board_has_columns(self):
         runtime = self.runtime(8301)
         board = runtime.logic.ensure_board()
@@ -195,12 +227,12 @@ class KanbanNewLogicTests(unittest.TestCase):
         )
 
         left.logic.set_agenda_item_priority(item.uuid, None)
-        sync(left, right)
+        sync(left, right, reconcile=False)
         self.assertEqual(
             right.session.analyze_peer_transitions(left.peer_addr, item.uuid)[0]["type"],
             "peer_made_changes",
         )
-        right.logic.board_payload()
+        right.logic.on_peer_update()
 
         self.assertIsNone(
             right.session.protocol.index[item.uuid].data["priority"],
@@ -282,6 +314,35 @@ class KanbanNewLogicTests(unittest.TestCase):
             expected,
         )
 
+    def test_last_concurrent_agenda_move_wins(self):
+        left = self.runtime(8408)
+        right = self.runtime(8409)
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        first = left.logic.create_agenda_item("First").value
+        second = left.logic.create_agenda_item("Second").value
+        third = left.logic.create_agenda_item("Third").value
+        sync(left, right)
+        right.logic.board_payload()
+
+        left.logic.move_agenda_item(first.uuid, 2)
+        time.sleep(0.002)
+        right.logic.move_agenda_item(first.uuid, 1)
+        sync(left, right)
+        left.logic.board_payload()
+        right.logic.board_payload()
+
+        expected = [second.uuid, first.uuid, third.uuid]
+        self.assertEqual(
+            [item.uuid for item in left.logic.agenda_items()],
+            expected,
+        )
+        self.assertEqual(
+            [item.uuid for item in right.logic.agenda_items()],
+            expected,
+        )
+
     def test_agenda_changes_are_not_displayed_as_board_divergences(self):
         left = self.runtime(8402)
         right = self.runtime(8403)
@@ -320,12 +381,64 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertEqual(right.session.protocol.index[card.uuid].parent_uuid, second.uuid)
 
+    def test_auto_adopt_accepts_column_names_reverted_to_original_values(self):
+        left = self.runtime(8411)
+        right = self.runtime(8412)
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        left.logic.set_auto_adopt_mode("always")
+        right.logic.set_auto_adopt_mode("always")
+        left_columns = left.logic.columns(board)
+
+        left.logic.rename_column(left_columns[0].uuid, "To Dos")
+        left.logic.rename_column(left_columns[1].uuid, "Doings")
+        sync(left, right)
+        right.logic.board_payload()
+        sync(left, right)
+        left.logic.board_payload()
+
+        right_board = right.session.protocol.index[board.uuid]
+        right_columns = right.logic.columns(right_board)
+        right.logic.rename_column(right_columns[0].uuid, "To Do")
+        right.logic.rename_column(right_columns[1].uuid, "Doing")
+        sync(left, right)
+        left.logic.board_payload()
+        sync(left, right)
+        right.logic.board_payload()
+
+        self.assertEqual(
+            [
+                column.data["name"]
+                for column in left.logic.columns(
+                    left.session.protocol.index[board.uuid],
+                )
+            ],
+            ["To Do", "Doing", "Done"],
+        )
+        self.assertEqual(
+            [
+                column.data["name"]
+                for column in right.logic.columns(
+                    right.session.protocol.index[board.uuid],
+                )
+            ],
+            ["To Do", "Doing", "Done"],
+        )
+        column_uuids = {column.uuid for column in right_columns}
+        self.assertFalse(any(
+            event["type"] == "divergence"
+            and event["node_uuid"] in column_uuids
+            for event in left.logic.transition_events(board.uuid)
+        ))
+
     def test_auto_adopt_does_not_rollback_opposing_local_move(self):
         left = self.runtime(8325)
         right = self.runtime(8326)
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
+        left.logic.set_auto_adopt_mode("always")
         right.logic.set_auto_adopt_mode("always")
         first, second = left.logic.columns(board)[:2]
         card = left.logic.create_card(second.uuid, "Opposing move", "", []).value
@@ -337,8 +450,11 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(right.session.protocol.index[card.uuid].parent_uuid, first.uuid)
 
         right.logic.move_card(card.uuid, second.uuid, 0)
+        sync(left, right)
+        left.logic.board_payload()
         right.logic.board_payload()
 
+        self.assertEqual(left.session.protocol.index[card.uuid].parent_uuid, second.uuid)
         self.assertEqual(right.session.protocol.index[card.uuid].parent_uuid, second.uuid)
 
     def test_auto_adopt_accepts_newer_move_back_after_agreement(self):
@@ -366,7 +482,7 @@ class KanbanNewLogicTests(unittest.TestCase):
             ProtocolNode.from_dict(payload["subtree"]),
             payload["parent_uuid"],
         )
-        left.logic.board_payload()
+        left.logic.on_peer_update()
 
         self.assertEqual(left.session.protocol.index[card.uuid].parent_uuid, second.uuid)
 
@@ -396,7 +512,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.logic.move_card(card.uuid, todo.uuid, 0)
         moved = right.session.protocol.index[card.uuid]
         self.assertGreater(moved.revision_seq, agreed_seq)
-        sync(left, right)
+        sync(left, right, reconcile=False)
 
         incoming = next(
             event
@@ -406,7 +522,7 @@ class KanbanNewLogicTests(unittest.TestCase):
             if event["node_uuid"] == card.uuid
         )
         self.assertEqual(incoming["type"], "peer_made_changes")
-        left.logic.board_payload()
+        left.logic.on_peer_update()
 
         self.assertEqual(
             left.session.protocol.index[card.uuid].parent_uuid,
@@ -948,7 +1064,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(by_field["description"]["local_value"], "Initial")
         self.assertEqual(by_field["description"]["peer_value"], "Revised")
 
-        payload = right.logic.board_payload(auto_adopt=False)
+        payload = right.logic.board_payload()
         info = payload["transition_by_node"][card.uuid]
         self.assertEqual(
             {change["field"] for change in info["changes"]}, set(by_field),

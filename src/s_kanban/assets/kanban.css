@@ -8,6 +8,7 @@
   --surface: #202120;
   --surface-2: #292a28;
   --card: #2b2c2a;
+  --card-hover: #30312f;
   --text: #f2f1ed;
   --muted: #9a9790;
   --border: rgba(255, 255, 255, 0.14);
@@ -29,6 +30,7 @@
   --surface: #ffffff;
   --surface-2: #e9e8e4;
   --card: #ffffff;
+  --card-hover: #f4f3f0;
   --text: #1c1b19;
   --muted: #6b675f;
   --border: rgba(0, 0, 0, 0.14);
@@ -610,7 +612,34 @@ button.auto-adopt-square {
 .column.event-divergence { outline-color: #de350b; }
 .column.event-divergence::before { background: #de350b; }
 
-.column.dragging, .card.dragging { opacity: 0.55; }
+.column.dragging { opacity: 0.55; }
+
+body.card-drag-pending,
+body.card-drag-pending * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+body.card-drag-active,
+body.card-drag-active * {
+  cursor: grabbing !important;
+}
+
+.card.dragging {
+  opacity: 0.28;
+  border-style: dashed;
+}
+
+.card.card-drag-preview {
+  position: fixed;
+  z-index: 20000;
+  pointer-events: none;
+  margin: 0;
+  opacity: 0.96;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.42);
+  transform: rotate(0.7deg);
+  cursor: grabbing;
+}
 
 .column-head {
   display: grid;
@@ -738,7 +767,7 @@ button.auto-adopt-square {
 
 .card:hover {
   border-color: var(--border-strong);
-  background: #30312f;
+  background: var(--card-hover);
 }
 
 .card-title {

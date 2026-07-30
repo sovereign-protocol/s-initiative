@@ -31,14 +31,18 @@ class KanbanFacade:
     def user_profile(self) -> ProtocolNode:
         return self._logic.user_profile()
 
-    def transition_events(self, topic_uuid: str) -> list[dict]:
-        return self._logic.transition_events(topic_uuid)
+    def transition_events(
+        self, topic_uuid: str, network: dict | None = None,
+    ) -> list[dict]:
+        return self._logic.transition_events(topic_uuid, network)
 
     def transition_by_node(self, events: list[dict]) -> dict:
         return self._logic.transition_by_node(events)
 
-    def collaboration_context(self, topic_uuid: str) -> dict:
-        return self._logic.collaboration_context(topic_uuid)
+    def collaboration_context(
+        self, topic_uuid: str, network: dict | None = None,
+    ) -> dict:
+        return self._logic.collaboration_context(topic_uuid, network)
 
     def create_board(self, name: str = "Kanban Board"):
         return self._logic.create_board(name)

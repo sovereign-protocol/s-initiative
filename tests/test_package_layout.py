@@ -182,10 +182,21 @@ class BoundaryTests(unittest.TestCase):
             for node in ast.walk(tree)
         ), str(path))
 
+    def test_board_get_uses_the_composite_snapshot_boundary(self):
+        source = (
+            ROOT / "src" / "s_kanban" / "controller.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("runtime.composite_response(", source)
+        self.assertIn("logic.board_snapshot", source)
+        self.assertIn("logic.merge_board_observation", source)
+
 
 class AssetTests(unittest.TestCase):
     def setUp(self):
         self.kanban = files("s_kanban.assets").joinpath("kanban.html").read_text(
+            encoding="utf-8",
+        )
+        self.css = files("s_kanban.assets").joinpath("kanban.css").read_text(
             encoding="utf-8",
         )
 
@@ -200,6 +211,31 @@ class AssetTests(unittest.TestCase):
         for number, line in enumerate(self.kanban.splitlines(), start=1):
             for pattern in ('href = `/?', 'href="/?', "href='/?"):
                 self.assertNotIn(pattern, line, f"kanban.html:{number}")
+
+    def test_card_drop_always_clears_drag_styling(self):
+        drop = self.kanban.split(
+            "async function commitCardDrop", 1,
+        )[1].split("async function dropColumn", 1)[0]
+        self.assertIn('querySelector(".card.dragging")', drop)
+        self.assertIn('classList.remove("dragging")', drop)
+
+    def test_card_drag_has_preview_and_suppresses_text_selection(self):
+        card = self.kanban.split(
+            "function renderCard", 1,
+        )[1].split("function isInteractiveCardTarget", 1)[0]
+        self.assertIn("event.preventDefault()", card)
+        self.assertIn('preview.classList.add("card-drag-preview")', card)
+        self.assertIn('document.body.append(preview)', card)
+        self.assertIn(".card-drag-pending *", self.css)
+        self.assertIn("user-select: none", self.css)
+        self.assertIn(".card.card-drag-preview", self.css)
+
+    def test_card_hover_uses_a_theme_token(self):
+        hover = self.css.split(".card:hover", 1)[1].split("}", 1)[0]
+        light = self.css.split(':root[data-theme="light"]', 1)[1].split("}", 1)[0]
+        self.assertIn("background: var(--card-hover)", hover)
+        self.assertIn("--card-hover:", light)
+        self.assertNotIn("#30312f", hover)
 
 
 if __name__ == "__main__":

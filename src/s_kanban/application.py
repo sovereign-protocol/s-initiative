@@ -31,6 +31,9 @@ def create_application(services: ApplicationServices) -> ApplicationInstance:
         dict(services.settings),
         services.collaboration,
     )
+    # The standalone Kanban product opens with one usable board. Bootstrap it
+    # during application activation; GET /api/kanban/board remains read-only.
+    logic.ensure_board()
     return ApplicationInstance(
         manifest=APPLICATION_MANIFEST,
         logic=logic,

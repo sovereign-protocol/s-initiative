@@ -559,14 +559,14 @@ class RelayManagerTests(unittest.TestCase):
 
     def test_persisted_target_overrides_legacy_startup_credentials(self):
         session = Session("addr-a")
-        session.component_metadata("relay")["relay_targets"] = {
+        session.update_component_metadata("relay", {"relay_targets": {
             "saved-target": {
                 "name": "Configured relay", "backend": "sftp",
                 "host": "relay.example", "port": 22, "username": "user",
                 "root": "/boards", "password": "old-password",
                 "poll_interval_seconds": 30, "configured": True,
             },
-        }
+        }})
         config = {
             "relay_backend": "sftp", "relay_identity": "A",
             "relay_sftp_host": "relay.example", "relay_sftp_port": 22,
@@ -586,14 +586,14 @@ class RelayManagerTests(unittest.TestCase):
 
     def test_persisted_password_replaces_legacy_startup_private_key(self):
         session = Session("addr-a")
-        session.component_metadata("relay")["relay_targets"] = {
+        session.update_component_metadata("relay", {"relay_targets": {
             "saved-target": {
                 "name": "Configured relay", "backend": "sftp",
                 "host": "relay.example", "port": 22, "username": "user",
                 "root": "/boards", "password": "stale-password",
                 "poll_interval_seconds": 3, "configured": True,
             },
-        }
+        }})
         manager = RelayManager(session, {
             "relay_backend": "sftp", "relay_identity": "A",
             "relay_sftp_host": "relay.example", "relay_sftp_port": 22,
@@ -702,13 +702,15 @@ class RelayManagerTests(unittest.TestCase):
             session = Session("addr-a")
             manager = RelayManager(session, self._relay_config(relay_root, "A", state_dir))
             manager.primary._own_presence_mtime = 100.0
-            manager.primary.storage.read_presence_with_mtime = lambda peer_id: (
+            manager.primary._peer_presence_cache["B"] = (
+                {"poll_interval_seconds": 3}, 99.0,
+            )
+            manager.primary._peer_presence_cache["never-seen"] = (
                 {"poll_interval_seconds": 3}, 99.0,
             )
             self.assertEqual(manager.peer_liveness("B")["state"], "alive")
             self.assertEqual(manager.peer_liveness("never-seen")["state"], "alive")  # single conn answers
             # A peer no connection has a presence file for stays unknown.
-            manager.primary.storage.read_presence_with_mtime = lambda peer_id: (None, None)
             self.assertEqual(manager.peer_liveness("ghost")["state"], "unknown")
 
     def test_manager_peer_liveness_prefers_alive_over_stale_across_targets(self):
@@ -1227,8 +1229,13 @@ class RelayLogicTests(unittest.TestCase):
             session_a = Session("addr-a")
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a._own_presence_mtime = 100.0
-            relay_a.storage.read_presence_with_mtime = lambda peer_id: (
+            relay_a._peer_presence_cache["B"] = (
                 {"poll_interval_seconds": 3}, 99.0,
+            )
+            relay_a.storage.read_presence_with_mtime = lambda _peer: (
+                (_ for _ in ()).throw(
+                    AssertionError("liveness reads must not access storage")
+                )
             )
 
             result = relay_a.peer_liveness("B")
@@ -1244,7 +1251,7 @@ class RelayLogicTests(unittest.TestCase):
             session_a = Session("addr-a")
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a._own_presence_mtime = 100.0
-            relay_a.storage.read_presence_with_mtime = lambda peer_id: (
+            relay_a._peer_presence_cache["B"] = (
                 {"poll_interval_seconds": 3}, 105.0,
             )
 
@@ -1258,7 +1265,7 @@ class RelayLogicTests(unittest.TestCase):
             session_a = Session("addr-a")
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a._own_presence_mtime = 1000.0
-            relay_a.storage.read_presence_with_mtime = lambda peer_id: (
+            relay_a._peer_presence_cache["B"] = (
                 {"poll_interval_seconds": 3}, 900.0,
             )
 
@@ -1277,7 +1284,7 @@ class RelayLogicTests(unittest.TestCase):
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.poll_interval_seconds = 3.0
             relay_a._own_presence_mtime = 100.0
-            relay_a.storage.read_presence_with_mtime = lambda peer_id: (
+            relay_a._peer_presence_cache["B"] = (
                 {"poll_interval_seconds": 30}, 75.0,  # distance 25s
             )
 
@@ -1304,7 +1311,7 @@ class RelayLogicTests(unittest.TestCase):
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a._state["applied"] = {"topic-1": {"B": "hash-1"}}
             relay_a._own_presence_mtime = 100.0
-            relay_a.storage.read_presence_with_mtime = lambda peer_id: (
+            relay_a._peer_presence_cache["B"] = (
                 {"poll_interval_seconds": 3}, 99.0,
             )
 
@@ -1980,11 +1987,11 @@ class RelayLogicTests(unittest.TestCase):
             session.note_indirect_peer_topic("relay:B", board.uuid)
             session.bind_peer_topic_channel("relay:B", board.uuid, "mailbox")
             relay._own_presence_mtime = 100.0
-            relay.storage.read_presence_with_mtime = lambda peer_id: (
+            relay._peer_presence_cache["B"] = (
                 {"poll_interval_seconds": 3}, 99.0,
             )
 
-            payload = kanban.board_payload(auto_adopt=False)
+            payload = kanban.board_payload()
 
             peer = payload["network"]["peers"]["relay:B"]
             self.assertIn("channel_liveness", peer)

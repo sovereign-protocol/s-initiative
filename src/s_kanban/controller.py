@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-
-from sovereign import application_json_response, json_value
+from sovereign import application_json_response
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -12,13 +10,13 @@ from starlette.routing import Route
 
 def build_routes(logic, runtime) -> list[Route]:
     async def api_board(request: Request):
-        result = await asyncio.to_thread(logic.on_peer_update)
-        if result.value:
-            await asyncio.to_thread(
-                runtime.deliver_effects, result.effects,
-            )
-            runtime.notify_change()
-        return JSONResponse(json_value(logic.board_payload(auto_adopt=False)))
+        return runtime.composite_response(
+            logic.board_snapshot,
+            lambda snapshot: runtime.collaboration.network_info(
+                snapshot.get("topic_uuid"),
+            ),
+            logic.merge_board_observation,
+        )
 
     async def api_auto_adopt(request: Request):
         data = await request.json()

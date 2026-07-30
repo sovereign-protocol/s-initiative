@@ -90,12 +90,13 @@ def connect(host, guest, topic_uuid: str | None = None) -> dict:
     return result.value
 
 
-def sync(*runtimes) -> None:
+def sync(*runtimes, reconcile: bool = True) -> None:
     """Move work between clients the only way a relay can: each publishes
     what changed, then each reads what the others left.
 
     Twice, because a client given a topic in the first round has nothing of
-    its own to publish until it has grafted it.
+    its own to publish until it has grafted it. Application reconciliation is
+    the channel tick's after-apply phase, not a side effect of a later GET.
     """
     for _ in range(2):
         for runtime in runtimes:
@@ -103,3 +104,7 @@ def sync(*runtimes) -> None:
             runtime.relay.publish_due_topics()
         for runtime in runtimes:
             runtime.relay.poll_and_apply()
+            if reconcile:
+                outcome = runtime.host.notify_peer_update()
+                if outcome.effects:
+                    runtime.deliver_effects(outcome.effects)

@@ -1,4 +1,6 @@
+from contextlib import contextmanager
 import json
+import shutil
 import socket
 import subprocess
 import sys
@@ -11,6 +13,24 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@contextmanager
+def temporary_directory():
+    path = Path(tempfile.mkdtemp())
+    try:
+        yield str(path)
+    finally:
+        for attempt in range(20):
+            try:
+                shutil.rmtree(path)
+                break
+            except FileNotFoundError:
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.1)
 
 
 def free_port() -> int:
@@ -110,7 +130,7 @@ class ServerIntegrationTests(unittest.TestCase):
         port_a = free_port()
         port_b = free_port()
         processes = []
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             tmp_path = Path(tmp)
             configs = []
             for port in (port_a, port_b):
@@ -211,7 +231,7 @@ class ServerIntegrationTests(unittest.TestCase):
         port_a = free_port()
         port_b = free_port()
         processes = []
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             tmp_path = Path(tmp)
             configs = []
             for port in (port_a, port_b):
@@ -299,7 +319,7 @@ class ServerIntegrationTests(unittest.TestCase):
         port_a = free_port()
         port_b = free_port()
         processes = []
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             tmp_path = Path(tmp)
             configs = []
             for port in (port_a, port_b):
@@ -446,7 +466,7 @@ class ServerIntegrationTests(unittest.TestCase):
         port_b = free_port()
         port_c = free_port()
         processes = []
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_directory() as tmp:
             tmp_path = Path(tmp)
             configs = {}
             for port in (port_a, port_b, port_c):

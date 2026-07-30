@@ -633,19 +633,48 @@
         if (!ghost) {
           node.onmousedown = (event) => {
             if (event.button !== 0 || isInteractiveCardTarget(event)) return;
+            // Prevent the browser's text-selection gesture from competing
+            // with card dragging. A normal click still opens the card.
+            event.preventDefault();
+            document.body.classList.add("card-drag-pending");
             const startX = event.clientX;
             const startY = event.clientY;
+            const startRect = node.getBoundingClientRect();
+            const grabOffsetX = startX - startRect.left;
+            const grabOffsetY = startY - startRect.top;
             let moved = false;
+            let preview = null;
+            const removeDragChrome = () => {
+              document.body.classList.remove(
+                "card-drag-pending", "card-drag-active",
+              );
+              preview?.remove();
+              preview = null;
+            };
             const move = (moveEvent) => {
               if (!moved && Math.hypot(
                 moveEvent.clientX - startX,
                 moveEvent.clientY - startY,
               ) < 4) return;
-              moved = true;
               moveEvent.preventDefault();
-              draggedCard = card.uuid;
-              dragActive = true;
-              node.classList.add("dragging");
+              if (!moved) {
+                moved = true;
+                draggedCard = card.uuid;
+                dragActive = true;
+                node.classList.add("dragging");
+                document.body.classList.add("card-drag-active");
+                preview = node.cloneNode(true);
+                preview.classList.remove(
+                  "dragging", "diff", "in-transition",
+                );
+                preview.classList.add("card-drag-preview");
+                preview.removeAttribute("data-transition-symbol");
+                preview.setAttribute("aria-hidden", "true");
+                preview.style.width = `${startRect.width}px`;
+                document.body.append(preview);
+              }
+              preview.style.left = `${moveEvent.clientX - grabOffsetX}px`;
+              preview.style.top = `${moveEvent.clientY - grabOffsetY}px`;
               const list = document.elementFromPoint(
                 moveEvent.clientX, moveEvent.clientY,
               )?.closest(".card-list");
@@ -657,6 +686,7 @@
             const up = async () => {
               document.removeEventListener("mousemove", move);
               document.removeEventListener("mouseup", up);
+              removeDragChrome();
               if (!moved) return;
               node.dataset.suppressClick = "true";
               const list = node.closest(".card-list");
@@ -1277,6 +1307,7 @@
 
       async function commitCardDrop(list, columnUuid) {
         if (!draggedCard) return;
+        const dragging = document.querySelector(".card.dragging");
         const order = [...list.querySelectorAll(".card")].map(
           (item) => item.dataset.uuid,
         );
@@ -1293,6 +1324,7 @@
             "Card moved",
           );
         } finally {
+          dragging?.classList.remove("dragging");
           dragActive = false;
           await loadBoard();
         }

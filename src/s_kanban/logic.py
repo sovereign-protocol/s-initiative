@@ -41,6 +41,7 @@ Contract:
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
 from typing import Any
 
 from sovereign import (
@@ -72,6 +73,8 @@ class KanbanLogic:
         # Revision ownership must exist before the first board/card mutation.
         # Session.identity bootstraps its own origin without recursion.
         self.session.identity
+        with self.session.lock:
+            self.session.application_metadata(KANBAN_APPLICATION_ID)
 
     def application_registration(self) -> ApplicationRegistration:
         return ApplicationRegistration(
@@ -84,17 +87,19 @@ class KanbanLogic:
             on_peer_update=self.on_peer_update,
         )
 
-    def board_payload(self, auto_adopt: bool = True) -> dict:
-        board = self.ensure_board()
-        if auto_adopt:
-            self.adopt_all_incoming_changes()
-            board = self.ensure_board()
-        network = self._network_info(board.uuid)
-        events = self.transition_events(board.uuid, network)
+    def board_payload(self, network: dict | None = None) -> dict:
+        """Return the current board view without reconciling or creating data."""
+        boards = self.boards()
+        board = self._selected_board(boards)
+        network = (
+            self._network_info(board.uuid if board else None)
+            if network is None else network
+        )
+        events = self.transition_events(board.uuid, network) if board else []
         return {
             "address": self.session.address,
-            "board": board.to_dict(),
-            "boards": [item.to_dict() for item in self.boards()],
+            "board": board.to_dict() if board else None,
+            "boards": [item.to_dict() for item in boards],
             "user_profile": self.user_profile().to_dict(),
             "users": self.users(),
             "network": network,
@@ -104,7 +109,9 @@ class KanbanLogic:
                     self.session.peer_perspectives_for_topic().items(),
                 )
             },
-            "auto_adopt_mode": self.auto_adopt_mode(board),
+            "auto_adopt_mode": (
+                self.auto_adopt_mode(board) if board else "always"
+            ),
             # The shell renders the adoption control and the agenda, so it
             # needs this application's mode set and who "mine" is.
             "auto_adopt_modes": list(AUTO_ADOPT_MODES),
@@ -112,10 +119,82 @@ class KanbanLogic:
             "known_identities": self.session.known_identities(),
             "transition_events": events,
             "transition_by_node": self.transition_by_node(events),
-            "agenda_items": [item.to_dict() for item in self.agenda_items(board)],
-            "comments_by_card": self._comments_by_card(board),
-            "attachments_by_card": self._attachments_by_card(board),
+            "agenda_items": (
+                [item.to_dict() for item in self.agenda_items(board)]
+                if board else []
+            ),
+            "comments_by_card": self._comments_by_card(board) if board else {},
+            "attachments_by_card": (
+                self._attachments_by_card(board) if board else {}
+            ),
         }
+
+    def board_snapshot(self) -> dict:
+        """Build board state under Session without consulting transport."""
+        payload = self.board_payload({"_include_all": True})
+        board = payload.get("board") or {}
+        return {
+            "payload": payload,
+            "topic_uuid": board.get("uuid"),
+        }
+
+    @classmethod
+    def merge_board_observation(
+        cls, snapshot: dict, network: dict,
+    ) -> dict:
+        """Decorate a detached board snapshot with current channel liveness."""
+        payload = snapshot["payload"]
+        events = [
+            event for event in payload.get("transition_events", [])
+            if cls._transition_visible(event, network)
+        ]
+        payload["network"] = network
+        payload["transition_events"] = events
+        payload["transition_by_node"] = cls._filter_transition_groups(
+            payload.get("transition_by_node", {}), network,
+        )
+        return payload
+
+    @classmethod
+    def _filter_transition_groups(
+        cls, grouped: dict, network: dict,
+    ) -> dict:
+        filtered = {}
+        for node_uuid, group in grouped.items():
+            candidates = group.get("events") or [group]
+            visible = [
+                event for event in candidates
+                if cls._transition_visible(event, network)
+            ]
+            if not visible:
+                continue
+            top = max(
+                visible,
+                key=lambda event: int(event.get(
+                    "priority",
+                    Session.TRANSITION_PRIORITY.get(event.get("type"), 0),
+                )),
+            )
+            merged = dict(top)
+            if any(event.get("type") != "in_agreement" for event in visible):
+                merged["events"] = visible
+            filtered[node_uuid] = merged
+        return filtered
+
+    @staticmethod
+    def _transition_visible(event: dict, network: dict) -> bool:
+        if event.get("type") != "in_transition":
+            return True
+        peers = network.get("peers") or {}
+        addresses = event.get("delivery_peer_addrs") or [
+            event.get("peer_addr"),
+        ]
+        return any(
+            (
+                (peers.get(address) or {}).get("channel_liveness") or {}
+            ).get("state") == "alive"
+            for address in addresses if address
+        )
 
     def _comments_by_card(self, board: ProtocolNode) -> dict:
         # UI-friendly view of card comments: resolved author labels, sorted by
@@ -176,11 +255,15 @@ class KanbanLogic:
     def network_info(self, board_uuid: str | None = None) -> dict:
         return self._network_info(board_uuid)
 
-    def collaboration_context(self, topic_uuid: str) -> dict:
+    def collaboration_context(
+        self, topic_uuid: str, network: dict | None = None,
+    ) -> dict:
         board = self._node(topic_uuid, "kanban_board")
         if not board:
             return {}
-        network = self.network_info(topic_uuid)
+        network = (
+            self.network_info(topic_uuid) if network is None else network
+        )
         events = self.transition_events(topic_uuid, network)
         return {
             "agenda_items": [
@@ -231,6 +314,18 @@ class KanbanLogic:
         return "always"
 
     def ensure_board(self) -> ProtocolNode:
+        board = self._selected_board(self.boards())
+        if board:
+            self._remember_board(board.uuid)
+            return board
+        board = self._create_board_node("Kanban Board")
+        self._remember_board(board.uuid)
+        return board
+
+    def _selected_board(
+        self, boards: list[ProtocolNode],
+    ) -> ProtocolNode | None:
+        """Choose a board without changing selection metadata."""
         remembered_uuid = self._metadata().get("selected_board_uuid")
         explicit = bool(self._metadata().get("board_selection_explicit"))
         remembered = self.session.protocol.index.get(remembered_uuid) if remembered_uuid else None
@@ -238,21 +333,16 @@ class KanbanLogic:
             return remembered
         for active in self.session.active_topics():
             if active.data.get("type") == "kanban_board":
-                self._remember_board(active.uuid)
                 return active
             if active and self._is_kanban_app_topic(active):
-                boards = self._boards_under(active)
-                if boards:
-                    self._remember_board(boards[0].uuid)
-                    return boards[0]
+                active_boards = self._boards_under(active)
+                if active_boards:
+                    return active_boards[0]
         if remembered and remembered.data.get("type") == "kanban_board":
             return remembered
-        for node in self.boards():
-            self._remember_board(node.uuid)
+        for node in boards:
             return node
-        board = self._create_board_node("Kanban Board")
-        self._remember_board(board.uuid)
-        return board
+        return None
 
     def boards(self) -> list[ProtocolNode]:
         containers = self._kanban_containers()
@@ -562,8 +652,22 @@ class KanbanLogic:
         if not card or not column:
             return SessionResult("error", reason="card or column not found")
 
-        return self.session.move_child_to_parent_index(
+        moved = self.session.move_child_to_parent_index(
             card.uuid, column.uuid, index,
+        )
+        if moved.status != "ok":
+            return moved
+        card = self.session.protocol.index[card.uuid]
+        stamped = self.session.modify(
+            card.uuid,
+            {**card.data, "position_updated_at": self._position_now()},
+            card.weights,
+        )
+        if stamped.status != "ok":
+            return stamped
+        return SessionResult(
+            "ok", value=card.uuid,
+            effects=[*moved.effects, *stamped.effects],
         )
 
     def accept_peer_node(self, source_addr: str, node_uuid: str,
@@ -624,6 +728,10 @@ class KanbanLogic:
                     self._adopt_missing_columns_shallowly(addr, board.uuid)
                     or changed
                 )
+            changed = (
+                self._adopt_newer_card_positions(addr, board.uuid, mode)
+                or changed
+            )
 
             def source_eligible(node: ProtocolNode, event_type: str) -> bool:
                 # Agenda changes are handled above using author authority;
@@ -702,12 +810,15 @@ class KanbanLogic:
                 local_node, peer_node,
             )
             if order_only_change:
-                # Accept a peer's new ordering, never the stale ordering it
-                # published just before this client moved the item. Both
-                # clients publish before either polls, so the mover will see
-                # that stale copy as local_made_changes; accepting every
-                # order difference here immediately undid a successful drop.
-                if event["type"] != "peer_made_changes":
+                # Reordering is shared board state. If two clients move the
+                # same item before polling, the last move wins regardless of
+                # item authorship; an older publication can never undo it.
+                if (
+                    not local_node
+                    or not peer_node
+                    or self._position_updated_at(peer_node)
+                    <= self._position_updated_at(local_node)
+                ):
                     continue
             elif not originator_change:
                 continue
@@ -719,6 +830,60 @@ class KanbanLogic:
             )
             changed = changed or result.status == "ok"
         return changed
+
+    def _adopt_newer_card_positions(
+        self, peer_addr: str, board_uuid: str, mode: str,
+    ) -> bool:
+        """Resolve move-only card conflicts by their last move time."""
+        changed = False
+        for event in self.session.analyze_peer_transitions(
+            peer_addr, board_uuid,
+        ):
+            if event["type"] == "in_agreement":
+                continue
+            node_uuid = event.get("node_uuid")
+            local_node = self.session.protocol.index.get(node_uuid)
+            peer_node = self.session.get_cached_peer_subtree(
+                peer_addr, node_uuid,
+            )
+            if (
+                not self._card_position_only_change(local_node, peer_node)
+                or not self._auto_adopt_allows_node(mode, local_node)
+                or self._position_updated_at(peer_node)
+                <= self._position_updated_at(local_node)
+            ):
+                continue
+            result = self.session.accept_peer_node(peer_addr, node_uuid)
+            changed = changed or result.status == "ok"
+        return changed
+
+    @staticmethod
+    def _card_position_only_change(
+        local_node: ProtocolNode | None,
+        peer_node: ProtocolNode | None,
+    ) -> bool:
+        if not local_node or not peer_node:
+            return False
+        if (
+            local_node.data.get("type") != "kanban_card"
+            or peer_node.data.get("type") != "kanban_card"
+            or local_node.deleted != peer_node.deleted
+            or local_node.weights != peer_node.weights
+        ):
+            return False
+        local_data = dict(local_node.data)
+        peer_data = dict(peer_node.data)
+        local_order = local_data.pop("order", None)
+        peer_order = peer_data.pop("order", None)
+        local_data.pop("position_updated_at", None)
+        peer_data.pop("position_updated_at", None)
+        return (
+            local_data == peer_data
+            and (
+                local_node.parent_uuid != peer_node.parent_uuid
+                or local_order != peer_order
+            )
+        )
 
     @staticmethod
     def _agenda_order_only_change(
@@ -737,7 +902,17 @@ class KanbanLogic:
         peer_data = dict(peer_node.data)
         local_order = local_data.pop("order", None)
         peer_order = peer_data.pop("order", None)
+        local_data.pop("position_updated_at", None)
+        peer_data.pop("position_updated_at", None)
         return local_data == peer_data and local_order != peer_order
+
+    @staticmethod
+    def _position_now() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+    @staticmethod
+    def _position_updated_at(node: ProtocolNode) -> str:
+        return str(node.data.get("position_updated_at") or node.updated_at)
 
     def _auto_adopt_allows_node(self, mode: str, node: ProtocolNode | None) -> bool:
         if mode == "always":
@@ -791,7 +966,12 @@ class KanbanLogic:
     def transition_events(
         self, board_uuid: str | None = None, network: dict | None = None,
     ) -> list[dict]:
-        board = self.ensure_board()
+        board = (
+            self._node(board_uuid, "kanban_board")
+            if board_uuid else self._selected_board(self.boards())
+        )
+        if not board:
+            return []
         board_uuid = board_uuid or board.uuid
         events = []
         for addr in self.session.peer_addresses():
@@ -832,9 +1012,13 @@ class KanbanLogic:
     def _peer_liveness(
         self, peer_addr: str, topic_uuid: str, network: dict | None = None,
     ) -> dict:
+        if network and network.get("_include_all"):
+            return {"state": "alive"}
         peer_info = ((network or {}).get("peers") or {}).get(peer_addr) or {}
         if peer_info.get("channel_liveness") is not None:
             return peer_info["channel_liveness"]
+        if network is not None:
+            return {"state": "unknown"}
         resolver = getattr(
             self.collaboration, "peer_liveness_for_address", None,
         )
@@ -1221,7 +1405,21 @@ class KanbanLogic:
     def move_agenda_item(self, item_uuid: str, index: int) -> SessionResult:
         if not self.owns_node(item_uuid):
             return SessionResult("error", reason="agenda item not found")
-        return self.session.move_agenda_item(item_uuid, index)
+        moved = self.session.move_agenda_item(item_uuid, index)
+        if moved.status != "ok":
+            return moved
+        item = self.session.protocol.index[item_uuid]
+        stamped = self.session.modify(
+            item.uuid,
+            {**item.data, "position_updated_at": self._position_now()},
+            item.weights,
+        )
+        if stamped.status != "ok":
+            return stamped
+        return SessionResult(
+            "ok", value=item.uuid,
+            effects=[*moved.effects, *stamped.effects],
+        )
 
     def _node(self, uuid: str, node_type: str) -> ProtocolNode | None:
         node = self.session.protocol.index.get(uuid)
@@ -1278,13 +1476,26 @@ class KanbanLogic:
         )
 
     def _remember_board(self, board_uuid: str, explicit: bool = False) -> None:
-        metadata = self._metadata()
-        metadata["selected_board_uuid"] = board_uuid
-        if explicit:
-            metadata["board_selection_explicit"] = True
+        # Both keys are one selection decision, so they are written under a
+        # single Session transaction rather than as two separate updates.
+        with self.session.lock:
+            metadata = self.session.application_metadata(KANBAN_APPLICATION_ID)
+            metadata["selected_board_uuid"] = board_uuid
+            if explicit:
+                metadata["board_selection_explicit"] = True
 
     def _metadata(self) -> dict:
-        return self.session.application_metadata(KANBAN_APPLICATION_ID)
+        """Return a detached read copy of this application's metadata.
+
+        Session hands out the live namespace only to a caller holding its
+        lock. This application's requests are not wrapped in a Session
+        transaction, so readers take a snapshot and writers open their own
+        transaction - see _remember_board.
+        """
+        with self.session.lock:
+            return copy.deepcopy(
+                self.session.application_metadata(KANBAN_APPLICATION_ID),
+            )
 
     def _kanban_container(self) -> ProtocolNode:
         return self._folder(self._apps_folder(), KANBAN_APP_NAME, "kanban_app")
@@ -1297,7 +1508,20 @@ class KanbanLogic:
         ]
         if active:
             return active
-        return [self._kanban_container()]
+        apps = next(
+            (
+                child for child in self.session.protocol.root.live_children()
+                if child.data.get("type") == "folder"
+                and child.data.get("name") == "apps"
+            ),
+            None,
+        )
+        if not apps:
+            return []
+        return [
+            child for child in apps.live_children()
+            if self._is_kanban_app_topic(child)
+        ]
 
     def _apps_folder(self) -> ProtocolNode:
         return self._folder(self.session.protocol.root, "apps")

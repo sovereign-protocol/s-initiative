@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Require Sovereign Core 0.1.5 for composite responses and Session-owned
+  optimistic view support.
+- `/api/kanban/board` now uses Core's atomic
+  snapshot-observe-merge boundary, so a relay poll cannot tear one response.
+- Board selection metadata is now read as a snapshot and written in one
+  Session transaction, matching Core 0.1.5's locked metadata contract.
+- **Fixed: auto-adopted column renames can return to an earlier name** without
+  leaving both clients in false divergence.
+- **Fixed: card hover now follows the active theme** instead of applying the
+  dark-theme surface colour in light mode.
+- Card dragging now suppresses accidental text selection and shows a floating
+  card preview while leaving a clear placeholder at the drop position.
+- **Fixed: concurrent move-only conflicts now converge on the last move.**
+  This applies to both cards and agenda points; older relay publications can
+  no longer undo the newer position. Card drag styling is also cleared after
+  every drop instead of leaving cards dimmed until a page reload.
 - **Fixed: an agenda drop could succeed and then immediately revert.** A
   client no longer adopts the stale order a peer published just before seeing
   the move; the peer still adopts the mover's new order on its next cycle.
