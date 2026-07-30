@@ -1,6 +1,6 @@
 """S-Kanban reference application."""
 
-__version__ = "0.1.0a2"
+__version__ = "0.1.0a3"
 
 from .facade import KANBAN_FACADE_API_VERSION, KanbanFacade
 
