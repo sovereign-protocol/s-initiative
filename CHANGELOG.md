@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0a3 - 2026-07-30
 
 - Require Sovereign Core 0.1.5 for composite responses and Session-owned
   optimistic view support.
