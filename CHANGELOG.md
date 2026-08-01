@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0a4 - 2026-08-01
+
+- Renamed from S-Kanban to **S-Initiative**, distributed as
+  `sovereign-initiative`. The application id is now `initiative`, routes are
+  served under `/api/initiative/`, and the Python package is `s_initiative`.
+  Board and card node types keep their `kanban_` prefix: a Kanban board stays
+  one of the things an initiative is worked through, so that vocabulary is
+  domain rather than application identity.
+- Require Sovereign Core 0.1.6 for the shared UI kit.
+
 ## 0.1.0a3 - 2026-07-30
 
 - Require Sovereign Core 0.1.5 for composite responses and Session-owned
