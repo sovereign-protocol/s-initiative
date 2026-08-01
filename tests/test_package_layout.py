@@ -1,9 +1,9 @@
-"""Boundaries and packaging invariants for what S-Kanban ships.
+"""Boundaries and packaging invariants for what S-Initiative ships.
 
 The pre-split repository checked every distribution at once, from paths no
 published repository has, so none of this shipped. These are source scans
-rather than integration tests, so S-Kanban can hold its own share and fail
-in the pull request that breaks it. Core and Personal Cockpit hold theirs.
+rather than integration tests, so S-Initiative can hold its own share and fail
+in the pull request that breaks it. Core and S-Cockpit hold theirs.
 """
 
 import ast
@@ -12,13 +12,13 @@ import unittest
 from importlib.resources import files
 from pathlib import Path
 
-import s_kanban
+import s_initiative
 import sovereign
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = sorted((ROOT / "src").rglob("*.py"))
-OTHER_APPLICATIONS = ("personal_cockpit", "s_agreement")
+OTHER_APPLICATIONS = ("s_cockpit", "s_team")
 
 
 def imported_modules(path: Path) -> set[str]:
@@ -39,16 +39,16 @@ class PackagingTests(unittest.TestCase):
     def test_distribution_and_module_versions_agree(self):
         # The pre-split test hard-coded both numbers and went stale on every
         # release. Agreement between metadata and module is the invariant.
-        self.assertEqual(importlib.metadata.version("s-kanban"), s_kanban.__version__)
+        self.assertEqual(importlib.metadata.version("sovereign-initiative"), s_initiative.__version__)
 
     def test_installed_browser_assets_are_available(self):
         self.assertIn(
             "<!doctype html",
-            files("s_kanban.assets").joinpath("kanban.html").read_text(
+            files("s_initiative.assets").joinpath("initiative.html").read_text(
                 encoding="utf-8",
             ),
         )
-        self.assertTrue(files("s_kanban.assets").joinpath("kanban.css").is_file())
+        self.assertTrue(files("s_initiative.assets").joinpath("initiative.css").is_file())
 
     def test_package_sources_live_under_the_declared_src_root(self):
         # Asserting where the imported module loaded from only holds for an
@@ -56,13 +56,13 @@ class PackagingTests(unittest.TestCase):
         # site-packages. The invariant is this repository's layout - the
         # source sits under src/, and no flat copy survives beside it for an
         # import to pick up ahead of the installed package.
-        self.assertTrue((ROOT / "src" / "s_kanban" / "__init__.py").is_file())
-        self.assertFalse((ROOT / "s_kanban").exists())
+        self.assertTrue((ROOT / "src" / "s_initiative" / "__init__.py").is_file())
+        self.assertFalse((ROOT / "s_initiative").exists())
 
     def test_executable_spec_collects_current_application_packages(self):
         # Read the collect_all list rather than matching quoted text, so the
         # test does not depend on which quote style the spec happens to use.
-        source = (ROOT / "S-Kanban.spec").read_text(encoding="utf-8")
+        source = (ROOT / "S-Initiative.spec").read_text(encoding="utf-8")
         collected = set()
         for node in ast.walk(ast.parse(source)):
             if isinstance(node, ast.For) and isinstance(node.iter, (ast.Tuple, ast.List)):
@@ -72,24 +72,24 @@ class PackagingTests(unittest.TestCase):
                     and isinstance(element.value, str)
                 )
         self.assertTrue(collected, "no collect_all package list found in the spec")
-        self.assertLessEqual({"sovereign", "s_kanban"}, collected)
+        self.assertLessEqual({"sovereign", "s_initiative"}, collected)
         # Modules from before the package split; naming one would freeze a
         # build that silently omits the code it was meant to bundle.
         self.assertTrue(collected.isdisjoint(
             {"kanban_logic", "relay_logic", "boardofboards_logic"},
         ))
-        # This spec builds S-Kanban's own executable, so it collects this
+        # This spec builds S-Initiative's own executable, so it collects this
         # application and the Core it runs on, and nothing else. The reason
         # is scope, not licensing: every application is Apache-2.0, so a
         # combined binary crosses no licence boundary that Core's LGPL has
-        # not already set. Personal Cockpit owns the spec that bundles all
+        # not already set. S-Cockpit owns the spec that bundles all
         # of them, because the Cockpit is what such a binary opens.
         self.assertTrue(collected.isdisjoint(set(OTHER_APPLICATIONS)))
 
 
 class BoundaryTests(unittest.TestCase):
     def setUp(self):
-        self.assertTrue(SOURCES, "no S-Kanban sources found")
+        self.assertTrue(SOURCES, "no S-Initiative sources found")
 
     def test_imports_core_only_through_its_public_root(self):
         public_names = set(sovereign.__all__)
@@ -157,7 +157,7 @@ class BoundaryTests(unittest.TestCase):
                 self.assertNotIn(literal, source, f"{path} re-declares the ranking")
 
     def test_domain_logic_does_not_depend_on_host_or_http_controllers(self):
-        path = ROOT / "src" / "s_kanban" / "logic.py"
+        path = ROOT / "src" / "s_initiative" / "logic.py"
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         imports = imported_modules(path)
         self.assertFalse(
@@ -184,7 +184,7 @@ class BoundaryTests(unittest.TestCase):
 
     def test_board_get_uses_the_composite_snapshot_boundary(self):
         source = (
-            ROOT / "src" / "s_kanban" / "controller.py"
+            ROOT / "src" / "s_initiative" / "controller.py"
         ).read_text(encoding="utf-8")
         self.assertIn("runtime.composite_response(", source)
         self.assertIn("logic.board_snapshot", source)
@@ -193,10 +193,10 @@ class BoundaryTests(unittest.TestCase):
 
 class AssetTests(unittest.TestCase):
     def setUp(self):
-        self.kanban = files("s_kanban.assets").joinpath("kanban.html").read_text(
+        self.kanban = files("s_initiative.assets").joinpath("initiative.html").read_text(
             encoding="utf-8",
         )
-        self.css = files("s_kanban.assets").joinpath("kanban.css").read_text(
+        self.css = files("s_initiative.assets").joinpath("initiative.css").read_text(
             encoding="utf-8",
         )
 
@@ -215,7 +215,7 @@ class AssetTests(unittest.TestCase):
         # navigation must name the target's asset prefix.
         for number, line in enumerate(self.kanban.splitlines(), start=1):
             for pattern in ('href = `/?', 'href="/?', "href='/?"):
-                self.assertNotIn(pattern, line, f"kanban.html:{number}")
+                self.assertNotIn(pattern, line, f"initiative.html:{number}")
 
     def test_card_drop_always_clears_drag_styling(self):
         drop = self.kanban.split(

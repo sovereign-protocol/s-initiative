@@ -54,7 +54,7 @@ class CoreProfileTests(unittest.TestCase):
         self.assertEqual(payload["avatar"]["role"], "avatar")
         self.assertEqual(payload["profile"]["data"]["type"], "shared_user_profile")
         self.assertIn("/api/core/profile/avatar", routes)
-        self.assertNotIn("/api/kanban/profile", routes)
+        self.assertNotIn("/api/initiative/profile", routes)
 
 
 if __name__ == "__main__":

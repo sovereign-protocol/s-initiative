@@ -1,7 +1,7 @@
-"""S-Kanban sharing a board with Core's Protocol Explorer.
+"""S-Initiative sharing a board with Core's Protocol Explorer.
 
 This needs both distributions installed at once, so it cannot live in Core:
-Core must not depend on an application. It lives here because S-Kanban
+Core must not depend on an application. It lives here because S-Initiative
 already depends on Core, which makes this the only repository where the
 pair can be exercised.
 """
@@ -12,9 +12,9 @@ from tests.relay_clients import connect, relay_runtime, shared_relay_root
 
 
 class ProtocolExplorerInteropTests(unittest.TestCase):
-    def test_protocol_explorer_caches_kanban_share_without_claiming_ownership(self):
+    def test_protocol_explorer_caches_initiative_share_without_claiming_ownership(self):
         relay_root = shared_relay_root(self)
-        kanban = relay_runtime(self, 8151, relay_root, app="kanban")
+        kanban = relay_runtime(self, 8151, relay_root, app="initiative")
         manual = relay_runtime(self, 8152, relay_root, app="manual")
 
         board = kanban.logic.ensure_board()

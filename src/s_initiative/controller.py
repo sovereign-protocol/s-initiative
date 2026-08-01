@@ -1,4 +1,4 @@
-"""Starlette controller for S-Kanban."""
+"""Starlette controller for S-Initiative."""
 
 from __future__ import annotations
 
@@ -177,32 +177,32 @@ def build_routes(logic, runtime) -> list[Route]:
         ))
 
     return [
-        Route("/api/kanban/board", api_board),
-        Route("/api/kanban/auto_adopt", api_auto_adopt, methods=["POST"]),
-        Route("/api/kanban/boards/create", api_create_board, methods=["POST"]),
-        Route("/api/kanban/boards/select", api_select_board, methods=["POST"]),
-        Route("/api/kanban/boards/rename", api_rename_board, methods=["POST"]),
-        Route("/api/kanban/boards/set_objective", api_set_board_objective, methods=["POST"]),
-        Route("/api/kanban/boards/copy", api_copy_board, methods=["POST"]),
-        Route("/api/kanban/boards/delete", api_delete_board, methods=["POST"]),
-        Route("/api/kanban/columns/create", api_create_column, methods=["POST"]),
-        Route("/api/kanban/columns/rename", api_rename_column, methods=["POST"]),
-        Route("/api/kanban/columns/delete", api_delete_column, methods=["POST"]),
-        Route("/api/kanban/columns/move", api_move_column, methods=["POST"]),
-        Route("/api/kanban/cards/create", api_create_card, methods=["POST"]),
-        Route("/api/kanban/cards/update", api_update_card, methods=["POST"]),
-        Route("/api/kanban/cards/delete", api_delete_card, methods=["POST"]),
-        Route("/api/kanban/cards/move", api_move_card, methods=["POST"]),
-        Route("/api/kanban/cards/comments/create", api_create_card_comment, methods=["POST"]),
-        Route("/api/kanban/cards/comments/delete", api_delete_card_comment, methods=["POST"]),
-        Route("/api/kanban/cards/attachments/create", api_create_card_attachment, methods=["POST"]),
-        Route("/api/kanban/cards/attachments/delete", api_delete_card_attachment, methods=["POST"]),
-        Route("/api/kanban/adopt", api_adopt, methods=["POST"]),
-        Route("/api/kanban/rollback", api_rollback, methods=["POST"]),
-        Route("/api/kanban/agenda/create", api_create_agenda_item, methods=["POST"]),
-        Route("/api/kanban/agenda/delete", api_delete_agenda_item, methods=["POST"]),
-        Route("/api/kanban/agenda/set_priority", api_set_agenda_item_priority, methods=["POST"]),
-        Route("/api/kanban/agenda/move", api_move_agenda_item, methods=["POST"]),
+        Route("/api/initiative/board", api_board),
+        Route("/api/initiative/auto_adopt", api_auto_adopt, methods=["POST"]),
+        Route("/api/initiative/boards/create", api_create_board, methods=["POST"]),
+        Route("/api/initiative/boards/select", api_select_board, methods=["POST"]),
+        Route("/api/initiative/boards/rename", api_rename_board, methods=["POST"]),
+        Route("/api/initiative/boards/set_objective", api_set_board_objective, methods=["POST"]),
+        Route("/api/initiative/boards/copy", api_copy_board, methods=["POST"]),
+        Route("/api/initiative/boards/delete", api_delete_board, methods=["POST"]),
+        Route("/api/initiative/columns/create", api_create_column, methods=["POST"]),
+        Route("/api/initiative/columns/rename", api_rename_column, methods=["POST"]),
+        Route("/api/initiative/columns/delete", api_delete_column, methods=["POST"]),
+        Route("/api/initiative/columns/move", api_move_column, methods=["POST"]),
+        Route("/api/initiative/cards/create", api_create_card, methods=["POST"]),
+        Route("/api/initiative/cards/update", api_update_card, methods=["POST"]),
+        Route("/api/initiative/cards/delete", api_delete_card, methods=["POST"]),
+        Route("/api/initiative/cards/move", api_move_card, methods=["POST"]),
+        Route("/api/initiative/cards/comments/create", api_create_card_comment, methods=["POST"]),
+        Route("/api/initiative/cards/comments/delete", api_delete_card_comment, methods=["POST"]),
+        Route("/api/initiative/cards/attachments/create", api_create_card_attachment, methods=["POST"]),
+        Route("/api/initiative/cards/attachments/delete", api_delete_card_attachment, methods=["POST"]),
+        Route("/api/initiative/adopt", api_adopt, methods=["POST"]),
+        Route("/api/initiative/rollback", api_rollback, methods=["POST"]),
+        Route("/api/initiative/agenda/create", api_create_agenda_item, methods=["POST"]),
+        Route("/api/initiative/agenda/delete", api_delete_agenda_item, methods=["POST"]),
+        Route("/api/initiative/agenda/set_priority", api_set_agenda_item_priority, methods=["POST"]),
+        Route("/api/initiative/agenda/move", api_move_agenda_item, methods=["POST"]),
     ]
 
 

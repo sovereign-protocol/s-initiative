@@ -1,19 +1,19 @@
-"""Versioned public query/command facade exposed by S-Kanban."""
+"""Versioned public query/command facade exposed by S-Initiative."""
 
 from __future__ import annotations
 
 from sovereign import ProtocolNode
 
-from .logic import KanbanLogic
+from .logic import InitiativeLogic
 
 
-KANBAN_FACADE_API_VERSION = 1
+INITIATIVE_FACADE_API_VERSION = 1
 
 
-class KanbanFacade:
+class InitiativeFacade:
     """Stable facade returning detached node snapshots and command results."""
 
-    def __init__(self, logic: KanbanLogic):
+    def __init__(self, logic: InitiativeLogic):
         self._logic = logic
 
     def boards(self) -> list[ProtocolNode]:

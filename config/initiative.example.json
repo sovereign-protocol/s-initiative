@@ -1,6 +1,6 @@
 {
   "applications": [
-    {"module": "s_kanban.application"}
+    {"module": "s_initiative.application"}
   ],
   "primary_application_id": "kanban",
   "advertise_host": "127.0.0.1",

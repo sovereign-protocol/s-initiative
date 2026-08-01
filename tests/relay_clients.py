@@ -20,7 +20,7 @@ from pathlib import Path
 import app_server
 
 
-def relay_runtime(test, port: int, relay_root: str, app: str = "kanban"):
+def relay_runtime(test, port: int, relay_root: str, app: str = "initiative"):
     """One runtime with one relay target, publishing under its own identity.
 
     Attaches `relay`, `relay_target` and `peer_addr` - the last being how the

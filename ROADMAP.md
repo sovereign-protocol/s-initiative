@@ -4,7 +4,7 @@
 
 - Repeatable two-client direct and mailbox setup.
 - Board/card collaboration with explicit divergence reactions.
-- Relay targets, participant profiles, avatars, comments, and Personal Cockpit
+- Relay targets, participant profiles, avatars, comments, and S-Cockpit
   facade support.
 - Accurate limitations, threat model, and contributor quickstart.
 

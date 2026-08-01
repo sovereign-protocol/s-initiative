@@ -1,16 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""Freeze S-Kanban into a windowed executable.
+"""Freeze S-Initiative into a windowed executable.
 
 Build from a checkout of this repository, with Core installed as a normal
 dependency:
 
     pip install -e .[desktop]
     pip install pyinstaller
-    pyinstaller S-Kanban.spec
+    pyinstaller S-Initiative.spec
 
 Only this application and the Core it runs on are collected, because this is
-S-Kanban's executable. The other Sovereign applications live in their own
-repositories, and S-Kanban's CI could not resolve them anyway. Personal
+S-Initiative's executable. The other Sovereign applications live in their own
+repositories, and S-Initiative's CI could not resolve them anyway. Personal
 Cockpit owns the spec that bundles all of them, since the Cockpit is what
 such a binary opens.
 
@@ -29,7 +29,7 @@ binaries = []
 hiddenimports = []
 # webview pulls its platform backend in dynamically, so static analysis alone
 # leaves the frozen build without a window to draw into.
-for package in ("uvicorn", "webview", "sovereign", "s_kanban"):
+for package in ("uvicorn", "webview", "sovereign", "s_initiative"):
     package_datas, package_binaries, package_hiddenimports = collect_all(package)
     datas += package_datas
     binaries += package_binaries
@@ -57,7 +57,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="S-Kanban",
+    name="S-Initiative",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

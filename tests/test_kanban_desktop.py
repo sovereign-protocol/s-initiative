@@ -1,4 +1,4 @@
-"""What S-Kanban supplies to the desktop window, and nothing more.
+"""What S-Initiative supplies to the desktop window, and nothing more.
 
 The window, the runtime, the port and the shutdown are Core's, and so are the
 tests for them - they live in Core's tests/test_desktop.py, where a change to
@@ -13,8 +13,8 @@ the launcher starts, and what the window is called.
 import unittest
 from unittest.mock import patch
 
-from s_kanban import desktop as kanban_desktop
-from s_kanban.application import APPLICATION_MANIFEST
+from s_initiative import desktop as kanban_desktop
+from s_initiative.application import APPLICATION_MANIFEST
 
 
 class ApplicationAliasTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class ApplicationAliasTests(unittest.TestCase):
         # The launcher names the application itself, so a manifest rename must
         # not leave the desktop build pointing at an application that is no
         # longer there.
-        alias = kanban_desktop.APPLICATION_ALIASES["kanban"]
+        alias = kanban_desktop.APPLICATION_ALIASES["initiative"]
 
         self.assertEqual(alias["application_id"], APPLICATION_MANIFEST.application_id)
         self.assertEqual(alias["asset_package"], APPLICATION_MANIFEST.asset_package)
@@ -33,9 +33,9 @@ class ApplicationAliasTests(unittest.TestCase):
         # nothing above would notice it pointing at a module that moved.
         import importlib
 
-        alias = kanban_desktop.APPLICATION_ALIASES["kanban"]
+        alias = kanban_desktop.APPLICATION_ALIASES["initiative"]
 
-        self.assertEqual(alias["app_module"], "s_kanban.application")
+        self.assertEqual(alias["app_module"], "s_initiative.application")
         self.assertIsNotNone(importlib.import_module(alias["app_module"]))
 
     def test_the_window_is_called_what_the_manifest_calls_the_application(self):
@@ -45,7 +45,7 @@ class ApplicationAliasTests(unittest.TestCase):
 
     def test_the_launcher_hands_core_this_application_and_this_title(self):
         # Everything past this call is Core's. All that is checked here is that
-        # S-Kanban's own three answers arrive intact.
+        # S-Initiative's own three answers arrive intact.
         seen = {}
 
         with patch.object(
@@ -55,7 +55,7 @@ class ApplicationAliasTests(unittest.TestCase):
             self.assertEqual(kanban_desktop.main([]), 0)
 
         _argv, app_name, window_title, aliases = seen["args"]
-        self.assertEqual(app_name, "kanban")
+        self.assertEqual(app_name, "initiative")
         self.assertEqual(window_title, kanban_desktop.WINDOW_TITLE)
         self.assertIs(aliases, kanban_desktop.APPLICATION_ALIASES)
 

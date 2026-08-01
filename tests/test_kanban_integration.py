@@ -56,7 +56,7 @@ def wait_for_server(port: int) -> None:
     last_error = None
     while time.monotonic() < deadline:
         try:
-            request_json("GET", f"http://127.0.0.1:{port}/api/kanban/board")
+            request_json("GET", f"http://127.0.0.1:{port}/api/initiative/board")
             return
         except Exception as error:
             last_error = error
@@ -135,9 +135,9 @@ class ServerIntegrationTests(unittest.TestCase):
             configs = []
             for port in (port_a, port_b):
                 config = {
-                    "app_module": "s_kanban.application",
-                    "ui_file": "kanban.html",
-                    "css_file": "kanban.css",
+                    "app_module": "s_initiative.application",
+                    "ui_file": "initiative.html",
+                    "css_file": "initiative.css",
                     "storage_file": str(tmp_path / f"kanban_{port}.json"),
                     "debug": True,
                 }
@@ -147,7 +147,7 @@ class ServerIntegrationTests(unittest.TestCase):
 
             for port, config_path in ((port_a, configs[0]), (port_b, configs[1])):
                 processes.append(subprocess.Popen(
-                    [sys.executable, "app_server.py", f"{port}:kanban", str(config_path)],
+                    [sys.executable, "app_server.py", f"{port}:initiative", str(config_path)],
                     cwd=ROOT,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -163,12 +163,12 @@ class ServerIntegrationTests(unittest.TestCase):
                 add_relay(port_b, relay_root)
 
                 board_a = request_json(
-                    "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                    "GET", f"http://127.0.0.1:{port_a}/api/initiative/board"
                 )["board"]
                 column_uuid = board_a["children"][0]["uuid"]
                 request_json(
                     "POST",
-                    f"http://127.0.0.1:{port_a}/api/kanban/cards/create",
+                    f"http://127.0.0.1:{port_a}/api/initiative/cards/create",
                     {
                         "column_uuid": column_uuid,
                         "name": "Synced Card",
@@ -186,10 +186,10 @@ class ServerIntegrationTests(unittest.TestCase):
                 final_a = final_b = None
                 while time.monotonic() < deadline:
                     final_a = request_json(
-                        "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                        "GET", f"http://127.0.0.1:{port_a}/api/initiative/board"
                     )
                     final_b = request_json(
-                        "GET", f"http://127.0.0.1:{port_b}/api/kanban/board"
+                        "GET", f"http://127.0.0.1:{port_b}/api/initiative/board"
                     )
                     if "Synced Card" in card_names(final_b["board"]):
                         break
@@ -200,10 +200,10 @@ class ServerIntegrationTests(unittest.TestCase):
                 deadline = time.monotonic() + 20
                 while time.monotonic() < deadline:
                     final_a = request_json(
-                        "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                        "GET", f"http://127.0.0.1:{port_a}/api/initiative/board"
                     )
                     final_b = request_json(
-                        "GET", f"http://127.0.0.1:{port_b}/api/kanban/board"
+                        "GET", f"http://127.0.0.1:{port_b}/api/initiative/board"
                     )
                     if (
                         final_a["network"]["peer_addresses"]
@@ -236,9 +236,9 @@ class ServerIntegrationTests(unittest.TestCase):
             configs = []
             for port in (port_a, port_b):
                 config = {
-                    "app_module": "s_kanban.application",
-                    "ui_file": "kanban.html",
-                    "css_file": "kanban.css",
+                    "app_module": "s_initiative.application",
+                    "ui_file": "initiative.html",
+                    "css_file": "initiative.css",
                     "storage_file": str(tmp_path / f"kanban_{port}.json"),
                     "debug": True,
                 }
@@ -248,7 +248,7 @@ class ServerIntegrationTests(unittest.TestCase):
 
             for port, config_path in ((port_a, configs[0]), (port_b, configs[1])):
                 processes.append(subprocess.Popen(
-                    [sys.executable, "app_server.py", f"{port}:kanban", str(config_path)],
+                    [sys.executable, "app_server.py", f"{port}:initiative", str(config_path)],
                     cwd=ROOT,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -263,7 +263,7 @@ class ServerIntegrationTests(unittest.TestCase):
                 channel_a = add_relay(port_a, relay_root)
                 add_relay(port_b, relay_root)
                 board_a = request_json(
-                    "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                    "GET", f"http://127.0.0.1:{port_a}/api/initiative/board"
                 )["board"]
                 share = connect_over_relay(
                     port_a, port_b, board_a["uuid"], channel_a,
@@ -271,13 +271,13 @@ class ServerIntegrationTests(unittest.TestCase):
                 self.assertEqual(share["status"], "ok")
                 request_json(
                     "POST",
-                    f"http://127.0.0.1:{port_b}/api/kanban/auto_adopt",
+                    f"http://127.0.0.1:{port_b}/api/initiative/auto_adopt",
                     {"enabled": True},
                 )
                 column_uuid = board_a["children"][0]["uuid"]
                 request_json(
                     "POST",
-                    f"http://127.0.0.1:{port_a}/api/kanban/cards/create",
+                    f"http://127.0.0.1:{port_a}/api/initiative/cards/create",
                     {
                         "column_uuid": column_uuid,
                         "name": "Local Card",
@@ -290,10 +290,10 @@ class ServerIntegrationTests(unittest.TestCase):
                 final_a = final_b = None
                 while time.monotonic() < deadline:
                     final_a = request_json(
-                        "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                        "GET", f"http://127.0.0.1:{port_a}/api/initiative/board"
                     )
                     final_b = request_json(
-                        "GET", f"http://127.0.0.1:{port_b}/api/kanban/board"
+                        "GET", f"http://127.0.0.1:{port_b}/api/initiative/board"
                     )
                     if "Local Card" in card_names(final_b["board"]):
                         break
@@ -324,9 +324,9 @@ class ServerIntegrationTests(unittest.TestCase):
             configs = []
             for port in (port_a, port_b):
                 config = {
-                    "app_module": "s_kanban.application",
-                    "ui_file": "kanban.html",
-                    "css_file": "kanban.css",
+                    "app_module": "s_initiative.application",
+                    "ui_file": "initiative.html",
+                    "css_file": "initiative.css",
                     "storage_file": str(tmp_path / f"kanban_{port}.json"),
                     "debug": True,
                 }
@@ -336,7 +336,7 @@ class ServerIntegrationTests(unittest.TestCase):
 
             for port, config_path in ((port_a, configs[0]), (port_b, configs[1])):
                 processes.append(subprocess.Popen(
-                    [sys.executable, "app_server.py", f"{port}:kanban", str(config_path)],
+                    [sys.executable, "app_server.py", f"{port}:initiative", str(config_path)],
                     cwd=ROOT,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -351,7 +351,7 @@ class ServerIntegrationTests(unittest.TestCase):
                 channel_a = add_relay(port_a, relay_root)
                 add_relay(port_b, relay_root)
                 board_a = request_json(
-                    "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                    "GET", f"http://127.0.0.1:{port_a}/api/initiative/board"
                 )["board"]
                 share = connect_over_relay(
                     port_a, port_b, board_a["uuid"], channel_a,
@@ -359,14 +359,14 @@ class ServerIntegrationTests(unittest.TestCase):
                 self.assertEqual(share["status"], "ok")
                 request_json(
                     "POST",
-                    f"http://127.0.0.1:{port_b}/api/kanban/auto_adopt",
+                    f"http://127.0.0.1:{port_b}/api/initiative/auto_adopt",
                     {"enabled": True},
                 )
                 source_uuid = board_a["children"][0]["uuid"]
                 target_uuid = board_a["children"][1]["uuid"]
                 create = request_json(
                     "POST",
-                    f"http://127.0.0.1:{port_a}/api/kanban/cards/create",
+                    f"http://127.0.0.1:{port_a}/api/initiative/cards/create",
                     {
                         "column_uuid": source_uuid,
                         "name": "Moved Card",
@@ -389,7 +389,7 @@ class ServerIntegrationTests(unittest.TestCase):
                 self.assertEqual(find_card_parent(raw_b, "Moved Card"), source_uuid)
                 request_json(
                     "POST",
-                    f"http://127.0.0.1:{port_a}/api/kanban/cards/move",
+                    f"http://127.0.0.1:{port_a}/api/initiative/cards/move",
                     {
                         "card_uuid": card_uuid,
                         "column_uuid": target_uuid,
@@ -410,7 +410,7 @@ class ServerIntegrationTests(unittest.TestCase):
                 final_b = None
                 while time.monotonic() < deadline:
                     final_b = request_json(
-                        "GET", f"http://127.0.0.1:{port_b}/api/kanban/board"
+                        "GET", f"http://127.0.0.1:{port_b}/api/initiative/board"
                     )
                     if find_card_parent(final_b["board"], "Moved Card") == target_uuid:
                         break
@@ -433,7 +433,7 @@ class ServerIntegrationTests(unittest.TestCase):
                 final_a = None
                 while time.monotonic() < deadline:
                     final_a = request_json(
-                        "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                        "GET", f"http://127.0.0.1:{port_a}/api/initiative/board"
                     )
                     peer = peer_view(final_a)
                     if peer and find_card_parent(peer, "Moved Card") == target_uuid:
@@ -471,9 +471,9 @@ class ServerIntegrationTests(unittest.TestCase):
             configs = {}
             for port in (port_a, port_b, port_c):
                 config = {
-                    "app_module": "s_kanban.application",
-                    "ui_file": "kanban.html",
-                    "css_file": "kanban.css",
+                    "app_module": "s_initiative.application",
+                    "ui_file": "initiative.html",
+                    "css_file": "initiative.css",
                     "storage_file": str(tmp_path / f"kanban_{port}.json"),
                     "debug": True,
                 }
@@ -483,7 +483,7 @@ class ServerIntegrationTests(unittest.TestCase):
 
             for port in (port_a, port_b, port_c):
                 processes.append(subprocess.Popen(
-                    [sys.executable, "app_server.py", f"{port}:kanban", str(configs[port])],
+                    [sys.executable, "app_server.py", f"{port}:initiative", str(configs[port])],
                     cwd=ROOT,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -502,10 +502,10 @@ class ServerIntegrationTests(unittest.TestCase):
                 channel_c = add_relay(port_c, relay_c)
 
                 board_a = request_json(
-                    "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                    "GET", f"http://127.0.0.1:{port_a}/api/initiative/board"
                 )["board"]
                 board_c = request_json(
-                    "GET", f"http://127.0.0.1:{port_c}/api/kanban/board"
+                    "GET", f"http://127.0.0.1:{port_c}/api/initiative/board"
                 )["board"]
 
                 join_a = connect_over_relay(
@@ -520,19 +520,19 @@ class ServerIntegrationTests(unittest.TestCase):
                 time.sleep(2.0)
 
                 final_a = request_json(
-                    "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                    "GET", f"http://127.0.0.1:{port_a}/api/initiative/board"
                 )
                 final_c = request_json(
-                    "GET", f"http://127.0.0.1:{port_c}/api/kanban/board"
+                    "GET", f"http://127.0.0.1:{port_c}/api/initiative/board"
                 )
 
                 deadline = time.monotonic() + 20
                 while time.monotonic() < deadline:
                     final_a = request_json(
-                        "GET", f"http://127.0.0.1:{port_a}/api/kanban/board"
+                        "GET", f"http://127.0.0.1:{port_a}/api/initiative/board"
                     )
                     final_c = request_json(
-                        "GET", f"http://127.0.0.1:{port_c}/api/kanban/board"
+                        "GET", f"http://127.0.0.1:{port_c}/api/initiative/board"
                     )
                     if (
                         final_a["network"]["peer_addresses"]

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Kanban Board</title>
     <link rel="stylesheet" href="/shared.css" />
-    <link rel="stylesheet" href="/apps/kanban/styles.css" />
+    <link rel="stylesheet" href="/apps/initiative/styles.css" />
   </head>
   <body>
     <div id="toast" class="toast"></div>
@@ -253,7 +253,7 @@
       function selectBoard(boardUuid) {
         if (!boardUuid || boardUuid === state.board.uuid) return;
         run(
-          () => api("/api/kanban/boards/select", { board_uuid: boardUuid }),
+          () => api("/api/initiative/boards/select", { board_uuid: boardUuid }),
           "Board selected",
         );
       }
@@ -341,7 +341,7 @@
       async function loadBoard() {
         if (dragActive) return;
         try {
-          state = await api("/api/kanban/board");
+          state = await api("/api/initiative/board");
 
           // Core owns the same title-plus-switcher control for every topic app.
           SovereignShell.setTopicSelector({
@@ -353,7 +353,7 @@
             selectedUuid: state.board.uuid,
             onSelect: selectBoard,
             onRename: (name) => run(
-              () => api("/api/kanban/boards/rename", {
+              () => api("/api/initiative/boards/rename", {
                 board_uuid: state.board.uuid,
                 name,
               }),
@@ -401,7 +401,7 @@
             openSimple(
               "Add Column",
               [{ name: "name", label: "Name", value: "New column" }],
-              async (form) => api("/api/kanban/columns/create", { name: form.get("name") }),
+              async (form) => api("/api/initiative/columns/create", { name: form.get("name") }),
             );
         }
         board.appendChild(addBtn);
@@ -526,7 +526,7 @@
         name.onchange = () =>
           run(
             () =>
-              api("/api/kanban/columns/rename", {
+              api("/api/initiative/columns/rename", {
                 column_uuid: column.uuid,
                 name: name.value,
               }),
@@ -536,7 +536,7 @@
           confirmAction("Delete column?", "This deletes the column and all cards inside it.", () =>
             run(
               () =>
-                api("/api/kanban/columns/delete", {
+                api("/api/initiative/columns/delete", {
                   column_uuid: column.uuid,
                 }),
               "Column deleted",
@@ -875,8 +875,8 @@
 
       async function applyReaction(uuid, reaction) {
         const endpoint = reaction.action === "rollback"
-          ? "/api/kanban/rollback"
-          : "/api/kanban/adopt";
+          ? "/api/initiative/rollback"
+          : "/api/initiative/adopt";
         await run(() => api(endpoint, {
           node_uuid: uuid,
           source_addr: reaction.peer.addr,
@@ -1049,7 +1049,7 @@
         const text = input.value.trim();
         if (!text) return;
         try {
-          await api("/api/kanban/cards/comments/create", {
+          await api("/api/initiative/cards/comments/create", {
             card_uuid: modalCard.uuid,
             text,
           });
@@ -1063,7 +1063,7 @@
 
       async function deleteComment(commentUuid) {
         try {
-          await api("/api/kanban/cards/comments/delete", { comment_uuid: commentUuid });
+          await api("/api/initiative/cards/comments/delete", { comment_uuid: commentUuid });
           await loadBoard();
           renderCardComments();
         } catch (error) {
@@ -1144,7 +1144,7 @@
           if (!response.ok) {
             throw new Error(stored.reason || "Could not upload the file.");
           }
-          await api("/api/kanban/cards/attachments/create", {
+          await api("/api/initiative/cards/attachments/create", {
             card_uuid: modalCard.uuid,
             attachment: {
               id: crypto.randomUUID(),
@@ -1165,7 +1165,7 @@
 
       async function deleteAttachment(attachmentUuid) {
         try {
-          await api("/api/kanban/cards/attachments/delete", {
+          await api("/api/initiative/cards/attachments/delete", {
             attachment_uuid: attachmentUuid,
           });
           await loadBoard();
@@ -1208,7 +1208,7 @@
           // card underneath, and re-opening edits against it.
           payload.expected_content_hash = modalCard.content_hash;
           try {
-            await api("/api/kanban/cards/update", payload);
+            await api("/api/initiative/cards/update", payload);
           } catch (error) {
             showToast(error.message, true);
             await loadBoard();
@@ -1218,7 +1218,7 @@
           await loadBoard();
         } else {
           payload.column_uuid = modalColumn;
-          await run(() => api("/api/kanban/cards/create", payload), "Card added");
+          await run(() => api("/api/initiative/cards/create", payload), "Card added");
         }
         el("cardModal").close();
       };
@@ -1227,7 +1227,7 @@
         if (!modalCard) return;
         await confirmAction("Delete card?", "This removes the card from this board.", async () => {
           await run(
-            () => api("/api/kanban/cards/delete", { card_uuid: modalCard.uuid }),
+            () => api("/api/initiative/cards/delete", { card_uuid: modalCard.uuid }),
             "Card deleted",
           );
           el("cardModal").close();
@@ -1308,7 +1308,7 @@
         try {
           await run(
             () =>
-              api("/api/kanban/cards/move", {
+              api("/api/initiative/cards/move", {
                 card_uuid: cardUuid,
                 column_uuid: columnUuid,
                 index: Math.max(0, order.indexOf(cardUuid)),
@@ -1332,7 +1332,7 @@
         try {
           await run(
             () =>
-              api("/api/kanban/columns/move", {
+              api("/api/initiative/columns/move", {
                 column_uuid: columnUuid,
                 index,
               }),
@@ -1570,12 +1570,12 @@
         // stores without interpreting.
         agendaRoutes: {
           topicKey: 'board_uuid',
-          create: '/api/kanban/agenda/create',
-          delete: '/api/kanban/agenda/delete',
-          setPriority: '/api/kanban/agenda/set_priority',
-          move: '/api/kanban/agenda/move',
+          create: '/api/initiative/agenda/create',
+          delete: '/api/initiative/agenda/delete',
+          setPriority: '/api/initiative/agenda/set_priority',
+          move: '/api/initiative/agenda/move',
         },
-        autoAdoptRoute: {path: '/api/kanban/auto_adopt', topicKey: 'board_uuid'},
+        autoAdoptRoute: {path: '/api/initiative/auto_adopt', topicKey: 'board_uuid'},
         autoAdoptLabels: AUTO_ADOPT_LABELS,
         autoAdoptDescriptions: AUTO_ADOPT_DESCRIPTIONS,
         renderAutoAdoptIndicator: (container, mode) => {
@@ -1601,7 +1601,7 @@
         const boardUuid = params.get("board");
         if (!boardUuid) return;
         try {
-          await api("/api/kanban/boards/select", { board_uuid: boardUuid });
+          await api("/api/initiative/boards/select", { board_uuid: boardUuid });
         } catch (error) {
           showToast(error.message, true);
         }

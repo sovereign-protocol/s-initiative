@@ -1,15 +1,15 @@
 # Design: card comment history
 
 **Status: shipped.** `create_card_comment`, `card_comments` and
-`delete_card_comment` live in `src/s_kanban/logic.py`, the two routes in
-`src/s_kanban/controller.py`, and `tests/test_card_comments.py` covers
+`delete_card_comment` live in `src/s_initiative/logic.py`, the two routes in
+`src/s_initiative/controller.py`, and `tests/test_card_comments.py` covers
 them. The record is kept because the reasoning below — why history is a set
 of child nodes rather than a list field — governs every feature with the
 same shape, attachments included.
 
 _Written 2026-07-19, before the repository split. Module names in the phase
 plan are the pre-split ones: `kanban_logic.py` is now
-`src/s_kanban/logic.py`. The node_hash/subtree_hash split it relies on is
+`src/s_initiative/logic.py`. The node_hash/subtree_hash split it relies on is
 described in `DESIGN_NODE_SUBTREE_HASH_SPLIT.md` in the Core repository._
 
 ## Goal
@@ -51,8 +51,8 @@ manual adoption" rule. Deleting a comment follows normal deletion/eligibility.
 ## API
 
 ```
-POST /api/kanban/cards/comments/create  {card_uuid, text}
-POST /api/kanban/cards/comments/delete  {comment_uuid}
+POST /api/initiative/cards/comments/create  {card_uuid, text}
+POST /api/initiative/cards/comments/delete  {comment_uuid}
 ```
 
 `board_payload` includes each card's comments as a `comments` list, sorted by
@@ -66,7 +66,7 @@ POST /api/kanban/cards/comments/delete  {comment_uuid}
    (author-only). Wire comments into `board_payload`'s card summary. Add the
    always-adopt eligibility path for `card_comment`.
 2. **API routes** for create/delete.
-3. **UI** (`kanban.html`): a comments section in the card modal — a list
+3. **UI** (`initiative.html`): a comments section in the card modal — a list
    (author, relative time, text) plus an add-comment box; a delete affordance
    on your own comments.
 4. **Tests:** create/list/delete; ordering by time; two-client concurrent

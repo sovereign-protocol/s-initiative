@@ -1,1 +1,1 @@
-"""S-Kanban tests."""
+"""S-Initiative tests."""

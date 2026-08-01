@@ -1,0 +1,1 @@
+"""S-Initiative browser assets."""

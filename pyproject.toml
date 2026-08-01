@@ -3,9 +3,9 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "s-kanban"
+name = "sovereign-initiative"
 version = "0.1.0a3"
-description = "S-Kanban reference application for Sovereign Core"
+description = "S-Initiative reference application for Sovereign Core"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -23,9 +23,9 @@ dependencies = ["sovereign-protocol>=0.1.6,<0.2"]
 
 # A package whose argument is auditability must say where its source is.
 [project.urls]
-Homepage = "https://github.com/sovereign-protocol/s-kanban"
-Source = "https://github.com/sovereign-protocol/s-kanban"
-Issues = "https://github.com/sovereign-protocol/s-kanban/issues"
+Homepage = "https://github.com/sovereign-protocol/s-initiative"
+Source = "https://github.com/sovereign-protocol/s-initiative"
+Issues = "https://github.com/sovereign-protocol/s-initiative/issues"
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]
@@ -34,17 +34,17 @@ test = ["pytest>=8,<10"]
 desktop = ["pywebview>=5,<6"]
 
 [project.scripts]
-s-kanban-desktop = "s_kanban.desktop:main"
+s-initiative-desktop = "s_initiative.desktop:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["s_kanban*"]
+include = ["s_initiative*"]
 
 [tool.setuptools.package-data]
-"s_kanban.assets" = ["*.css", "*.html", "*.js"]
+"s_initiative.assets" = ["*.css", "*.html", "*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

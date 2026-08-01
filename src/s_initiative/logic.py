@@ -18,24 +18,24 @@ Contract:
       dedicated protocol support needed.
 
   API:
-    GET  /api/kanban/board
-    POST /api/kanban/boards/set_objective {board_uuid, objective}
-    POST /api/kanban/agenda/create        {text, priority}  # priority optional
-    POST /api/kanban/agenda/delete        {item_uuid}
-    POST /api/kanban/agenda/set_priority  {item_uuid, priority}  # priority optional, clears if omitted
-    POST /api/kanban/auto_adopt          {mode}  # one of: always, not_owner, not_member, never
-    POST /api/kanban/columns/create      {name}
-    POST /api/kanban/columns/rename      {column_uuid, name}
-    POST /api/kanban/columns/delete      {column_uuid}
-    POST /api/kanban/columns/move        {column_uuid, index}
-    POST /api/kanban/cards/create        {column_uuid, name, description, participants, owner}
-    POST /api/kanban/cards/update        {card_uuid, name, description, participants, owner}
-    POST /api/kanban/cards/delete        {card_uuid}
-    POST /api/kanban/cards/move          {card_uuid, column_uuid, index}
-    POST /api/kanban/cards/comments/create {card_uuid, text}
-    POST /api/kanban/cards/comments/delete {comment_uuid}
-    POST /api/kanban/adopt               {source_addr, node_uuid, adopt_absence}
-    POST /api/kanban/rollback            {source_addr, node_uuid}
+    GET  /api/initiative/board
+    POST /api/initiative/boards/set_objective {board_uuid, objective}
+    POST /api/initiative/agenda/create        {text, priority}  # priority optional
+    POST /api/initiative/agenda/delete        {item_uuid}
+    POST /api/initiative/agenda/set_priority  {item_uuid, priority}  # priority optional, clears if omitted
+    POST /api/initiative/auto_adopt          {mode}  # one of: always, not_owner, not_member, never
+    POST /api/initiative/columns/create      {name}
+    POST /api/initiative/columns/rename      {column_uuid, name}
+    POST /api/initiative/columns/delete      {column_uuid}
+    POST /api/initiative/columns/move        {column_uuid, index}
+    POST /api/initiative/cards/create        {column_uuid, name, description, participants, owner}
+    POST /api/initiative/cards/update        {card_uuid, name, description, participants, owner}
+    POST /api/initiative/cards/delete        {card_uuid}
+    POST /api/initiative/cards/move          {card_uuid, column_uuid, index}
+    POST /api/initiative/cards/comments/create {card_uuid, text}
+    POST /api/initiative/cards/comments/delete {comment_uuid}
+    POST /api/initiative/adopt               {source_addr, node_uuid, adopt_absence}
+    POST /api/initiative/rollback            {source_addr, node_uuid}
 """
 
 from __future__ import annotations
@@ -51,8 +51,8 @@ from sovereign import (
 
 
 DEFAULT_COLUMNS = ["To Do", "Doing", "Done"]
-KANBAN_APP_NAME = "S-Kanban"
-KANBAN_APPLICATION_ID = "kanban"
+INITIATIVE_APP_NAME = "S-Initiative"
+INITIATIVE_APPLICATION_ID = "initiative"
 AUTO_ADOPT_MODES = ("always", "not_owner", "not_member", "never")
 AGENDA_PRIORITIES = ("high", "medium", "low")
 DISPLAYED_DIVERGENCE_TYPES = frozenset({
@@ -64,7 +64,7 @@ OWNED_NODE_TYPES = frozenset({
 })
 
 
-class KanbanLogic:
+class InitiativeLogic:
     def __init__(self, session: Session, config: dict | None = None,
                  collaboration=None):
         self.session = session
@@ -74,11 +74,11 @@ class KanbanLogic:
         # Session.identity bootstraps its own origin without recursion.
         self.session.identity
         with self.session.lock:
-            self.session.application_metadata(KANBAN_APPLICATION_ID)
+            self.session.application_metadata(INITIATIVE_APPLICATION_ID)
 
     def application_registration(self) -> ApplicationRegistration:
         return ApplicationRegistration(
-            KANBAN_APPLICATION_ID,
+            INITIATIVE_APPLICATION_ID,
             frozenset({"kanban_board"}),
             self.boards,
             self.accept_board_invitation,
@@ -334,7 +334,7 @@ class KanbanLogic:
         for active in self.session.active_topics():
             if active.data.get("type") == "kanban_board":
                 return active
-            if active and self._is_kanban_app_topic(active):
+            if active and self._is_initiative_app_topic(active):
                 active_boards = self._boards_under(active)
                 if active_boards:
                     return active_boards[0]
@@ -1464,14 +1464,14 @@ class KanbanLogic:
             seen.add(current.uuid)
             if current.data.get("type") == "kanban_board":
                 parent = self.session.protocol.index.get(current.parent_uuid)
-                return current if self._is_kanban_app_topic(parent) else None
+                return current if self._is_initiative_app_topic(parent) else None
             current = self.session.protocol.index.get(current.parent_uuid)
         return None
 
     @staticmethod
     def _subtree_contains(root: ProtocolNode, node_uuid: str) -> bool:
         return root.uuid == node_uuid or any(
-            KanbanLogic._subtree_contains(child, node_uuid)
+            InitiativeLogic._subtree_contains(child, node_uuid)
             for child in root.children
         )
 
@@ -1479,7 +1479,7 @@ class KanbanLogic:
         # Both keys are one selection decision, so they are written under a
         # single Session transaction rather than as two separate updates.
         with self.session.lock:
-            metadata = self.session.application_metadata(KANBAN_APPLICATION_ID)
+            metadata = self.session.application_metadata(INITIATIVE_APPLICATION_ID)
             metadata["selected_board_uuid"] = board_uuid
             if explicit:
                 metadata["board_selection_explicit"] = True
@@ -1494,17 +1494,17 @@ class KanbanLogic:
         """
         with self.session.lock:
             return copy.deepcopy(
-                self.session.application_metadata(KANBAN_APPLICATION_ID),
+                self.session.application_metadata(INITIATIVE_APPLICATION_ID),
             )
 
     def _kanban_container(self) -> ProtocolNode:
-        return self._folder(self._apps_folder(), KANBAN_APP_NAME, "kanban_app")
+        return self._folder(self._apps_folder(), INITIATIVE_APP_NAME, "kanban_app")
 
     def _kanban_containers(self) -> list[ProtocolNode]:
         active = [
             topic
             for topic in self.session.active_topics()
-            if self._is_kanban_app_topic(topic)
+            if self._is_initiative_app_topic(topic)
         ]
         if active:
             return active
@@ -1520,7 +1520,7 @@ class KanbanLogic:
             return []
         return [
             child for child in apps.live_children()
-            if self._is_kanban_app_topic(child)
+            if self._is_initiative_app_topic(child)
         ]
 
     def _apps_folder(self) -> ProtocolNode:
@@ -1589,12 +1589,12 @@ class KanbanLogic:
             out.extend(self._boards_under(child))
         return out
 
-    def _is_kanban_app_topic(self, node: ProtocolNode | None) -> bool:
+    def _is_initiative_app_topic(self, node: ProtocolNode | None) -> bool:
         if not node:
             return False
         return (
             node.data.get("type") == "kanban_app"
-            and node.data.get("name") == KANBAN_APP_NAME
+            and node.data.get("name") == INITIATIVE_APP_NAME
         )
 
     def _is_shared_user_topic(self, node: ProtocolNode | None) -> bool:

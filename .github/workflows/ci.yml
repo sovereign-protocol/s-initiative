@@ -13,7 +13,7 @@ jobs:
       - run: python -m pytest -q
 
   executable:
-    # Proves S-Kanban.spec still builds. Without this the spec rots silently:
+    # Proves S-Initiative.spec still builds. Without this the spec rots silently:
     # it names hidden imports and a webview backend that only a real freeze
     # exercises, and nothing else in CI touches it.
     #
@@ -28,11 +28,11 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       - run: python -m pip install ".[desktop]" pyinstaller
-      - run: pyinstaller S-Kanban.spec --noconfirm
+      - run: pyinstaller S-Initiative.spec --noconfirm
       - name: Check the executable was produced
         shell: pwsh
         run: |
-          $exe = "dist/S-Kanban.exe"
+          $exe = "dist/S-Initiative.exe"
           if (-not (Test-Path $exe)) { throw "no executable at $exe" }
           $size = (Get-Item $exe).Length
           # A bootloader with nothing attached still lands on disk, so an
@@ -53,7 +53,7 @@ jobs:
           # real stream handles and hides the very condition being tested.
           # Start-Process is then required, because a GUI-subsystem executable
           # detaches and never sets $LASTEXITCODE.
-          $proc = Start-Process -FilePath "dist/S-Kanban.exe" -ArgumentList "--check" -PassThru
+          $proc = Start-Process -FilePath "dist/S-Initiative.exe" -ArgumentList "--check" -PassThru
           if (-not $proc.WaitForExit(120000)) {
             $proc.Kill()
             throw "the executable did not exit within 120s"

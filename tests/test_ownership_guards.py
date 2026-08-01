@@ -2,8 +2,8 @@ import asyncio
 import json
 import unittest
 
-from s_kanban.controller import build_routes
-from s_kanban.logic import KanbanLogic
+from s_initiative.controller import build_routes
+from s_initiative.logic import InitiativeLogic
 from sovereign import Session
 from starlette.requests import Request
 
@@ -39,7 +39,7 @@ def _post_request(path: str, payload: dict) -> Request:
 class KanbanOwnershipControllerTests(unittest.TestCase):
     def setUp(self):
         self.session = Session("local")
-        self.logic = KanbanLogic(self.session)
+        self.logic = InitiativeLogic(self.session)
         self.logic.ensure_board()
         self.routes = build_routes(self.logic, _Runtime())
 
@@ -53,7 +53,7 @@ class KanbanOwnershipControllerTests(unittest.TestCase):
         ).value
 
         response = self._post(
-            "/api/kanban/columns/delete", {"column_uuid": foreign.uuid},
+            "/api/initiative/columns/delete", {"column_uuid": foreign.uuid},
         )
 
         self.assertEqual(response.status_code, 409)
@@ -74,7 +74,7 @@ class KanbanOwnershipControllerTests(unittest.TestCase):
         )
         self.session.note_indirect_peer_topic("peer", foreign_topic.uuid)
 
-        response = self._post("/api/kanban/adopt", {
+        response = self._post("/api/initiative/adopt", {
             "source_addr": "peer",
             "node_uuid": peer_card.uuid,
         })

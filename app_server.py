@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""S-Kanban development launcher over the separately installed Core host."""
+"""S-Initiative development launcher over the separately installed Core host."""
 
 from sovereign.app_server import *  # noqa: F401,F403
 from sovereign.app_server import (
@@ -10,12 +10,12 @@ from sovereign.app_server import (
 
 
 APPLICATION_ALIASES = {
-    "kanban": {
-        "app_module": "s_kanban.application",
-        "application_id": "kanban",
-        "asset_package": "s_kanban.assets",
-        "ui_file": "kanban.html",
-        "css_file": "kanban.css",
+    "initiative": {
+        "app_module": "s_initiative.application",
+        "application_id": "initiative",
+        "asset_package": "s_initiative.assets",
+        "ui_file": "initiative.html",
+        "css_file": "initiative.css",
     },
 }
 

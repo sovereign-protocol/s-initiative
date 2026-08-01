@@ -1,7 +1,7 @@
 import time
 import unittest
 
-from s_kanban.logic import KanbanLogic
+from s_initiative.logic import InitiativeLogic
 from sovereign.protocol import ProtocolNode
 from sovereign.session import Session
 from tests.relay_clients import (
@@ -19,7 +19,7 @@ class KanbanNewLogicTests(unittest.TestCase):
                 raise AssertionError("transport reached from Session snapshot")
 
         session = Session("local")
-        logic = KanbanLogic(session, collaboration=NoTransport())
+        logic = InitiativeLogic(session, collaboration=NoTransport())
         board = logic.ensure_board()
 
         with session.lock:
@@ -31,7 +31,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_board_payload_does_not_create_a_missing_board(self):
         session = Session("local")
-        logic = KanbanLogic(session)
+        logic = InitiativeLogic(session)
         before = session.export_protocol_root()
         metadata_before = session.app_metadata
 
@@ -49,7 +49,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(board.data["type"], "kanban_board")
         self.assertEqual(
             runtime.session.protocol.index[board.parent_uuid].data,
-            {"type": "kanban_app", "name": "S-Kanban"},
+            {"type": "kanban_app", "name": "S-Initiative"},
         )
         self.assertEqual(
             [column.data["name"] for column in runtime.logic.columns(board)],
@@ -58,7 +58,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_card_crud_and_move(self):
         runtime = self.runtime(8302)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
         board = logic.ensure_board()
         todo, doing = logic.columns(board)[:2]
 
@@ -74,7 +74,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_move_card_does_not_touch_sibling_hashes(self):
         runtime = self.runtime(8363)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
         board = logic.ensure_board()
         todo, doing = logic.columns(board)[:2]
 
@@ -98,7 +98,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_move_card_lands_between_neighbors_with_fractional_order(self):
         runtime = self.runtime(8364)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
         board = logic.ensure_board()
         todo, doing = logic.columns(board)[:2]
 
@@ -120,7 +120,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_move_card_renumbers_when_order_gap_is_exhausted(self):
         runtime = self.runtime(8365)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
         board = logic.ensure_board()
         todo, doing = logic.columns(board)[:2]
 
@@ -1299,11 +1299,11 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_kanban_caches_topic_for_an_inactive_application(self):
         left = self.runtime(8324)
         right = self.runtime(8325)
-        # A topic S-Kanban knows nothing about, published by a client that
+        # A topic S-Initiative knows nothing about, published by a client that
         # does. The invitee caches it and mounts nothing.
         other = left.session.create_child(
             left.session.protocol.root.uuid,
-            {"type": "folder", "name": "Not S-Kanban"},
+            {"type": "folder", "name": "Not S-Initiative"},
             {},
         ).value
         left.session.shared_topics.register(
@@ -1544,7 +1544,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(result.status, "ok")
         self.assertEqual(runtime.session.protocol.root.state_hash, root_before)
         self.assertEqual(
-            runtime.session.app_metadata["apps"]["kanban"]["selected_board_uuid"],
+            runtime.session.app_metadata["apps"]["initiative"]["selected_board_uuid"],
             board.uuid,
         )
 
@@ -1565,7 +1565,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         # happens, so agenda_items() is called with no argument throughout,
         # letting it re-resolve the board fresh each time.
         runtime = self.runtime(8378)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
 
         result = logic.create_agenda_item("Discuss roadmap")
 
@@ -1578,7 +1578,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_create_agenda_item_rejects_unknown_priority(self):
         runtime = self.runtime(8379)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
 
         logic.create_agenda_item("Something", priority="urgent!!")
 
@@ -1586,7 +1586,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_set_agenda_item_priority_updates_an_existing_item(self):
         runtime = self.runtime(8386)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
         item = logic.create_agenda_item("Something").value
 
         result = logic.set_agenda_item_priority(item.uuid, "high")
@@ -1596,7 +1596,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_set_agenda_item_priority_can_clear_it(self):
         runtime = self.runtime(8387)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
         item = logic.create_agenda_item("Something", priority="high").value
 
         logic.set_agenda_item_priority(item.uuid, None)
@@ -1605,7 +1605,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_set_agenda_item_priority_rejects_unknown_uuid(self):
         runtime = self.runtime(8388)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
 
         result = logic.set_agenda_item_priority("does-not-exist", "high")
 
@@ -1613,7 +1613,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_agenda_priority_does_not_reorder_items(self):
         runtime = self.runtime(8389)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
 
         logic.create_agenda_item("No priority")
         logic.create_agenda_item("Low item", priority="low")
@@ -1624,7 +1624,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_changing_agenda_priority_does_not_reorder_items(self):
         runtime = self.runtime(8380)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
 
         first = logic.create_agenda_item("First", priority="low").value
         logic.create_agenda_item("Second", priority="high")
@@ -1639,7 +1639,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_agenda_items_same_priority_keeps_creation_order(self):
         runtime = self.runtime(8381)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
 
         logic.create_agenda_item("First", priority="high")
         logic.create_agenda_item("Second", priority="high")
@@ -1650,7 +1650,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_move_agenda_item_sets_manual_order(self):
         runtime = self.runtime(8401)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
         first = logic.create_agenda_item("First").value
         second = logic.create_agenda_item("Second").value
         third = logic.create_agenda_item("Third").value
@@ -1668,7 +1668,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         # Dropping between them has no fraction to occupy, and the created_at
         # tiebreak used to place the item elsewhere while reporting success.
         runtime = self.runtime(8405)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
         first = logic.create_agenda_item("First").value
         second = logic.create_agenda_item("Second").value
         third = logic.create_agenda_item("Third").value
@@ -1689,7 +1689,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_move_legacy_agenda_item_uses_unshifted_fallback_order(self):
         runtime = self.runtime(8404)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
         first = logic.create_agenda_item("First").value
         second = logic.create_agenda_item("Second").value
         third = logic.create_agenda_item("Third").value
@@ -1708,7 +1708,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_delete_agenda_item_removes_it(self):
         runtime = self.runtime(8382)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
         item = logic.create_agenda_item("Temporary").value
 
         result = logic.delete_agenda_item(item.uuid)
@@ -1718,7 +1718,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_delete_agenda_item_rejects_unknown_uuid(self):
         runtime = self.runtime(8383)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
 
         result = logic.delete_agenda_item("does-not-exist")
 
@@ -1726,7 +1726,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_board_payload_includes_agenda_items(self):
         runtime = self.runtime(8384)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
         logic.create_agenda_item("Discuss roadmap", priority="high")
 
         payload = logic.board_payload()
@@ -1736,11 +1736,11 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(payload["agenda_items"][0]["data"]["priority"], "high")
 
     def test_transition_by_node_carries_priority_field(self):
-        # This field is read directly by kanban.html's discussion list, so its
+        # This field is read directly by initiative.html's discussion list, so its
         # absence would only ever surface as a silent UI bug, not a
         # backend error.
         runtime = self.runtime(8385)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
 
         out = logic.transition_by_node([
             {"node_uuid": "node-1", "type": "divergence", "peer_addr": "http://127.0.0.1:8002"},
@@ -1753,7 +1753,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         # Refusing this left a host with no way to clear boards it no longer
         # wants; nothing downstream needs a board to exist.
         runtime = self.runtime(8386)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
         board = logic.ensure_board()
 
         result = logic.delete_board(board.uuid)
@@ -1765,7 +1765,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         # A remembered uuid would otherwise hand back the deleted board,
         # which survives in the index until its peers confirm the deletion.
         runtime = self.runtime(8387)
-        logic: KanbanLogic = runtime.logic
+        logic: InitiativeLogic = runtime.logic
         deleted = logic.ensure_board()
 
         logic.delete_board(deleted.uuid)

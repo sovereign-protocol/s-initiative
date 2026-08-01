@@ -12,7 +12,7 @@ class ServerConfigTests(unittest.TestCase):
         self.assertEqual(app_server.parse_target("8001"), (8001, None))
 
     def test_parse_port_app(self):
-        self.assertEqual(app_server.parse_target("8001:kanban"), (8001, "kanban"))
+        self.assertEqual(app_server.parse_target("8001:initiative"), (8001, "initiative"))
 
     def test_app_name_defaults_without_config_file(self):
         config = app_server.load_config(None, "missing_test_app")
@@ -22,11 +22,11 @@ class ServerConfigTests(unittest.TestCase):
         self.assertIsNone(config["css_file"])
 
     def test_existing_app_config_file_is_loaded(self):
-        config = app_server.load_config(None, "kanban")
+        config = app_server.load_config(None, "initiative")
 
-        self.assertEqual(config["app_module"], "s_kanban.application")
-        self.assertEqual(config["ui_file"], "kanban.html")
-        self.assertEqual(config["css_file"], "kanban.css")
+        self.assertEqual(config["app_module"], "s_initiative.application")
+        self.assertEqual(config["ui_file"], "initiative.html")
+        self.assertEqual(config["css_file"], "initiative.css")
 
     def test_concurrent_saves_use_independent_temp_files(self):
         session = Session("http://127.0.0.1:9120")
