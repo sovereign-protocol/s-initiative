@@ -204,6 +204,11 @@ class AssetTests(unittest.TestCase):
         self.assertNotIn("onCreateTopic", self.kanban)
         self.assertIn("SovereignShell.setTopicSelector", self.kanban)
 
+    def test_people_and_add_actions_use_the_shared_ui_primitives(self):
+        self.assertIn("SovereignUI.avatar", self.kanban)
+        self.assertIn('add.textContent = "+ Add card"', self.kanban)
+        self.assertIn('addBtn.textContent = "+ Add column"', self.kanban)
+
     def test_assets_never_navigate_to_the_bare_root_with_a_query(self):
         # "/" serves whichever application is primary, so a root-relative link
         # lands somewhere that depends on host configuration. Cross-application

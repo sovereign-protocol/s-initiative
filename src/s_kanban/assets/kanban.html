@@ -298,13 +298,10 @@
           button.disabled = modalReadOnlyPerspective;
           button.className = "user-choice";
           if (modalParticipants.includes(user.id)) button.classList.add("selected");
-          const avatar = document.createElement("span");
-          avatar.className = "participant-avatar";
-          if (user.picture) {
-            avatar.style.backgroundImage = `url("${cssUrl(user.picture)}")`;
-          } else {
-            avatar.textContent = initials(user.name);
-          }
+          const avatar = SovereignUI.avatar(user, {
+            className: "participant-avatar",
+            self: user.address === state.address,
+          });
           const name = document.createElement("span");
           name.textContent = user.name;
           button.append(avatar, name);
@@ -398,8 +395,8 @@
         let addBtn = board.querySelector(".add-column");
         if (!addBtn) {
           addBtn = document.createElement("button");
-          addBtn.className = "add-column";
-          addBtn.textContent = "Add another column";
+          addBtn.className = "add-column ui-button";
+          addBtn.textContent = "+ Add column";
           addBtn.onclick = () =>
             openSimple(
               "Add Column",
@@ -571,8 +568,8 @@
         article.append(list);
 
         const add = document.createElement("button");
-        add.className = "add-card";
-        add.textContent = "Add a card";
+        add.className = "add-card ui-button";
+        add.textContent = "+ Add card";
         add.onclick = () => openCard(null, column.uuid);
         if (!ghost) article.append(add);
 
@@ -721,17 +718,12 @@
         ordered.forEach((participant) => {
           const user = userForParticipant(participant);
           const isOwner = participant === ownerId;
-          const avatar = document.createElement("span");
-          avatar.className = "participant-avatar";
-          if (isOwner) avatar.classList.add("owner");
-          avatar.title = isOwner ? `${user.name} (owner)` : user.name;
-          if (user.picture) {
-            avatar.style.backgroundImage = `url("${cssUrl(user.picture)}")`;
-            avatar.textContent = "";
-          } else {
-            avatar.textContent = initials(user.name);
-          }
-          if (user.address === state.address) avatar.classList.add("me");
+          const avatar = SovereignUI.avatar(user, {
+            className: "participant-avatar",
+            owner: isOwner,
+            self: user.address === state.address,
+            title: isOwner ? `${user.name} (owner)` : user.name,
+          });
           wrap.append(avatar);
         });
         return wrap;
