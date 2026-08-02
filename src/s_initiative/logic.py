@@ -1180,7 +1180,15 @@ class InitiativeLogic:
                 ),
             })
 
-        if local.parent_uuid != peer.parent_uuid:
+        # A board is a topic root, and every peer grafts a topic under its
+        # own local container - so the two parents always differ, and always
+        # will. That is how topics are shared, not something either side
+        # did: reporting it as a move told the reader the board had been
+        # "moved to <the peer's container>", and offered them a board move
+        # to adopt when all that changed was the name. Session already
+        # excludes it from classification; this is the same exclusion for
+        # the description.
+        if node_type != "kanban_board" and local.parent_uuid != peer.parent_uuid:
             local_parent = self.session.protocol.index.get(local.parent_uuid)
             peer_parent = self.session.get_cached_peer_subtree(
                 peer_addr, peer.parent_uuid,
