@@ -1786,6 +1786,65 @@ class KanbanNewLogicTests(unittest.TestCase):
     def setUp(self):
         self._relay_root = shared_relay_root(self)
 
+
+    def test_the_same_move_made_twice_at_once_is_not_a_conflict(self):
+        # Two clients drag the same card to the same column at the same
+        # moment. They agree on everything the board shows and differ only
+        # in the wall clock each stamped the move with - which nobody can
+        # decide, because either answer draws an identical board.
+        left = self.runtime(8541)
+        right = self.runtime(8542)
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        todo, doing, done = left.logic.columns(board)
+        card = left.logic.create_card(doing.uuid, "BB", "", []).value
+        sync(left, right)
+        left.logic.set_auto_adopt_mode("never")
+        right.logic.set_auto_adopt_mode("never")
+
+        left.logic.move_card(card.uuid, done.uuid, 0)
+        right.logic.move_card(card.uuid, done.uuid, 0)
+        sync(left, right)
+
+        # Settled on both sides, to the same bytes - not merely displayed as
+        # agreeing while the hashes stay apart for good.
+        self.assertEqual(
+            left.session.protocol.index[card.uuid].state_hash,
+            right.session.protocol.index[card.uuid].state_hash,
+        )
+        for side in (left, right):
+            unsettled = [
+                event for event in side.logic.transition_events(board.uuid)
+                if event.get("node_uuid") == card.uuid
+                and event["type"] != "in_agreement"
+            ]
+            self.assertEqual(unsettled, [])
+
+    def test_a_move_to_a_different_place_is_still_a_decision(self):
+        # The stamp is bookkeeping; where the card sits is not. Two clients
+        # that put it in genuinely different columns disagree about
+        # something a person can see, and that stays theirs to settle.
+        left = self.runtime(8543)
+        right = self.runtime(8544)
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        todo, doing, done = left.logic.columns(board)
+        card = left.logic.create_card(doing.uuid, "BB", "", []).value
+        sync(left, right)
+        left.logic.set_auto_adopt_mode("never")
+        right.logic.set_auto_adopt_mode("never")
+
+        left.logic.move_card(card.uuid, done.uuid, 0)
+        right.logic.move_card(card.uuid, todo.uuid, 0)
+        sync(left, right)
+
+        local = left.session.protocol.index[card.uuid]
+        peer = left.session.get_cached_peer_subtree(right.peer_addr, card.uuid)
+        self.assertFalse(InitiativeLogic._stamp_only_difference(local, peer))
+        self.assertNotEqual(local.parent_uuid, peer.parent_uuid)
+
     def runtime(self, port: int):
         return relay_runtime(self, port, self._relay_root)
 

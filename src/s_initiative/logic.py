@@ -942,10 +942,80 @@ class InitiativeLogic:
         return False
 
     def on_peer_update(self) -> SessionResult:
-        changed = self.adopt_all_incoming_changes()
+        # Settled before adoption is even considered, and regardless of what
+        # the auto-adopt mode says, because it is not adoption: see
+        # converge_positional_stamps.
+        changed = self.converge_positional_stamps()
+        changed = self.adopt_all_incoming_changes() or changed
         if not changed:
             return SessionResult("ok", value=False)
         return SessionResult("ok", value=True)
+
+    def converge_positional_stamps(self) -> bool:
+        """Settle a difference that carries no meaning.
+
+        Two clients that make the same move at the same moment agree on
+        everything the board shows - same column, same position, same
+        content - and differ only in the wall clock each stamped it with.
+        Nobody can decide that: either answer produces an identical board,
+        so offering the choice asks a person to resolve a conflict that
+        does not exist. With auto-adopt off nothing else ever cleared it.
+
+        Both sides apply the same rule to the same two values - the later
+        stamp wins - so each reaches the same answer independently and the
+        two versions become byte-identical rather than merely being
+        displayed as though they agreed. Masking it instead would leave the
+        state hashes apart for good, and the next real edit to the card
+        would build its base on a value the two sides never reconciled.
+
+        Deliberately not gated on the auto-adopt mode. "Never" means nobody
+        takes my decisions for me; it does not mean a clock reading has to
+        be ratified by hand.
+        """
+        changed = False
+        for board in self.boards():
+            for addr in self.session.peer_addresses():
+                if not self.session.peer_discusses_node(addr, board.uuid):
+                    continue
+                for local in self._subtree_nodes(board):
+                    peer = self.session.get_cached_peer_subtree(addr, local.uuid)
+                    if not self._stamp_only_difference(local, peer):
+                        continue
+                    if (self._position_updated_at(peer)
+                            <= self._position_updated_at(local)):
+                        continue
+                    result = self.session.accept_peer_node(addr, local.uuid)
+                    changed = result.status == "ok" or changed
+        return changed
+
+    @staticmethod
+    def _subtree_nodes(root: ProtocolNode) -> list[ProtocolNode]:
+        out = [root]
+        for child in root.live_children():
+            out.extend(InitiativeLogic._subtree_nodes(child))
+        return out
+
+    @staticmethod
+    def _stamp_only_difference(local: ProtocolNode | None,
+                               peer: ProtocolNode | None) -> bool:
+        """True when the only thing separating two versions is the stamp.
+
+        Order stays in the comparison: two clients that put the card in
+        genuinely different places disagree about something a person can
+        see, and that is theirs to settle.
+        """
+        if not local or not peer:
+            return False
+        if (local.deleted != peer.deleted
+                or local.weights != peer.weights
+                or local.parent_uuid != peer.parent_uuid):
+            return False
+        local_data = dict(local.data)
+        peer_data = dict(peer.data)
+        if (local_data.pop("position_updated_at", None)
+                == peer_data.pop("position_updated_at", None)):
+            return False
+        return local_data == peer_data
 
     def adopt_all_incoming_changes(self) -> bool:
         changed = False
