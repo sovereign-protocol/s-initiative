@@ -1261,16 +1261,29 @@ class InitiativeLogic:
         for change in changes:
             kind = change.get("kind")
             detail = ""
+            # Sits after the author rather than behind a colon: a move ends
+            # in a phrase that belongs to the verb ("moved by me to Doing"),
+            # while a modification ends in a list of what changed.
+            suffix = ""
             if kind == "presence":
-                act = "created"
+                act, noun = "created", "creation"
             elif kind == "deletion":
                 peer_deleted = bool(change.get("peer_value"))
                 deleted_by_author = peer_deleted != authored_locally
                 act = "deleted" if deleted_by_author else "restored"
+                noun = "deletion" if deleted_by_author else "restoration"
             elif kind == "move":
-                act = "moved"
+                act, noun = "moved", "move"
+                # Name where the author put it, which is their own side's
+                # column - the other end of the comparison is where it came
+                # from, and saying that would describe the wrong end.
+                target = change.get(
+                    "local_label" if authored_locally else "peer_label",
+                )
+                if target:
+                    suffix = f'to "{target}"'
             elif kind == "position":
-                act = "reordered"
+                act, noun = "reordered", "reordering"
             elif kind == "participants":
                 # "added" / "removed" are peer-relative; from the author's
                 # own end they swap when the author is this client.
@@ -1285,18 +1298,22 @@ class InitiativeLogic:
                     parts.append(f"{', '.join(gained)} added")
                 if lost:
                     parts.append(f"{', '.join(lost)} removed")
-                act = "modified"
+                act, noun = "modified", "modification"
                 detail = "; ".join(parts)
             elif kind in ("field", "owner", "weights"):
-                act = "modified"
+                act, noun = "modified", "modification"
                 detail = f"{str(change.get('label') or '').lower()} changed"
             else:
-                act = "changed"
+                act, noun = "changed", "change"
             # Kept apart so the author lands between the act and its detail
             # - "Card modified by me: Ana added", not "Card modified: Ana
-            # added by me", which reads as though Ana added something.
+            # added by me", which reads as though Ana added something. The
+            # noun is the same act named for a button: "Take back my card
+            # modification".
             change["node_label"] = node_label
             change["authored_act"] = act
+            change["authored_noun"] = noun
+            change["authored_suffix"] = suffix
             change["authored_detail"] = detail
         return changes
 

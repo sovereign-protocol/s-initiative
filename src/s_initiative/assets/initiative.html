@@ -808,28 +808,14 @@
             event: eventByAddr.get(addr),
           }))
           .filter((item) => contributingAddrs.has(item.addr));
-        return peers.map((item) => {
-          const action = item.event?.reaction || "adopt";
-          const actor = transitionActorLabel(item.event);
-          const changes = eventChangeSummary(item.event, 6) || "complete peer version";
-          if (action === "rollback") {
-            // Named from the author's own end. "Roll back to my previous
-            // version held by <peer>" described where the old revision
-            // happens to be visible, which is bookkeeping, not the choice
-            // being offered.
-            const undo = localChangeSummary(item.event, 6);
-            return {
-              label: undo ? `Take back my change: ${undo}` : "Take back my change",
-              action,
-              peer: item,
-            };
-          }
-          return {
-            label: `Adopt ${changes} (from ${actor})`,
-            action,
-            peer: item,
-          };
-        });
+        return peers.map((item) => ({
+          // Named for the act, from the side being offered the choice: the
+          // old labels were built from peer-relative summaries, which is how
+          // taking back a card creation came out as "keep your card".
+          label: transitionReactionLabel(item.event),
+          action: item.event?.reaction || "adopt",
+          peer: item,
+        }));
       }
 
       function closeReactionMenu() {
