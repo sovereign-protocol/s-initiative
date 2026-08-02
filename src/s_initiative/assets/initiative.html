@@ -438,7 +438,10 @@
         const gCards = col._isGhost
           ? []
           : ghostCards(col.uuid).map((c) => ({ ...c, _isGhost: true }));
-        const allCards = [...activeCards, ...gCards];
+        // Sorted together, exactly as the full render does: a ghost carries
+        // the position the peer gave it, and appending it after the real
+        // cards showed one the peer had put first sitting last.
+        const allCards = sortNodes([...activeCards, ...gCards]);
 
         // Diffing für Karten
         reconcileDOM(
@@ -561,10 +564,15 @@
           list.ondragover = onCardDragOver;
           list.ondrop = (event) => dropCard(event, column.uuid);
         }
-        cards(column).forEach((card) => list.append(renderCard(card)));
-        if (!ghost) {
-          ghostCards(column.uuid).forEach((card) => list.append(renderCard(card, true)));
-        }
+        // Ghosts are ordered among the real cards, not appended after them.
+        // A ghost carries the position the peer gave it, so tacking it onto
+        // the end showed a card the peer had put first sitting last - and
+        // then made it jump on adoption, as though adopting had moved it.
+        const ghosts = ghost ? [] : ghostCards(column.uuid);
+        const ghostUuids = new Set(ghosts.map((card) => card.uuid));
+        sortNodes([...cards(column), ...ghosts]).forEach((card) =>
+          list.append(renderCard(card, ghostUuids.has(card.uuid))),
+        );
         article.append(list);
 
         const add = document.createElement("button");

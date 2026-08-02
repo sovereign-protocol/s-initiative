@@ -1352,6 +1352,14 @@ class InitiativeLogic:
                 )
                 if target:
                     suffix = f'to "{target}"'
+                # Where the *other* side put it. Only a conflict needs this:
+                # there both parties moved the card, and a sentence naming
+                # one destination cannot say what the disagreement is.
+                counterpart = change.get(
+                    "peer_label" if authored_locally else "local_label",
+                )
+                if counterpart:
+                    change["counter_suffix"] = f'to "{counterpart}"'
             elif kind == "position":
                 act, noun = "reordered", "reordering"
             elif kind == "participants":
