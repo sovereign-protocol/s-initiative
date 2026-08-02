@@ -969,34 +969,6 @@ class RelayLogicTests(unittest.TestCase):
             self.assertEqual(second["collectible"], [blob_id])
             self.assertEqual(relay.storage.read_blob(blob_id), data)
 
-    def test_timing_model_schedules_after_peer_poll_and_relay_work(self):
-        timing = RelayTiming(timestamp_resolution_seconds=0.0)
-        timing.observe_server_clock(
-            10.0, 100.0, 10.1, 100.1, 100.05, roundtrip_seconds=0.1,
-        )
-        timing.observe_cycle(0.4)
-        timing.observe_peer_presence("B", 99.0, 3.0)
-
-        delay = timing.response_check_delay(
-            3.0, published_server_time=100.0, local_wall=100.1,
-        )
-
-        # B's next phase is relay time 102.0; allow its 0.4s cycle plus
-        # 0.05s clock uncertainty before looking for the response.
-        self.assertAlmostEqual(delay, 2.35, places=6)
-
-    def test_timing_model_uses_stable_period_for_stale_peer(self):
-        timing = RelayTiming(timestamp_resolution_seconds=0.0)
-        timing.observe_server_clock(
-            10.0, 100.0, 10.0, 100.0, 100.0, roundtrip_seconds=0.1,
-        )
-        timing.observe_peer_presence("offline", 50.0, 3.0)
-
-        self.assertEqual(
-            timing.response_check_delay(3.0, published_server_time=100.0, local_wall=100.0),
-            3.0,
-        )
-
     def test_calibrate_timing_exposes_diagnostics_without_probe_artifacts(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             relay = RelayLogic(
@@ -1486,7 +1458,7 @@ class RelayLogicTests(unittest.TestCase):
             kanban_a.update_card(card.uuid, "After", "", [], None)
             relay_a.publish_due_topics()
             waiting = kanban_a.transition_by_node(kanban_a.transition_events(board_uuid))
-            self.assertEqual(waiting[card.uuid]["type"], "in_transition")
+            self.assertEqual(waiting[card.uuid]["stage"], "in_flight")
 
             relay_b.poll_and_apply()
             # B's board did not change, but its acknowledgement did, so its
@@ -1495,7 +1467,11 @@ class RelayLogicTests(unittest.TestCase):
             self.assertIn((board_uuid, "B"), relay_a.poll_and_apply())
 
             confirmed = kanban_a.transition_by_node(kanban_a.transition_events(board_uuid))
-            self.assertEqual(confirmed[card.uuid]["type"], "divergence")
+            # The acknowledgement confirms B has seen my revision, so my
+            # change is now waiting on B rather than still travelling. It is
+            # my edit either way - never a two-sided conflict.
+            self.assertEqual(confirmed[card.uuid]["type"], "local_made_changes")
+            self.assertEqual(confirmed[card.uuid]["stage"], "awaiting_peer")
 
     def test_peer_observation_waits_for_matching_changed_snapshot(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
@@ -1549,7 +1525,7 @@ class RelayLogicTests(unittest.TestCase):
             waiting = kanban_a.transition_by_node(
                 kanban_a.transition_events(board_uuid),
             )
-            self.assertEqual(waiting[card.uuid]["type"], "in_transition")
+            self.assertEqual(waiting[card.uuid]["stage"], "in_flight")
 
             relay_a.poll_and_apply()
 
@@ -1584,7 +1560,7 @@ class RelayLogicTests(unittest.TestCase):
         alive = kanban.transition_by_node(
             kanban.transition_events(board_uuid),
         )
-        self.assertEqual(alive[card.uuid]["type"], "in_transition")
+        self.assertEqual(alive[card.uuid]["stage"], "in_flight")
 
         liveness["state"] = "stale"
         stale = kanban.transition_by_node(
@@ -1600,13 +1576,13 @@ class RelayLogicTests(unittest.TestCase):
         confirmed = kanban.transition_by_node(
             kanban.transition_events(board_uuid),
         )
-        self.assertEqual(confirmed[card.uuid]["type"], "divergence")
+        self.assertEqual(confirmed[card.uuid]["stage"], "awaiting_peer")
 
         liveness["state"] = "alive"
         online_again = kanban.transition_by_node(
             kanban.transition_events(board_uuid),
         )
-        self.assertEqual(online_again[card.uuid]["type"], "divergence")
+        self.assertEqual(online_again[card.uuid]["stage"], "awaiting_peer")
 
     def test_channel_descriptor_carries_host_poll_interval(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:

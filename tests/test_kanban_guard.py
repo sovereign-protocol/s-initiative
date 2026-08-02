@@ -20,8 +20,8 @@ class KanbanGuardTests(unittest.TestCase):
         # (its content_hash is unchanged; only its subtree_hash moved), so the
         # board's own transition stays in_agreement.
         self.assertEqual(
-            payload["transition_by_node"][card.uuid]["type"],
-            "in_transition",
+            payload["transition_by_node"][card.uuid]["stage"],
+            "in_flight",
         )
         self.assertEqual(
             payload["transition_by_node"][board.uuid]["type"],

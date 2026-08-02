@@ -879,8 +879,8 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         payload = right.logic.board_payload()
         self.assertEqual(
-            payload["transition_by_node"][card.uuid]["type"],
-            "in_transition",
+            payload["transition_by_node"][card.uuid]["stage"],
+            "in_flight",
         )
         adopt = right.logic.accept_peer_node(
             left.peer_addr,
@@ -932,12 +932,12 @@ class KanbanNewLogicTests(unittest.TestCase):
         payload = left.logic.board_payload()
 
         self.assertIn(card.uuid, left.session.protocol.index)
-        # The new card stays in_transition until the peer observes it; the
+        # The new card stays in flight until the peer observes it; the
         # board is not re-revisioned by a descendant creation, so it stays
         # in_agreement (see the node_hash/subtree_hash split).
         self.assertEqual(
-            payload["transition_by_node"][card.uuid]["type"],
-            "in_transition",
+            payload["transition_by_node"][card.uuid]["stage"],
+            "in_flight",
         )
         self.assertEqual(
             payload["transition_by_node"][board.uuid]["type"],
@@ -976,8 +976,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         out = runtime.logic.transition_by_node([
             {
                 "node_uuid": node_uuid,
-                "type": "divergence",
-                "original_type": "local_made_changes",
+                "type": "local_made_changes",
+                "stage": "awaiting_peer",
                 "peer_addr": "http://127.0.0.1:8002",
                 "local_revision_origin": local_identity,
                 "peer_revision_origin": local_identity,
@@ -1743,11 +1743,17 @@ class KanbanNewLogicTests(unittest.TestCase):
         logic: InitiativeLogic = runtime.logic
 
         out = logic.transition_by_node([
-            {"node_uuid": "node-1", "type": "divergence", "peer_addr": "http://127.0.0.1:8002"},
+            {
+                "node_uuid": "node-1",
+                "type": "divergence",
+                "stage": "conflict",
+                "peer_addr": "http://127.0.0.1:8002",
+            },
         ])
 
-        self.assertEqual(out["node-1"]["priority"], 6)
-        self.assertEqual(out["node-1"]["events"][0]["priority"], 6)
+        # Relation first, then stage - the view sorts on the pair.
+        self.assertEqual(out["node-1"]["priority"], (6, 4))
+        self.assertEqual(out["node-1"]["events"][0]["priority"], (6, 4))
 
     def test_the_last_board_can_be_deleted(self):
         # Refusing this left a host with no way to clear boards it no longer

@@ -546,71 +546,20 @@ button.auto-adopt-square {
   position: relative;
 }
 
-.column.diff::before,
-.card.diff::before {
-  content: attr(data-transition-symbol);
-  position: absolute;
-  z-index: 1;
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  color: #fff;
-  font-size: 15px;
-  font-weight: 900;
-  line-height: 1;
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
-}
-
-.column.diff::before {
-  top: -9px;
-  right: -8px;
-}
-
-.column.in-transition::after,
-.card.in-transition::after {
-  content: "";
-  position: absolute;
-  z-index: 1;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #8c9bab;
-  box-shadow: 0 0 0 2px rgba(140, 155, 171, 0.18);
-}
-
-.column.in-transition::after {
-  top: 5px;
-  right: 5px;
-}
-
-.card.in-transition::after {
-  top: 8px;
-  right: 8px;
-}
-
-/* Ghosts already read as "not really here yet" via the dashed border -
-   the badge on top of that is redundant clutter, not extra information. */
-.column.ghost.diff::before,
-.card.ghost.diff::before {
-  content: none;
-}
-
 .column.ghost {
   opacity: 0.78;
   border: 1px dashed var(--border-strong);
 }
-.column.event-peer_made_changes { outline-color: #00875a; }
-.column.event-peer_made_changes::before { background: #00875a; }
-.column.event-local_missing_node { outline-color: #00a3bf; }
-.column.event-local_missing_node::before { background: #00a3bf; }
-.column.event-local_made_changes { outline-color: #6554c0; }
-.column.event-local_made_changes::before { background: #6554c0; }
-.column.event-peer_missing_node { outline-color: #6b778c; }
-.column.event-peer_missing_node::before { background: #6b778c; }
-.column.event-divergence { outline-color: #de350b; }
-.column.event-divergence::before { background: #de350b; }
+
+/* One colour per stage of the exchange, not per relation: what a person
+   needs at a glance is whose turn it is, and the same situation must look
+   the same on both screens. Grey is still travelling, purple is mine and
+   waiting on them, amber is theirs and waiting on me, red is a real
+   two-sided conflict - the only one of the four to act on immediately. */
+.column.stage-in_flight { outline-color: #8c9bab; }
+.column.stage-awaiting_peer { outline-color: #6554c0; }
+.column.stage-awaiting_me { outline-color: #f59e0b; }
+.column.stage-conflict { outline-color: #de350b; }
 
 .column.dragging { opacity: 0.55; }
 
@@ -745,25 +694,14 @@ body.card-drag-active * {
   border-left: 4px solid var(--warning);
 }
 
-.card.diff::before {
-  top: 6px;
-  right: 6px;
-}
-
 .card.ghost {
   background: rgba(255, 255, 255, 0.02);
   border: 2px dashed rgba(255, 255, 255, 0.12);
 }
-.card.event-peer_made_changes { border-left-color: #00875a; }
-.card.event-peer_made_changes::before { background: #00875a; }
-.card.event-local_missing_node { border-left-color: #00a3bf; }
-.card.event-local_missing_node::before { background: #00a3bf; }
-.card.event-local_made_changes { border-left-color: #6554c0; }
-.card.event-local_made_changes::before { background: #6554c0; }
-.card.event-peer_missing_node { border-left-color: #6b778c; }
-.card.event-peer_missing_node::before { background: #6b778c; }
-.card.event-divergence { border-left-color: #de350b; }
-.card.event-divergence::before { background: #de350b; }
+.card.stage-in_flight { border-left-color: #8c9bab; }
+.card.stage-awaiting_peer { border-left-color: #6554c0; }
+.card.stage-awaiting_me { border-left-color: #f59e0b; }
+.card.stage-conflict { border-left-color: #de350b; }
 
 .card:hover {
   border-color: var(--border-strong);

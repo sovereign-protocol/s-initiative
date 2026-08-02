@@ -130,7 +130,7 @@
 
       function hasPendingDivergence(node) {
         const info = transitionInfo(node.uuid);
-        return !!info && !["in_agreement", "in_transition"].includes(info.type);
+        return !!info && !["settled", "in_flight"].includes(info.stage);
       }
 
       function needsManualAdopt(node) {
@@ -661,11 +661,11 @@
                 node.classList.add("dragging");
                 document.body.classList.add("card-drag-active");
                 preview = node.cloneNode(true);
-                preview.classList.remove(
-                  "dragging", "diff", "in-transition",
-                );
+                preview.classList.remove("dragging", "diff");
+                [...preview.classList]
+                  .filter((name) => name.startsWith("stage-"))
+                  .forEach((name) => preview.classList.remove(name));
                 preview.classList.add("card-drag-preview");
-                preview.removeAttribute("data-transition-symbol");
                 preview.setAttribute("aria-hidden", "true");
                 preview.style.width = `${startRect.width}px`;
                 document.body.append(preview);
@@ -813,8 +813,13 @@
           const actor = transitionActorLabel(item.event);
           const changes = eventChangeSummary(item.event, 6) || "complete peer version";
           if (action === "rollback") {
+            // Named from the author's own end. "Roll back to my previous
+            // version held by <peer>" described where the old revision
+            // happens to be visible, which is bookkeeping, not the choice
+            // being offered.
+            const undo = localChangeSummary(item.event, 6);
             return {
-              label: `Roll back to my previous version held by ${actor}`,
+              label: undo ? `Take back my change: ${undo}` : "Take back my change",
               action,
               peer: item,
             };
@@ -892,6 +897,11 @@
         // opened card as this card's draft during the initial render.
         modalPerspectiveKey = null;
         modalPerspectiveOptions = card ? cardPerspectiveOptions(card) : [];
+        // The dialog is a single reused element, so anything typed but not
+        // submitted survives its close. Name and description are rewritten
+        // from the draft below; these two have no draft to rewrite them.
+        el("cardCommentInput").value = "";
+        el("cardFileInput").value = "";
         modalLocalDraft = {
           name: card?.data.name || "",
           description: card?.data.description || "",
@@ -1414,24 +1424,20 @@
       }
       function applyTransitionClass(element, uuid, options = {}) {
         element.classList.remove("diff");
-        element.classList.remove("in-transition");
         [...element.classList]
-          .filter((name) => name.startsWith("event-"))
+          .filter((name) => name.startsWith("stage-"))
           .forEach((name) => element.classList.remove(name));
         element.removeAttribute("title");
         delete element.dataset.transitionLabel;
-        delete element.dataset.transitionSymbol;
         const info = transitionInfo(uuid);
-        if (!info || info.type === "in_agreement" || options.suppress) return;
-        if (info.type === "in_transition") {
-          element.classList.add("in-transition");
-          element.title = transitionLabel(info);
-          return;
-        }
-        element.classList.add("diff", `event-${info.type}`);
+        if (!info || info.stage === "settled" || options.suppress) return;
+        // One border colour per stage, and nothing else. The badge said what
+        // relation the difference was, which is the one thing a person does
+        // not need at a glance - and it said "+" for a deletion, because it
+        // was keyed on the relation rather than on what actually changed.
+        element.classList.add("diff", `stage-${info.stage}`);
         element.title = transitionLabel(info);
         element.dataset.transitionLabel = transitionLabel(info);
-        element.dataset.transitionSymbol = transitionSymbol(info.type);
       }
       function peerLabel(address) {
         const user = (state.users || []).find((item) => item.address === address);

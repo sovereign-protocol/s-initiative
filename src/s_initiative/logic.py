@@ -170,10 +170,9 @@ class InitiativeLogic:
                 continue
             top = max(
                 visible,
-                key=lambda event: int(event.get(
-                    "priority",
-                    Session.TRANSITION_PRIORITY.get(event.get("type"), 0),
-                )),
+                key=lambda event: tuple(
+                    event.get("priority") or Session.transition_rank(event),
+                ),
             )
             merged = dict(top)
             if any(event.get("type") != "in_agreement" for event in visible):
@@ -183,7 +182,7 @@ class InitiativeLogic:
 
     @staticmethod
     def _transition_visible(event: dict, network: dict) -> bool:
-        if event.get("type") != "in_transition":
+        if event.get("stage") != "in_flight":
             return True
         peers = network.get("peers") or {}
         addresses = event.get("delivery_peer_addrs") or [
@@ -987,7 +986,7 @@ class InitiativeLogic:
                 # lamp/counter entry. Confirmed divergences and incoming peer
                 # changes remain visible.
                 if (
-                    event["type"] == "in_transition"
+                    event["stage"] == "in_flight"
                     and liveness.get("state") != "alive"
                 ):
                     continue
@@ -995,6 +994,9 @@ class InitiativeLogic:
                     [] if event["type"] == "in_agreement"
                     else self.describe_peer_changes(
                         addr, event.get("node_uuid"),
+                        authored_locally=event["type"] in (
+                            "local_made_changes", "peer_missing_node",
+                        ),
                     )
                 )
                 events.append(event)
@@ -1027,7 +1029,8 @@ class InitiativeLogic:
         return resolver(peer_addr, topic_uuid) or {"state": "unknown"}
 
     def describe_peer_changes(self, peer_addr: str,
-                              node_uuid: str | None) -> list[dict]:
+                              node_uuid: str | None,
+                              authored_locally: bool = False) -> list[dict]:
         """Describe the peer's current version relative to this client.
 
         These are semantic current-version differences, not an audit log:
@@ -1054,7 +1057,7 @@ class InitiativeLogic:
             "agenda_item": "Discussion topic",
         }.get(node_type, "Item")
         if not local:
-            return [{
+            return self._annotate_authorship([{
                 "kind": "presence",
                 "field": "node",
                 "label": node_label,
@@ -1062,9 +1065,9 @@ class InitiativeLogic:
                 "peer_value": "present",
                 "summary": f"{node_label} exists only in the peer version",
                 "local_summary": f"Keep {node_label.lower()} absent",
-            }]
+            }], node_label, authored_locally)
         if not peer:
-            return [{
+            return self._annotate_authorship([{
                 "kind": "presence",
                 "field": "node",
                 "label": node_label,
@@ -1072,7 +1075,7 @@ class InitiativeLogic:
                 "peer_value": None,
                 "summary": f"{node_label} exists only in your version",
                 "local_summary": f"Keep your {node_label.lower()}",
-            }]
+            }], node_label, authored_locally)
 
         changes: list[dict] = []
 
@@ -1241,6 +1244,60 @@ class InitiativeLogic:
                 "summary": "Weights changed",
                 "local_summary": "Keep your current weights",
             })
+        return self._annotate_authorship(changes, node_label, authored_locally)
+
+    @staticmethod
+    def _annotate_authorship(changes: list[dict], node_label: str,
+                             authored_locally: bool) -> list[dict]:
+        """Name what the author did, in words neither side has to invert.
+
+        The rest of a change record is deliberately peer-relative ("...in the
+        peer version"), which is the right frame for choosing a version but
+        the wrong one for saying what happened: it forces the person who made
+        the change to read their own edit described from the far end. This
+        one field states the act, so each side can render "<act> by me" or
+        "<act> by <name>" from the same record.
+        """
+        for change in changes:
+            kind = change.get("kind")
+            detail = ""
+            if kind == "presence":
+                act = "created"
+            elif kind == "deletion":
+                peer_deleted = bool(change.get("peer_value"))
+                deleted_by_author = peer_deleted != authored_locally
+                act = "deleted" if deleted_by_author else "restored"
+            elif kind == "move":
+                act = "moved"
+            elif kind == "position":
+                act = "reordered"
+            elif kind == "participants":
+                # "added" / "removed" are peer-relative; from the author's
+                # own end they swap when the author is this client.
+                gained = change.get(
+                    "removed_labels" if authored_locally else "added_labels",
+                ) or []
+                lost = change.get(
+                    "added_labels" if authored_locally else "removed_labels",
+                ) or []
+                parts = []
+                if gained:
+                    parts.append(f"{', '.join(gained)} added")
+                if lost:
+                    parts.append(f"{', '.join(lost)} removed")
+                act = "modified"
+                detail = "; ".join(parts)
+            elif kind in ("field", "owner", "weights"):
+                act = "modified"
+                detail = f"{str(change.get('label') or '').lower()} changed"
+            else:
+                act = "changed"
+            # Kept apart so the author lands between the act and its detail
+            # - "Card modified by me: Ana added", not "Card modified: Ana
+            # added by me", which reads as though Ana added something.
+            change["node_label"] = node_label
+            change["authored_act"] = act
+            change["authored_detail"] = detail
         return changes
 
     @staticmethod
@@ -1269,7 +1326,6 @@ class InitiativeLogic:
         return str(participant)[:8]
 
     def transition_by_node(self, events: list[dict]) -> dict:
-        priority = Session.TRANSITION_PRIORITY
         out = {}
         for event in events:
             node_uuid = event.get("node_uuid")
@@ -1277,7 +1333,7 @@ class InitiativeLogic:
                 continue
             event_info = {
                 "type": event["type"],
-                "original_type": event.get("original_type"),
+                "stage": event.get("stage"),
                 "peer_addr": event.get("peer_addr"),
                 "origin_identity": event.get("origin_identity"),
                 "local_revision_origin": event.get(
@@ -1297,7 +1353,7 @@ class InitiativeLogic:
                 "peer_observed_local_revision": event.get(
                     "peer_observed_local_revision", False,
                 ),
-                "priority": priority.get(event["type"], 0),
+                "priority": Session.transition_rank(event),
             }
             signature = self._transition_event_signature(event_info)
             current = out.get(node_uuid)
@@ -1321,7 +1377,7 @@ class InitiativeLogic:
                                 current["peer_addr"] = event_info.get("peer_addr")
                         continue
                     current.setdefault("events", []).append(dict(event_info))
-                if priority.get(current["type"], 0) >= priority.get(event["type"], 0):
+                if Session.transition_rank(current) >= Session.transition_rank(event):
                     continue
                 current.update(event_info)
                 continue
@@ -1337,14 +1393,12 @@ class InitiativeLogic:
 
     @staticmethod
     def _transition_event_signature(event: dict) -> tuple:
-        # Key on the pre-staging (logical) type, not the staged `type`:
-        # staging splits one situation into divergence/in_transition per the
-        # per-peer "observed" flag, so keying on `type` would show the same
-        # target revision held by two peers as two entries. original_type is
-        # the same for both, so they dedupe into one (with both peers in
-        # delivery_peer_addrs).
+        # Key on the relation, never on the stage: the same target revision
+        # held by two peers is one situation even when only one of them has
+        # observed our side. Keying on stage as well would split it into two
+        # entries instead of one carrying both delivery_peer_addrs.
         return (
-            event.get("original_type") or event.get("type"),
+            event.get("type"),
             event.get("origin_identity"),
             event.get("local_revision") or event.get("local_state_hash"),
             event.get("peer_revision") or event.get("peer_state_hash"),
