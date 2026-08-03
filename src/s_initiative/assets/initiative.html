@@ -800,7 +800,16 @@
         // A moved card can be rendered once at our position and once as a
         // ghost at the peer position. Keep a single reaction entry point on
         // the real local card; a brand-new peer-only card has only a ghost.
-        if (ghost && findNode(state.board, card.uuid)) return [];
+        //
+        // "Rendered locally" means a live card, not merely a node in the
+        // tree. A card I deleted is still in the tree as a tombstone but is
+        // drawn only as the peer's ghost, so testing for the node alone
+        // suppressed the one button there was and left no way to take the
+        // deletion back.
+        if (ghost) {
+          const local = findNode(state.board, card.uuid);
+          if (local && !local.deleted) return [];
+        }
         return needsReaction(card) ? [reactionButton(card)] : [];
       }
 
