@@ -41,6 +41,7 @@ Contract:
 from __future__ import annotations
 
 import copy
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -353,8 +354,34 @@ class InitiativeLogic:
             node.created_at,
         ))
 
+    # A board is named in the switcher, in Board of Boards and in every
+    # invitation; two boards called the same thing are two different places
+    # to work that read as one. What somebody typed is kept and numbered
+    # rather than refused.
+    _NUMBERED = re.compile(r"\s*\(\d+\)$")
+
+    @classmethod
+    def _distinct_name(cls, name: str, taken) -> str:
+        existing = {str(entry or "").strip().casefold() for entry in taken}
+        if name.casefold() not in existing:
+            return name
+        # A second "Roadmap (2)" becomes "Roadmap (3)", not "Roadmap (2) (2)".
+        base = cls._NUMBERED.sub("", name) or name
+        index = 2
+        while f"{base} ({index})".casefold() in existing:
+            index += 1
+        return f"{base} ({index})"
+
+    def _board_names(self, excluding: str = "") -> list[str]:
+        return [
+            board.data.get("name") for board in self.boards()
+            if board.uuid != excluding
+        ]
+
     def create_board(self, name: str = "Kanban Board") -> SessionResult:
-        board = self._create_board_node(name or "Kanban Board")
+        board = self._create_board_node(
+            self._distinct_name(name or "Kanban Board", self._board_names()),
+        )
         self._remember_board(board.uuid, explicit=True)
         return SessionResult("ok", value=board.uuid)
 
@@ -385,7 +412,9 @@ class InitiativeLogic:
         if not board:
             return SessionResult("error", reason="board not found")
         data = dict(board.data)
-        data["name"] = name or "Kanban Board"
+        data["name"] = self._distinct_name(
+            name or "Kanban Board", self._board_names(excluding=board.uuid),
+        )
         return self.session.modify(board.uuid, data, board.weights)
 
     def set_board_objective(self, board_uuid: str, objective: str) -> SessionResult:
@@ -406,7 +435,10 @@ class InitiativeLogic:
             return result
         clone = result.value
         data = dict(clone.data)
-        data["name"] = f"{data.get('name', 'Kanban Board')} copy"
+        data["name"] = self._distinct_name(
+            f"{data.get('name', 'Kanban Board')} copy",
+            self._board_names(excluding=clone.uuid),
+        )
         self.session.modify(clone.uuid, data, clone.weights)
         self._remember_board(clone.uuid, explicit=True)
         return SessionResult("ok", value=clone.uuid)
