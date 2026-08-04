@@ -27,9 +27,6 @@
       <section id="board" class="board"></section>
     </main>
 
-    <div id="reactionMenu" class="reaction-menu" role="menu" hidden></div>
-
-
     <dialog id="cardModal">
       <form method="dialog" id="cardForm">
         <h2 id="cardModalTitle">Card</h2>
@@ -425,8 +422,8 @@
         const tools = colEl.querySelector(".adopt-tools");
         if (tools) {
           tools.replaceChildren();
-          if (needsReaction(col) && (col._isGhost || !isContainerOnlyDivergence(col))) {
-            tools.append(reactionButton(col));
+          if (col._isGhost || !isContainerOnlyDivergence(col)) {
+            tools.append(...reactionTools(col));
           }
         }
 
@@ -551,8 +548,8 @@
         head.append(name, del);
         const tools = document.createElement("div");
         tools.className = "adopt-tools";
-        if (needsReaction(column) && (ghost || !isContainerOnlyDivergence(column))) {
-          tools.append(reactionButton(column));
+        if (ghost || !isContainerOnlyDivergence(column)) {
+          tools.append(...reactionTools(column));
         }
         head.append(tools);
         article.append(head);
@@ -776,24 +773,21 @@
         // The board root inherits every descendant hash difference. Only
         // offer a board-level decision when the board's own fields differ.
         if (isContainerOnlyDivergence(board)) return;
-        if (needsReaction(board)) {
-          tools.append(reactionButton(board));
-        }
+        tools.append(...reactionTools(board));
       }
 
-      function reactionButton(node) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.setAttribute("aria-label", "React to differences");
-        button.className = "react-button";
-        button.textContent = "React";
-        const info = transitionInfo(node.uuid);
-        if (info) button.title = transitionLabel(info);
-        button.onclick = (event) => {
-          event.stopPropagation();
-          openReactionMenu(button, node.uuid);
-        };
-        return button;
+      // The control itself is Core's - one available act reads as a button
+      // naming it, several become a menu - so a divergence looks the same
+      // here, in the Cockpit and in the collaboration pane. Kanban decides
+      // only which nodes are offered one.
+      function reactionTools(node) {
+        if (!needsReaction(node)) return [];
+        const control = SovereignUI.reactionControl({
+          info: transitionInfo(node.uuid),
+          className: "react-button",
+          onReact: (choice) => applyReaction(node.uuid, choice),
+        });
+        return control ? [control] : [];
       }
 
       function cardReactionTools(card, ghost = false) {
@@ -810,87 +804,19 @@
           const local = findNode(state.board, card.uuid);
           if (local && !local.deleted) return [];
         }
-        return needsReaction(card) ? [reactionButton(card)] : [];
+        return reactionTools(card);
       }
 
-      function reactionChoices(uuid) {
-        const info = transitionInfo(uuid);
-        const contributingEvents = info?.events || (info ? [info] : []);
-        const eventByAddr = new Map(contributingEvents.map((event) => [event.peer_addr, event]));
-        const contributingAddrs = new Set(eventByAddr.keys());
-        const peers = Object.entries(state.peers || {})
-          .map(([addr, root]) => ({
-            addr,
-            missing: !(root && findNode(root, uuid)),
-            event: eventByAddr.get(addr),
-          }))
-          .filter((item) => contributingAddrs.has(item.addr));
-        return peers.map((item) => ({
-          // Named for the act, from the side being offered the choice: the
-          // old labels were built from peer-relative summaries, which is how
-          // taking back a card creation came out as "keep your card".
-          label: transitionReactionLabel(item.event),
-          action: item.event?.reaction || "adopt",
-          peer: item,
-        }));
-      }
-
-      function closeReactionMenu() {
-        const menu = el("reactionMenu");
-        menu.hidden = true;
-        menu.replaceChildren();
-      }
-
-      function openReactionMenu(anchor, uuid) {
-        const reactions = reactionChoices(uuid);
-        if (!reactions.length) return showToast("No reaction available", true);
-        const menu = el("reactionMenu");
-        menu.replaceChildren();
-        for (const reaction of reactions) {
-          const option = document.createElement("button");
-          option.type = "button";
-          option.className = "reaction-menu-option";
-          option.textContent = reaction.label;
-          option.onclick = async (event) => {
-            event.stopPropagation();
-            closeReactionMenu();
-            await applyReaction(uuid, reaction);
-          };
-          menu.append(option);
-        }
-        menu.hidden = false;
-        const rect = anchor.getBoundingClientRect();
-        const margin = 8;
-        const left = Math.max(margin, Math.min(
-          rect.left, window.innerWidth - menu.offsetWidth - margin,
-        ));
-        let top = rect.bottom + 4;
-        if (top + menu.offsetHeight > window.innerHeight - margin) {
-          top = Math.max(margin, rect.top - menu.offsetHeight - 4);
-        }
-        menu.style.left = `${left}px`;
-        menu.style.top = `${top}px`;
-      }
-
-      document.addEventListener("click", (event) => {
-        if (!event.target.closest("#reactionMenu")) closeReactionMenu();
-      });
-      document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") closeReactionMenu();
-      });
-      window.addEventListener("resize", closeReactionMenu);
-      window.addEventListener("scroll", closeReactionMenu, true);
-
-      async function applyReaction(uuid, reaction) {
-        const endpoint = reaction.action === "rollback"
+      async function applyReaction(uuid, choice) {
+        const endpoint = choice.action === "rollback"
           ? "/api/initiative/rollback"
           : "/api/initiative/adopt";
         await run(() => api(endpoint, {
           node_uuid: uuid,
-          source_addr: reaction.peer.addr,
-          adopt_absence: reaction.action === "adopt" && reaction.peer.missing,
-          rollback_absence: reaction.action === "rollback" && reaction.peer.missing,
-        }), reaction.action === "rollback" ? "Rolled back" : "Adopted");
+          source_addr: choice.peerAddr,
+          adopt_absence: choice.action === "adopt" && choice.absent,
+          rollback_absence: choice.action === "rollback" && choice.absent,
+        }), choice.action === "rollback" ? "Rolled back" : "Adopted");
       }
 
       function openCard(card, columnUuid) {
@@ -1596,6 +1522,7 @@
           return node ? (node.data.name || node.data.text || '') : '';
         },
         revealNode: (uuid) => highlightCard(uuid),
+        reactNode: (uuid, choice) => applyReaction(uuid, choice),
         onChanged: () => loadBoard(),
       });
       // The board-level decision sits with the board's name; the auto-adopt

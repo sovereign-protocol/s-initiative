@@ -629,8 +629,7 @@ body.card-drag-active * {
   justify-content: flex-end;
 }
 
-.adopt,
-.react-button {
+.adopt {
   border-color: var(--border-strong) !important;
   color: var(--text) !important;
   background: transparent !important;
@@ -639,39 +638,27 @@ body.card-drag-active * {
   width: auto;
 }
 
-.reaction-menu {
-  position: fixed;
-  z-index: 10000;
-  display: grid;
-  width: min(30rem, calc(100vw - 16px));
-  max-height: min(24rem, calc(100vh - 16px));
-  overflow-y: auto;
-  padding: 4px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
-}
-
-.reaction-menu[hidden] {
-  display: none;
-}
-
-.reaction-menu-option {
-  width: 100%;
-  border: 0;
-  background: transparent;
+/* Core draws the reaction control; these rules only lift it clear of the
+   generic ".card button" muting, which is more specific than Core's own
+   class and would otherwise grey out the one control a diverged card has. */
+.react-button {
   color: var(--text);
-  padding: 9px 10px;
-  text-align: left;
-  white-space: normal;
+  cursor: pointer;
+  font-weight: 700;
+  width: auto;
 }
 
-.reaction-menu-option:hover,
-.reaction-menu-option:focus-visible {
-  background: rgba(255, 255, 255, 0.08);
-  outline: none;
+.card button.react-button { color: var(--text); }
+
+.card button.react-button:hover,
+.card button.react-button:focus-visible {
+  border-color: var(--teal);
+  background: var(--teal-soft);
+  color: var(--text);
 }
+
+/* The menu itself is Core's (.ui-reaction-menu in shared.css) - only the
+   board's own trigger styling stays here. */
 
 .card-list {
   min-height: 18px;

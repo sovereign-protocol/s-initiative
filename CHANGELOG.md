@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Reactions now use Core's shared control: a divergence with a single available
+  act is a button naming that act rather than a "React" menu with one entry.
+  The board's copies of the menu, its markup and its stylesheet are gone.
+- Which peer's absence a reaction settles is now read from the transition event
+  rather than from whether that peer's cached tree contains the node, so a peer
+  whose tree has not arrived can no longer turn "adopt their change" into a
+  local delete, and a contributing peer with no cached tree is still offered.
+- Divergences can now be answered from the collaboration pane.
+
 ## 0.1.0a4 - 2026-08-01
 
 - Renamed from S-Kanban to **S-Initiative**, distributed as
