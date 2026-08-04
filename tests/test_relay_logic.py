@@ -1135,7 +1135,7 @@ class RelayLogicTests(unittest.TestCase):
             self.assertNotIn(session_a.identity.uuid, {wanted})
             self.assertEqual(store_b.read_blob(blob_id), data)
 
-    def test_presence_does_not_bypass_the_identity_home_after_bootstrap(self):
+    def test_presence_refreshes_profile_without_identity_home_subscription(self):
         with tempfile.TemporaryDirectory() as relay_root, \
                 tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
@@ -1166,7 +1166,7 @@ class RelayLogicTests(unittest.TestCase):
 
             self.assertEqual(
                 session_b.peer_identity("relay:A").data["display_name"],
-                "Alice",
+                "Changed elsewhere",
             )
 
     def test_scoped_connection_ignores_relay_peers_from_other_targets(self):
