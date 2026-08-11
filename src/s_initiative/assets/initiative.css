@@ -561,8 +561,6 @@ button.auto-adopt-square {
 .column.stage-awaiting_me { outline-color: #f59e0b; }
 .column.stage-conflict { outline-color: #de350b; }
 
-.column.dragging { opacity: 0.55; }
-
 body.card-drag-pending,
 body.card-drag-pending * {
   user-select: none !important;
@@ -592,10 +590,13 @@ body.card-drag-active * {
 
 .column-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 6px;
   padding: 2px 0 8px;
+}
+.column.ghost .column-head {
+  grid-template-columns: minmax(0, 1fr) auto auto;
 }
 
 .column-head .column-name {

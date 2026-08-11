@@ -86,7 +86,6 @@
     <script>
       let state = null;
       let draggedCard = null;
-      let draggedColumn = null;
       let dragActive = false;
       let modalCard = null;
       let modalColumn = null;
@@ -336,7 +335,7 @@
       }
 
       async function loadBoard() {
-        if (dragActive) return;
+        if (dragActive || el("board")?.dataset.reordering === "true") return;
         try {
           state = await api("/api/initiative/board");
 
@@ -402,6 +401,20 @@
             );
         }
         board.appendChild(addBtn);
+        SovereignUI.reorderableList({
+          container: board,
+          itemSelector: ".column:not(.ghost)",
+          axis: "horizontal",
+          getId: (column) => column.dataset.uuid,
+          onMove: ({id, index}) => api("/api/initiative/columns/move", {
+            column_uuid: id, index,
+          }),
+          onChanged: async () => {
+            showToast("Column moved");
+            await loadBoard();
+          },
+          onError: error => showToast(error.message, true),
+        });
       }
 
       // --- NEUE HELFER FÜR DAS DIFFING ---
@@ -507,22 +520,17 @@
         const article = document.createElement("article");
         article.className = "column";
         if (ghost) article.classList.add("ghost");
-        article.draggable = !ghost;
-        if (!ghost) {
-          article.onmousedown = (event) => {
-            article.draggable = !event.target.closest(".card, .ui-editable-text");
-          };
-          article.onmouseup = () => {
-            article.draggable = true;
-          };
-        }
         article.dataset.uuid = column.uuid;
+        article.dataset.reorderId = column.uuid;
         applyTransitionClass(article, column.uuid, {
           suppress: !ghost && isContainerOnlyDivergence(column),
         });
 
         const head = document.createElement("div");
         head.className = "column-head";
+        if (!ghost) {
+          head.append(SovereignUI.reorderHandle({label: "Reorder column"}));
+        }
         const name = document.createElement("h3");
         name.className = "column-name";
         SovereignUI.editableText({
@@ -586,25 +594,6 @@
         add.onclick = () => openCard(null, column.uuid);
         if (!ghost) article.append(add);
 
-        if (!ghost) {
-          article.ondragstart = (event) => {
-            if (event.target.closest(".card")) return;
-            draggedColumn = column.uuid;
-            dragActive = true;
-            article.classList.add("dragging");
-            if (event.dataTransfer) {
-              event.dataTransfer.effectAllowed = "move";
-              event.dataTransfer.setData("text/plain", column.uuid);
-            }
-          };
-          article.ondragend = () => {
-            article.classList.remove("dragging");
-            draggedColumn = null;
-            dragActive = false;
-          };
-          article.ondragover = (event) => event.preventDefault();
-          article.ondrop = (event) => dropColumn(event, column.uuid);
-        }
         return article;
       }
 
@@ -1264,28 +1253,6 @@
           );
         } finally {
           dragging?.classList.remove("dragging");
-          dragActive = false;
-          await loadBoard();
-        }
-      }
-
-      async function dropColumn(event, targetUuid) {
-        event.preventDefault();
-        if (!draggedColumn || draggedColumn === targetUuid) return;
-        const order = columns(state.board).map((item) => item.uuid);
-        const index = order.indexOf(targetUuid);
-        const columnUuid = draggedColumn;
-        draggedColumn = null;
-        try {
-          await run(
-            () =>
-              api("/api/initiative/columns/move", {
-                column_uuid: columnUuid,
-                index,
-              }),
-            "Column moved",
-          );
-        } finally {
           dragActive = false;
           await loadBoard();
         }

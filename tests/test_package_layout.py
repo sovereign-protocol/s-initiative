@@ -217,6 +217,13 @@ class AssetTests(unittest.TestCase):
         )[1].split("function renderCard", 1)[0])
         self.assertIn("update: '/api/initiative/agenda/update'", self.kanban)
 
+    def test_columns_use_the_shared_horizontal_reorder_control(self):
+        self.assertIn("SovereignUI.reorderHandle", self.kanban)
+        self.assertIn("SovereignUI.reorderableList", self.kanban)
+        self.assertIn('axis: "horizontal"', self.kanban)
+        self.assertNotIn("draggedColumn", self.kanban)
+        self.assertNotIn("async function dropColumn", self.kanban)
+
     def test_assets_never_navigate_to_the_bare_root_with_a_query(self):
         # "/" serves whichever application is primary, so a root-relative link
         # lands somewhere that depends on host configuration. Cross-application
@@ -228,7 +235,7 @@ class AssetTests(unittest.TestCase):
     def test_card_drop_always_clears_drag_styling(self):
         drop = self.kanban.split(
             "async function commitCardDrop", 1,
-        )[1].split("async function dropColumn", 1)[0]
+        )[1].split("function onCardDragOver", 1)[0]
         self.assertIn('querySelector(".card.dragging")', drop)
         self.assertIn('classList.remove("dragging")', drop)
 
