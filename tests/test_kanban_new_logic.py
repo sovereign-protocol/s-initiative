@@ -1584,6 +1584,16 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         self.assertIsNone(logic.agenda_items()[0].data["priority"])
 
+    def test_agenda_item_text_can_be_updated_by_its_author(self):
+        runtime = self.runtime(8399)
+        logic: InitiativeLogic = runtime.logic
+        item = logic.create_agenda_item("First wording").value
+
+        result = logic.update_agenda_item(item.uuid, "Revised wording")
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(logic.agenda_items()[0].data["text"], "Revised wording")
+
     def test_set_agenda_item_priority_updates_an_existing_item(self):
         runtime = self.runtime(8386)
         logic: InitiativeLogic = runtime.logic

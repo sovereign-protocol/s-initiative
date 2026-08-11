@@ -99,6 +99,9 @@ class InitiativeFacade:
     def delete_agenda_item(self, item_uuid: str):
         return self._logic.delete_agenda_item(item_uuid)
 
+    def update_agenda_item(self, item_uuid: str, text: str):
+        return self._logic.update_agenda_item(item_uuid, text)
+
     def set_agenda_item_priority(
         self, item_uuid: str, priority: str | None,
     ):

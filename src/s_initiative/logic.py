@@ -1586,6 +1586,11 @@ class InitiativeLogic:
             return SessionResult("error", reason="agenda item not found")
         return self.session.delete_agenda_item(item_uuid)
 
+    def update_agenda_item(self, item_uuid: str, text: str) -> SessionResult:
+        if not self.owns_node(item_uuid):
+            return SessionResult("error", reason="agenda item not found")
+        return self.session.update_agenda_item_text(item_uuid, text)
+
     def set_agenda_item_priority(self, item_uuid: str, priority: str | None) -> SessionResult:
         if not self.owns_node(item_uuid):
             return SessionResult("error", reason="agenda item not found")

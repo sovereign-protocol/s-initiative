@@ -209,6 +209,14 @@ class AssetTests(unittest.TestCase):
         self.assertIn('add.textContent = "+ Add card"', self.kanban)
         self.assertIn('addBtn.textContent = "+ Add column"', self.kanban)
 
+    def test_column_and_agenda_text_use_the_shared_editor(self):
+        self.assertIn("SovereignUI.editableText", self.kanban)
+        self.assertIn('className = "column-name"', self.kanban)
+        self.assertNotIn('document.createElement("input")', self.kanban.split(
+            "function renderColumn", 1,
+        )[1].split("function renderCard", 1)[0])
+        self.assertIn("update: '/api/initiative/agenda/update'", self.kanban)
+
     def test_assets_never_navigate_to_the_bare_root_with_a_query(self):
         # "/" serves whichever application is primary, so a root-relative link
         # lands somewhere that depends on host configuration. Cross-application

@@ -408,9 +408,12 @@
 
       function updateColumnDOM(colEl, col) {
         // Spaltentitel-Input schützen, falls der Cursor drin ist
-        const nameInput = colEl.querySelector("input");
+        const nameInput = colEl.querySelector(".column-name");
         if (nameInput && document.activeElement !== nameInput) {
-          nameInput.value = col.data.name || "Column";
+          SovereignUI.editableText({
+            element: nameInput,
+            value: col.data.name || "Column",
+          });
         }
 
         // P2P Konflikt-Klassen/Adopt-Tools aktualisieren - sonst bleibt ein
@@ -507,7 +510,7 @@
         article.draggable = !ghost;
         if (!ghost) {
           article.onmousedown = (event) => {
-            article.draggable = !event.target.closest(".card");
+            article.draggable = !event.target.closest(".card, .ui-editable-text");
           };
           article.onmouseup = () => {
             article.draggable = true;
@@ -520,18 +523,23 @@
 
         const head = document.createElement("div");
         head.className = "column-head";
-        const name = document.createElement("input");
-        name.value = column.data.name || "Column";
-        name.disabled = ghost;
-        name.onchange = () =>
-          run(
-            () =>
-              api("/api/initiative/columns/rename", {
-                column_uuid: column.uuid,
-                name: name.value,
-              }),
-            "Column renamed",
-          );
+        const name = document.createElement("h3");
+        name.className = "column-name";
+        SovereignUI.editableText({
+          element: name,
+          value: column.data.name || "Column",
+          placeholder: "Column name",
+          editable: !ghost,
+          onCommit: (value) => api("/api/initiative/columns/rename", {
+            column_uuid: column.uuid,
+            name: value,
+          }),
+          onChanged: async () => {
+            showToast("Column renamed");
+            await loadBoard();
+          },
+          onError: error => showToast(error.message, true),
+        });
         const del = iconButton(ICON_DELETE, "Delete column", () =>
           confirmAction("Delete column?", "This deletes the column and all cards inside it.", () =>
             run(
@@ -1507,6 +1515,7 @@
           topicKey: 'board_uuid',
           create: '/api/initiative/agenda/create',
           delete: '/api/initiative/agenda/delete',
+          update: '/api/initiative/agenda/update',
           setPriority: '/api/initiative/agenda/set_priority',
           move: '/api/initiative/agenda/move',
         },
