@@ -14,8 +14,8 @@ Contract:
       - a direct child of the board, same as columns. priority is one of
       "high"/"medium"/"low", or None if not set (optional - a card doesn't
       need one), author is a profile uuid. Purely async: created/deleted
-      like any node, synced/merged via the board's existing topic - no
-      dedicated protocol support needed.
+      like any node and projected from each verified perspective via the
+      board's existing topic; observed items are not adopted implicitly.
 
   API:
     GET  /api/initiative/board
@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sovereign import (
-    ApplicationRegistration, ProtocolNode, Session, SessionResult,
+    ApplicationRegistration, LastWriteWinsPolicy, ProtocolNode, Session, SessionResult,
     avatar_attachment, canonical_attachments,
 )
 
@@ -54,6 +54,8 @@ from sovereign import (
 DEFAULT_COLUMNS = ["To Do", "Doing", "Done"]
 INITIATIVE_APP_NAME = "S-Initiative"
 INITIATIVE_APPLICATION_ID = "initiative"
+DEFAULT_AGENDA_PERSPECTIVE_MAX_AGE_SECONDS = 2 * 60 * 60
+BOARD_SNAPSHOT_TYPE = "kanban_board_snapshot"
 AUTO_ADOPT_MODES = ("always", "not_owner", "not_member", "never")
 AGENDA_PRIORITIES = ("high", "medium", "low")
 DISPLAYED_DIVERGENCE_TYPES = frozenset({
@@ -63,6 +65,12 @@ OWNED_NODE_TYPES = frozenset({
     *DISPLAYED_DIVERGENCE_TYPES,
     "agenda_item", "card_attachment", "card_comment",
 })
+KANBAN_POSITION_POLICY = LastWriteWinsPolicy(
+    node_type="kanban_card",
+    timestamp_field="position_updated_at",
+    data_fields=("order",),
+    include_parent=True,
+)
 
 
 class InitiativeLogic:
@@ -267,7 +275,7 @@ class InitiativeLogic:
         events = self.transition_events(topic_uuid, network)
         return {
             "agenda_items": [
-                item.to_dict() for item in self.session.agenda_items(topic_uuid)
+                item.to_dict() for item in self.agenda_items(board)
             ],
             "transition_events": events,
             "transition_by_node": self.transition_by_node(events),
@@ -442,6 +450,133 @@ class InitiativeLogic:
         self.session.modify(clone.uuid, data, clone.weights)
         self._remember_board(clone.uuid, explicit=True)
         return SessionResult("ok", value=clone.uuid)
+
+    def snapshots(self) -> list[dict]:
+        """Return local, durable starting points; snapshots are never topics."""
+        items = []
+        for container in self._kanban_containers():
+            for node in container.live_children():
+                if node.data.get("type") != BOARD_SNAPSHOT_TYPE:
+                    continue
+                items.append(self._snapshot_summary(node))
+        return sorted(items, key=lambda item: (item["name"].casefold(), item["saved_at"]))
+
+    def save_snapshot(
+        self, board_uuid: str, name: str = "", description: str = "",
+    ) -> SessionResult:
+        board = self._node(board_uuid, "kanban_board")
+        if not board:
+            return SessionResult("error", reason="board not found")
+        source_name = str(board.data.get("name") or "Untitled initiative")
+        snapshot_name = self._distinct_name(
+            str(name or "").strip() or f"{source_name} snapshot",
+            [item["name"] for item in self.snapshots()],
+        )
+        created = self.session.create_child(
+            self._kanban_container().uuid,
+            {
+                "type": BOARD_SNAPSHOT_TYPE,
+                "name": snapshot_name,
+                "description": str(description or "").strip(),
+                "source_name": source_name,
+                "objective": str(board.data.get("objective") or ""),
+                "author_uuid": self.session.identity.uuid,
+                "author_name": str(self.session.identity.data.get("name") or ""),
+            },
+            {},
+        )
+        if created.status != "ok":
+            return created
+        copied = self._copy_snapshot_board_content(board, created.value.uuid)
+        if copied.status != "ok":
+            self.session.delete(created.value.uuid)
+            return copied
+        return SessionResult(
+            "ok", value=created.value.uuid,
+            effects=[*created.effects, *copied.effects],
+        )
+
+    def create_from_snapshot(
+        self, snapshot_uuid: str, name: str = "",
+    ) -> SessionResult:
+        snapshot = self._snapshot_node(snapshot_uuid)
+        if not snapshot:
+            return SessionResult("error", reason="snapshot not found")
+        requested = str(name or "").strip() or str(
+            snapshot.data.get("source_name") or snapshot.data.get("name") or "Kanban Board"
+        )
+        created = self.session.create_child(
+            self._kanban_container().uuid,
+            {
+                "type": "kanban_board",
+                "name": self._distinct_name(requested, self._board_names()),
+                "objective": str(snapshot.data.get("objective") or ""),
+            },
+            {},
+        )
+        if created.status != "ok":
+            return created
+        copied = self._copy_snapshot_board_content(snapshot, created.value.uuid)
+        if copied.status != "ok":
+            self.session.delete(created.value.uuid)
+            return copied
+        self._remember_board(created.value.uuid, explicit=True)
+        return SessionResult(
+            "ok", value=created.value.uuid,
+            effects=[*created.effects, *copied.effects],
+        )
+
+    def delete_snapshot(self, snapshot_uuid: str) -> SessionResult:
+        snapshot = self._snapshot_node(snapshot_uuid)
+        if not snapshot:
+            return SessionResult("error", reason="snapshot not found")
+        return self.session.delete(snapshot.uuid)
+
+    def _copy_snapshot_board_content(
+        self, source: ProtocolNode, target_uuid: str,
+    ) -> SessionResult:
+        """Copy columns/cards only, resetting people and activity history."""
+        effects = []
+        for column in source.live_children():
+            if column.data.get("type") != "kanban_column":
+                continue
+            made_column = self.session.create_child(
+                target_uuid, dict(column.data), dict(column.weights),
+            )
+            if made_column.status != "ok":
+                return made_column
+            effects.extend(made_column.effects)
+            for card in column.live_children():
+                if card.data.get("type") != "kanban_card":
+                    continue
+                data = dict(card.data)
+                data["participants"] = []
+                data["owner"] = None
+                made_card = self.session.create_child(
+                    made_column.value.uuid, data, dict(card.weights),
+                )
+                if made_card.status != "ok":
+                    return made_card
+                effects.extend(made_card.effects)
+        return SessionResult("ok", effects=effects)
+
+    def _snapshot_node(self, snapshot_uuid: str) -> ProtocolNode | None:
+        node = self.session.protocol.index.get(snapshot_uuid)
+        return node if (
+            node and not node.deleted and node.data.get("type") == BOARD_SNAPSHOT_TYPE
+        ) else None
+
+    @staticmethod
+    def _snapshot_summary(node: ProtocolNode) -> dict:
+        return {
+            "uuid": node.uuid,
+            "name": str(node.data.get("name") or "Saved snapshot"),
+            "description": str(node.data.get("description") or ""),
+            "source_name": str(node.data.get("source_name") or ""),
+            "saved_at": node.created_at,
+            "author_uuid": str(node.data.get("author_uuid") or ""),
+            "author_name": str(node.data.get("author_name") or ""),
+        }
 
     def delete_board(self, board_uuid: str) -> SessionResult:
         # The last board goes too. Refusing it left no way to clear a host
@@ -748,23 +883,15 @@ class InitiativeLogic:
         for addr in self.session.peer_addresses():
             if not self.session.peer_discusses_node(addr, board.uuid):
                 continue
-            # Collaboration topics belong to their author and always follow
-            # that author's perspective, independently of the board's card
-            # auto-adopt policy.
-            changed = self._adopt_originator_agenda_changes(addr, board.uuid) or changed
-            if mode == "never":
-                continue
             if mode in ("not_owner", "not_member"):
                 changed = (
                     self._adopt_missing_columns_shallowly(addr, board.uuid)
                     or changed
                 )
-            changed = (
-                self._adopt_newer_card_positions(addr, board.uuid, mode)
-                or changed
-            )
 
             def source_eligible(node: ProtocolNode, event_type: str) -> bool:
+                if mode == "never":
+                    return False
                 # Agenda changes are handled above using author authority;
                 # never accept a forwarded/stale copy from another peer.
                 if node.data.get("type") == "agenda_item":
@@ -787,6 +914,7 @@ class InitiativeLogic:
             changed = self.session.reconcile_peer_changes(
                 addr, board.uuid,
                 node_is_eligible=source_eligible,
+                reconciliation_policies=(KANBAN_POSITION_POLICY,),
             ) or changed
         return changed
 
@@ -816,134 +944,9 @@ class InitiativeLogic:
             changed = changed or result.status == "ok"
         return changed
 
-    def _adopt_originator_agenda_changes(self, peer_addr: str,
-                                          board_uuid: str) -> bool:
-        """Make an agenda item's originator authoritative on every peer."""
-        originator_profile = self._find_peer_user_profile(peer_addr)
-        originator_uuid = self._peer_profile_uuid(peer_addr, originator_profile)
-        if not originator_uuid:
-            return False
-        changed = False
-        for event in self.session.analyze_peer_transitions(peer_addr, board_uuid):
-            if event["type"] == "in_agreement":
-                continue
-            node_uuid = event.get("node_uuid")
-            peer_node = self.session.get_cached_peer_subtree(peer_addr, node_uuid)
-            local_node = self.session.protocol.index.get(node_uuid)
-            authority_node = peer_node or local_node
-            if (not authority_node
-                    or authority_node.data.get("type") != "agenda_item"):
-                continue
-            originator_change = (
-                authority_node.data.get("author") == originator_uuid
-            )
-            order_only_change = self._agenda_order_only_change(
-                local_node, peer_node,
-            )
-            if order_only_change:
-                # Reordering is shared board state. If two clients move the
-                # same item before polling, the last move wins regardless of
-                # item authorship; an older publication can never undo it.
-                if (
-                    not local_node
-                    or not peer_node
-                    or self._position_updated_at(peer_node)
-                    <= self._position_updated_at(local_node)
-                ):
-                    continue
-            elif not originator_change:
-                continue
-            # The originator is authoritative even when a revert makes the
-            # generic one-hop hash classifier call the recipient's value
-            # "newer" (local_made_changes). Absence is authoritative too.
-            result = self.session.accept_peer_node(
-                peer_addr, node_uuid, adopt_absence=peer_node is None,
-            )
-            changed = changed or result.status == "ok"
-        return changed
-
-    def _adopt_newer_card_positions(
-        self, peer_addr: str, board_uuid: str, mode: str,
-    ) -> bool:
-        """Resolve move-only card conflicts by their last move time."""
-        changed = False
-        for event in self.session.analyze_peer_transitions(
-            peer_addr, board_uuid,
-        ):
-            if event["type"] == "in_agreement":
-                continue
-            node_uuid = event.get("node_uuid")
-            local_node = self.session.protocol.index.get(node_uuid)
-            peer_node = self.session.get_cached_peer_subtree(
-                peer_addr, node_uuid,
-            )
-            if (
-                not self._card_position_only_change(local_node, peer_node)
-                or not self._auto_adopt_allows_node(mode, local_node)
-                or self._position_updated_at(peer_node)
-                <= self._position_updated_at(local_node)
-            ):
-                continue
-            result = self.session.accept_peer_node(peer_addr, node_uuid)
-            changed = changed or result.status == "ok"
-        return changed
-
-    @staticmethod
-    def _card_position_only_change(
-        local_node: ProtocolNode | None,
-        peer_node: ProtocolNode | None,
-    ) -> bool:
-        if not local_node or not peer_node:
-            return False
-        if (
-            local_node.data.get("type") != "kanban_card"
-            or peer_node.data.get("type") != "kanban_card"
-            or local_node.deleted != peer_node.deleted
-            or local_node.weights != peer_node.weights
-        ):
-            return False
-        local_data = dict(local_node.data)
-        peer_data = dict(peer_node.data)
-        local_order = local_data.pop("order", None)
-        peer_order = peer_data.pop("order", None)
-        local_data.pop("position_updated_at", None)
-        peer_data.pop("position_updated_at", None)
-        return (
-            local_data == peer_data
-            and (
-                local_node.parent_uuid != peer_node.parent_uuid
-                or local_order != peer_order
-            )
-        )
-
-    @staticmethod
-    def _agenda_order_only_change(
-        local_node: ProtocolNode | None,
-        peer_node: ProtocolNode | None,
-    ) -> bool:
-        if not local_node or not peer_node:
-            return False
-        if (
-            local_node.deleted != peer_node.deleted
-            or local_node.weights != peer_node.weights
-            or local_node.parent_uuid != peer_node.parent_uuid
-        ):
-            return False
-        local_data = dict(local_node.data)
-        peer_data = dict(peer_node.data)
-        local_order = local_data.pop("order", None)
-        peer_order = peer_data.pop("order", None)
-        local_data.pop("position_updated_at", None)
-        peer_data.pop("position_updated_at", None)
-        return local_data == peer_data and local_order != peer_order
-
     @staticmethod
     def _position_now() -> str:
         return datetime.now(timezone.utc).isoformat(timespec="microseconds")
-
-    @staticmethod
-    def _position_updated_at(node: ProtocolNode) -> str:
-        return str(node.data.get("position_updated_at") or node.updated_at)
 
     def _auto_adopt_allows_node(self, mode: str, node: ProtocolNode | None) -> bool:
         if mode == "always":
@@ -974,80 +977,10 @@ class InitiativeLogic:
         return False
 
     def on_peer_update(self) -> SessionResult:
-        # Settled before adoption is even considered, and regardless of what
-        # the auto-adopt mode says, because it is not adoption: see
-        # converge_positional_stamps.
-        changed = self.converge_positional_stamps()
-        changed = self.adopt_all_incoming_changes() or changed
+        changed = self.adopt_all_incoming_changes()
         if not changed:
             return SessionResult("ok", value=False)
         return SessionResult("ok", value=True)
-
-    def converge_positional_stamps(self) -> bool:
-        """Settle a difference that carries no meaning.
-
-        Two clients that make the same move at the same moment agree on
-        everything the board shows - same column, same position, same
-        content - and differ only in the wall clock each stamped it with.
-        Nobody can decide that: either answer produces an identical board,
-        so offering the choice asks a person to resolve a conflict that
-        does not exist. With auto-adopt off nothing else ever cleared it.
-
-        Both sides apply the same rule to the same two values - the later
-        stamp wins - so each reaches the same answer independently and the
-        two versions become byte-identical rather than merely being
-        displayed as though they agreed. Masking it instead would leave the
-        state hashes apart for good, and the next real edit to the card
-        would build its base on a value the two sides never reconciled.
-
-        Deliberately not gated on the auto-adopt mode. "Never" means nobody
-        takes my decisions for me; it does not mean a clock reading has to
-        be ratified by hand.
-        """
-        changed = False
-        for board in self.boards():
-            for addr in self.session.peer_addresses():
-                if not self.session.peer_discusses_node(addr, board.uuid):
-                    continue
-                for local in self._subtree_nodes(board):
-                    peer = self.session.get_cached_peer_subtree(addr, local.uuid)
-                    if not self._stamp_only_difference(local, peer):
-                        continue
-                    if (self._position_updated_at(peer)
-                            <= self._position_updated_at(local)):
-                        continue
-                    result = self.session.accept_peer_node(addr, local.uuid)
-                    changed = result.status == "ok" or changed
-        return changed
-
-    @staticmethod
-    def _subtree_nodes(root: ProtocolNode) -> list[ProtocolNode]:
-        out = [root]
-        for child in root.live_children():
-            out.extend(InitiativeLogic._subtree_nodes(child))
-        return out
-
-    @staticmethod
-    def _stamp_only_difference(local: ProtocolNode | None,
-                               peer: ProtocolNode | None) -> bool:
-        """True when the only thing separating two versions is the stamp.
-
-        Order stays in the comparison: two clients that put the card in
-        genuinely different places disagree about something a person can
-        see, and that is theirs to settle.
-        """
-        if not local or not peer:
-            return False
-        if (local.deleted != peer.deleted
-                or local.weights != peer.weights
-                or local.parent_uuid != peer.parent_uuid):
-            return False
-        local_data = dict(local.data)
-        peer_data = dict(peer.data)
-        if (local_data.pop("position_updated_at", None)
-                == peer_data.pop("position_updated_at", None)):
-            return False
-        return local_data == peer_data
 
     def adopt_all_incoming_changes(self) -> bool:
         changed = False
@@ -1565,7 +1498,21 @@ class InitiativeLogic:
     # convention; the rules live in one place.
     def agenda_items(self, board: ProtocolNode | None = None) -> list[ProtocolNode]:
         board = board or self.ensure_board()
-        return self.session.agenda_items(board.uuid)
+        return self.session.agenda_projection(
+            board.uuid, **self._agenda_perspective_policy(),
+        )
+
+    def _agenda_perspective_policy(self) -> dict:
+        configured = self.config.get(
+            "agenda_perspective_max_age_seconds",
+            DEFAULT_AGENDA_PERSPECTIVE_MAX_AGE_SECONDS,
+        )
+        return {
+            "max_age_seconds": (
+                None if configured is None else float(configured)
+            ),
+            "not_before": self.config.get("agenda_perspective_not_before"),
+        }
 
     def create_agenda_item(
         self, text: str, priority: str | None = None,
@@ -1578,7 +1525,7 @@ class InitiativeLogic:
         if not board:
             return SessionResult("error", reason="board not found")
         return self.session.create_agenda_item(
-            board.uuid, text, priority,
+            board.uuid, text, priority, **self._agenda_perspective_policy(),
         )
 
     def delete_agenda_item(self, item_uuid: str) -> SessionResult:
@@ -1599,20 +1546,8 @@ class InitiativeLogic:
     def move_agenda_item(self, item_uuid: str, index: int) -> SessionResult:
         if not self.owns_node(item_uuid):
             return SessionResult("error", reason="agenda item not found")
-        moved = self.session.move_agenda_item(item_uuid, index)
-        if moved.status != "ok":
-            return moved
-        item = self.session.protocol.index[item_uuid]
-        stamped = self.session.modify(
-            item.uuid,
-            {**item.data, "position_updated_at": self._position_now()},
-            item.weights,
-        )
-        if stamped.status != "ok":
-            return stamped
-        return SessionResult(
-            "ok", value=item.uuid,
-            effects=[*moved.effects, *stamped.effects],
+        return self.session.move_agenda_item(
+            item_uuid, index, **self._agenda_perspective_policy(),
         )
 
     def _node(self, uuid: str, node_type: str) -> ProtocolNode | None:

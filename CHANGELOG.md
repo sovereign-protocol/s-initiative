@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Kanban card-position last-write-wins reconciliation is now declared as a
+  Core policy. Initiative retains only the position timestamp and its explicit
+  card eligibility rules; comparison and adoption execution live in Core.
+- Agenda items are projected directly from verified perspectives instead of
+  being automatically adopted. The default two-hour perspective limit accepts
+  relative and absolute application overrides.
+
 - Reactions now use Core's shared control: a divergence with a single available
   act is a button naming that act rather than a "React" menu with one entry.
   The board's copies of the menu, its markup and its stylesheet are gone.

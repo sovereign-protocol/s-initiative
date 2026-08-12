@@ -72,6 +72,35 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(moved.data["name"], "Task 2")
         self.assertEqual(moved.data["participants"], ["B"])
 
+    def test_saved_snapshot_survives_source_and_restores_clean_content(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        board_uuid = logic.create_board("Launch").value
+        board = session.protocol.index[board_uuid]
+        todo = logic.columns(board)[0]
+        card = logic.create_card(
+            todo.uuid, "Prepare", "Plan the launch", ["person-1"], "person-1",
+        ).value
+        logic.create_card_comment(card.uuid, "Activity history")
+        logic.create_agenda_item("Runtime agenda", board_uuid=board_uuid)
+
+        saved = logic.save_snapshot(board_uuid, "Launch baseline", "Reusable launch")
+        logic.delete_board(board_uuid)
+        restored = logic.create_from_snapshot(saved.value, "Next launch")
+
+        self.assertEqual(saved.status, "ok", saved.reason)
+        self.assertEqual(logic.snapshots()[0]["description"], "Reusable launch")
+        copy = session.protocol.index[restored.value]
+        copied_card = logic.cards(logic.columns(copy)[0])[0]
+        self.assertEqual(copied_card.data["name"], "Prepare")
+        self.assertEqual(copied_card.data["participants"], [])
+        self.assertIsNone(copied_card.data["owner"])
+        self.assertEqual(copied_card.live_children(), [])
+        self.assertEqual(logic.agenda_items(copy), [])
+        self.assertNotEqual(copy.uuid, board_uuid)
+        self.assertEqual(logic.delete_snapshot(saved.value).status, "ok")
+        self.assertEqual(logic.snapshots(), [])
+
     def test_move_card_does_not_touch_sibling_hashes(self):
         runtime = self.runtime(8363)
         logic: InitiativeLogic = runtime.logic
@@ -165,7 +194,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertIn(card.uuid, right.session.protocol.index)
         self.assertEqual(right.session.protocol.index[card.uuid].data["name"], "Shared")
 
-    def test_agenda_priority_always_follows_its_originator(self):
+    def test_agenda_priority_is_projected_without_adoption(self):
         left = self.runtime(8393)
         right = self.runtime(8394)
         board = left.logic.ensure_board()
@@ -177,36 +206,14 @@ class KanbanNewLogicTests(unittest.TestCase):
         sync(left, right)
         right.logic.board_payload()
 
-        # Simulate a stale/non-author copy that diverged from the same
-        # previously agreed version. The public logic rejects this edit;
-        # using the session directly recreates persisted pre-fix data.
-        stale = right.session.protocol.index[item.uuid]
-        stale_data = dict(stale.data)
-        stale_data["priority"] = "low"
-        right.session.modify(stale.uuid, stale_data, stale.weights)
-        left.logic.set_agenda_item_priority(item.uuid, "medium")
-        left_payload = left.session.get_subtree(board.uuid)
-        right_payload = right.session.get_subtree(board.uuid)
-        left.session.apply_peer_subtree(
-            right.peer_addr,
-            ProtocolNode.from_dict(right_payload["subtree"]),
-            right_payload["parent_uuid"],
-        )
-        right.session.apply_peer_subtree(
-            left.peer_addr,
-            ProtocolNode.from_dict(left_payload["subtree"]),
-            left_payload["parent_uuid"],
-        )
+        self.assertNotIn(item.uuid, right.session.protocol.index)
+        self.assertEqual(right.logic.agenda_items()[0].data["priority"], "high")
 
-        self.assertEqual(
-            right.session.analyze_peer_transitions(left.peer_addr, item.uuid)[0]["type"],
-            "divergence",
-        )
-        self.assertTrue(right.logic.adopt_incoming_changes())
-        self.assertEqual(
-            right.session.protocol.index[item.uuid].data["priority"],
-            "medium",
-        )
+        left.logic.set_agenda_item_priority(item.uuid, "medium")
+        sync(left, right, reconcile=False)
+
+        self.assertEqual(right.logic.agenda_items()[0].data["priority"], "medium")
+        self.assertNotIn(item.uuid, right.session.protocol.index)
 
     def test_agenda_priority_revert_to_none_follows_its_originator(self):
         left = self.runtime(8397)
@@ -222,21 +229,12 @@ class KanbanNewLogicTests(unittest.TestCase):
         left.logic.set_agenda_item_priority(item.uuid, "high")
         sync(left, right)
         right.logic.board_payload()
-        self.assertEqual(
-            right.session.protocol.index[item.uuid].data["priority"], "high",
-        )
+        self.assertEqual(right.logic.agenda_items()[0].data["priority"], "high")
 
         left.logic.set_agenda_item_priority(item.uuid, None)
         sync(left, right, reconcile=False)
-        self.assertEqual(
-            right.session.analyze_peer_transitions(left.peer_addr, item.uuid)[0]["type"],
-            "peer_made_changes",
-        )
-        right.logic.on_peer_update()
-
-        self.assertIsNone(
-            right.session.protocol.index[item.uuid].data["priority"],
-        )
+        self.assertIsNone(right.logic.agenda_items()[0].data["priority"])
+        self.assertNotIn(item.uuid, right.session.protocol.index)
 
     def test_non_originator_cannot_change_agenda_priority(self):
         left = self.runtime(8395)
@@ -251,9 +249,10 @@ class KanbanNewLogicTests(unittest.TestCase):
         result = right.logic.set_agenda_item_priority(item.uuid, "high")
 
         self.assertEqual(result.status, "error")
-        self.assertEqual(right.session.protocol.index[item.uuid].data["priority"], "low")
+        self.assertEqual(right.logic.agenda_items()[0].data["priority"], "low")
+        self.assertNotIn(item.uuid, right.session.protocol.index)
 
-    def test_non_originator_can_reorder_agenda_and_order_propagates(self):
+    def test_only_originator_can_reorder_agenda_and_order_is_projected(self):
         left = self.runtime(8399)
         right = self.runtime(8400)
         board = left.logic.ensure_board()
@@ -265,83 +264,52 @@ class KanbanNewLogicTests(unittest.TestCase):
         sync(left, right)
         right.logic.board_payload()
 
-        result = right.logic.move_agenda_item(second.uuid, 0)
+        refused = right.logic.move_agenda_item(second.uuid, 0)
+        result = left.logic.move_agenda_item(second.uuid, 0)
         sync(left, right)
-        left.logic.board_payload()
+        right.logic.board_payload()
 
+        self.assertEqual(refused.status, "error")
         self.assertEqual(result.status, "ok")
         self.assertEqual(
-            [item.uuid for item in left.logic.agenda_items()],
+            [item.uuid for item in right.logic.agenda_items()],
             [second.uuid, first.uuid],
         )
 
-    def test_stale_peer_order_does_not_undo_the_movers_drop(self):
+    def test_observer_cannot_reorder_an_originators_item(self):
         left = self.runtime(8406)
         right = self.runtime(8407)
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
         first = left.logic.create_agenda_item("First").value
-        second = left.logic.create_agenda_item("Second").value
-        third = left.logic.create_agenda_item("Third").value
-        fourth = left.logic.create_agenda_item("Fourth").value
-        # Concurrent appends can legitimately tie. Moving into that exhausted
-        # gap renumbers the whole agenda, matching the live trace.
-        for item in (third, fourth):
-            node = left.session.protocol.index[item.uuid]
-            left.session.modify(
-                node.uuid, {**node.data, "order": 4.0}, node.weights,
-            )
         sync(left, right)
         right.logic.board_payload()
-        before = [item.uuid for item in right.logic.agenda_items()]
-        expected = [before[1], before[2], before[0], before[3]]
 
-        result = right.logic.move_agenda_item(first.uuid, 2)
-        sync(left, right)
-        # The relay cycle gives right the copy left published immediately
-        # before seeing this move. Processing it must not undo the drop.
-        right.logic.board_payload()
+        result = right.logic.move_agenda_item(first.uuid, 0)
 
-        self.assertEqual(result.status, "ok")
-        self.assertEqual(
-            [item.uuid for item in right.logic.agenda_items()],
-            expected,
-        )
-        left.logic.board_payload()
-        self.assertEqual(
-            [item.uuid for item in left.logic.agenda_items()],
-            expected,
-        )
+        self.assertEqual(result.status, "error")
+        self.assertNotIn(first.uuid, right.session.protocol.index)
 
-    def test_last_concurrent_agenda_move_wins(self):
+    def test_each_originator_moves_only_their_own_item(self):
         left = self.runtime(8408)
         right = self.runtime(8409)
         board = left.logic.ensure_board()
         connect(left, right)
         connect(left, right, board.uuid)
         first = left.logic.create_agenda_item("First").value
-        second = left.logic.create_agenda_item("Second").value
-        third = left.logic.create_agenda_item("Third").value
         sync(left, right)
         right.logic.board_payload()
-
-        left.logic.move_agenda_item(first.uuid, 2)
-        time.sleep(0.002)
-        right.logic.move_agenda_item(first.uuid, 1)
+        own = right.logic.create_agenda_item("Right").value
         sync(left, right)
-        left.logic.board_payload()
-        right.logic.board_payload()
 
-        expected = [second.uuid, first.uuid, third.uuid]
-        self.assertEqual(
-            [item.uuid for item in left.logic.agenda_items()],
-            expected,
-        )
-        self.assertEqual(
-            [item.uuid for item in right.logic.agenda_items()],
-            expected,
-        )
+        refused = right.logic.move_agenda_item(first.uuid, 1)
+        moved = right.logic.move_agenda_item(own.uuid, 0)
+        sync(left, right)
+
+        self.assertEqual(refused.status, "error")
+        self.assertEqual(moved.status, "ok", moved.reason)
+        self.assertEqual(left.logic.agenda_items()[0].uuid, own.uuid)
 
     def test_agenda_changes_are_not_displayed_as_board_divergences(self):
         left = self.runtime(8402)
@@ -1673,20 +1641,17 @@ class KanbanNewLogicTests(unittest.TestCase):
             [third.uuid, first.uuid, second.uuid],
         )
 
-    def test_move_agenda_item_between_peers_that_appended_concurrently(self):
-        # Two peers each append at max+1 and land on the same order value.
-        # Dropping between them has no fraction to occupy, and the created_at
-        # tiebreak used to place the item elsewhere while reporting success.
+    def test_move_agenda_item_expands_tight_local_order_keys(self):
         runtime = self.runtime(8405)
         logic: InitiativeLogic = runtime.logic
         first = logic.create_agenda_item("First").value
         second = logic.create_agenda_item("Second").value
         third = logic.create_agenda_item("Third").value
         fourth = logic.create_agenda_item("Fourth").value
-        for item in (third, fourth):
+        for index, item in enumerate((first, second, third, fourth)):
             node = logic.session.protocol.index[item.uuid]
             data = dict(node.data)
-            data["order"] = 4.0
+            data["order"] = index * 1e-12
             logic.session.modify(node.uuid, data, node.weights)
 
         result = logic.move_agenda_item(first.uuid, 2)
@@ -1695,25 +1660,6 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(
             [item.uuid for item in logic.agenda_items()],
             [second.uuid, third.uuid, first.uuid, fourth.uuid],
-        )
-
-    def test_move_legacy_agenda_item_uses_unshifted_fallback_order(self):
-        runtime = self.runtime(8404)
-        logic: InitiativeLogic = runtime.logic
-        first = logic.create_agenda_item("First").value
-        second = logic.create_agenda_item("Second").value
-        third = logic.create_agenda_item("Third").value
-        for item in logic.agenda_items():
-            data = dict(item.data)
-            data.pop("order")
-            logic.session.modify(item.uuid, data, item.weights)
-
-        result = logic.move_agenda_item(first.uuid, 1)
-
-        self.assertEqual(result.status, "ok")
-        self.assertEqual(
-            [item.uuid for item in logic.agenda_items()],
-            [second.uuid, first.uuid, third.uuid],
         )
 
     def test_delete_agenda_item_removes_it(self):
@@ -1852,8 +1798,13 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         local = left.session.protocol.index[card.uuid]
         peer = left.session.get_cached_peer_subtree(right.peer_addr, card.uuid)
-        self.assertFalse(InitiativeLogic._stamp_only_difference(local, peer))
         self.assertNotEqual(local.parent_uuid, peer.parent_uuid)
+        unsettled = [
+            event for event in left.logic.transition_events(board.uuid)
+            if event.get("node_uuid") == card.uuid
+            and event["type"] != "in_agreement"
+        ]
+        self.assertTrue(unsettled)
 
     def runtime(self, port: int):
         return relay_runtime(self, port, self._relay_root)
