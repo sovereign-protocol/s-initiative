@@ -35,7 +35,7 @@
         <label>Name<input id="cardName" /></label>
         <label>Description<textarea id="cardDescription" rows="5"></textarea></label>
         <div class="card-owner-row">
-          <label>Owner<select id="cardOwner"></select></label>
+          <label>Owner<select id="cardOwner" class="ui-select"></select></label>
           <div class="card-files">
             <span class="card-files-label">Files</span>
             <input id="cardFileInput" type="file" hidden />
@@ -318,20 +318,16 @@
 
       function renderOwnerSelect() {
         const select = el("cardOwner");
-        select.replaceChildren();
-        const blank = document.createElement("option");
-        blank.value = "";
-        blank.textContent = "Unassigned";
-        select.append(blank);
-        for (const id of modalParticipants) {
-          const option = document.createElement("option");
-          option.value = id;
-          option.textContent = userForParticipant(id).name;
-          select.append(option);
-        }
-        select.value = modalParticipants.includes(modalOwner) ? modalOwner : "";
+        SovereignUI.selectOptions(
+          select,
+          modalParticipants.map((id) => [id, userForParticipant(id).name]),
+          {
+            emptyLabel: "Unassigned",
+            value: modalParticipants.includes(modalOwner) ? modalOwner : "",
+            disabled: modalReadOnlyPerspective,
+          },
+        );
         modalOwner = select.value || null;
-        select.disabled = modalReadOnlyPerspective;
       }
 
       async function loadBoard() {
@@ -1195,15 +1191,12 @@
           label.textContent = field.label;
           let control;
           if (field.type === "select") {
-            control = document.createElement("select");
-            control.name = field.name;
-            for (const option of field.options || []) {
-              const opt = document.createElement("option");
-              opt.value = option.value;
-              opt.textContent = option.label;
-              if (option.value === field.value) opt.selected = true;
-              control.append(opt);
-            }
+            const selection = SovereignUI.selectionField({
+              name: field.name,
+              items: field.options || [],
+              value: field.value,
+            });
+            control = selection.control;
           } else if (field.type === "display") {
             control = document.createElement("div");
             control.className = "change-summary";
