@@ -54,8 +54,8 @@ from sovereign import (
 DEFAULT_COLUMNS = ["To Do", "Doing", "Done"]
 INITIATIVE_APP_NAME = "S-Initiative"
 INITIATIVE_APPLICATION_ID = "initiative"
-DEFAULT_AGENDA_PERSPECTIVE_MAX_AGE_SECONDS = 2 * 60 * 60
-BOARD_SNAPSHOT_TYPE = "kanban_board_snapshot"
+SNAPSHOT_FORMAT = "s-protocol.item-snapshot"
+SNAPSHOT_FORMAT_VERSION = 1
 AUTO_ADOPT_MODES = ("always", "not_owner", "not_member", "never")
 AGENDA_PRIORITIES = ("high", "medium", "low")
 DISPLAYED_DIVERGENCE_TYPES = frozenset({
@@ -451,72 +451,63 @@ class InitiativeLogic:
         self._remember_board(clone.uuid, explicit=True)
         return SessionResult("ok", value=clone.uuid)
 
-    def snapshots(self) -> list[dict]:
-        """Return local, durable starting points; snapshots are never topics."""
-        items = []
-        for container in self._kanban_containers():
-            for node in container.live_children():
-                if node.data.get("type") != BOARD_SNAPSHOT_TYPE:
-                    continue
-                items.append(self._snapshot_summary(node))
-        return sorted(items, key=lambda item: (item["name"].casefold(), item["saved_at"]))
-
-    def save_snapshot(
+    def export_snapshot(
         self, board_uuid: str, name: str = "", description: str = "",
     ) -> SessionResult:
         board = self._node(board_uuid, "kanban_board")
         if not board:
             return SessionResult("error", reason="board not found")
         source_name = str(board.data.get("name") or "Untitled initiative")
-        snapshot_name = self._distinct_name(
-            str(name or "").strip() or f"{source_name} snapshot",
-            [item["name"] for item in self.snapshots()],
-        )
-        created = self.session.create_child(
-            self._kanban_container().uuid,
-            {
-                "type": BOARD_SNAPSHOT_TYPE,
-                "name": snapshot_name,
-                "description": str(description or "").strip(),
-                "source_name": source_name,
+        columns = []
+        for column in self.columns(board):
+            columns.append({
+                "name": str(column.data.get("name") or "Column"),
+                "order": column.data.get("order", 0),
+                "cards": [
+                    {
+                        "name": str(card.data.get("name") or "Card"),
+                        "description": str(card.data.get("description") or ""),
+                        "order": card.data.get("order", 0),
+                    }
+                    for card in self.cards(column)
+                ],
+            })
+        return SessionResult("ok", value={
+            "format": SNAPSHOT_FORMAT,
+            "format_version": SNAPSHOT_FORMAT_VERSION,
+            "item_type": "initiative",
+            "name": str(name or "").strip() or f"{source_name} snapshot",
+            "description": str(description or "").strip(),
+            "saved_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "source_name": source_name,
+            "content": {
                 "objective": str(board.data.get("objective") or ""),
-                "author_uuid": self.session.identity.uuid,
-                "author_name": str(self.session.identity.data.get("name") or ""),
+                "columns": columns,
             },
-            {},
-        )
-        if created.status != "ok":
-            return created
-        copied = self._copy_snapshot_board_content(board, created.value.uuid)
-        if copied.status != "ok":
-            self.session.delete(created.value.uuid)
-            return copied
-        return SessionResult(
-            "ok", value=created.value.uuid,
-            effects=[*created.effects, *copied.effects],
-        )
+        })
 
     def create_from_snapshot(
-        self, snapshot_uuid: str, name: str = "",
+        self, document: dict, name: str = "",
     ) -> SessionResult:
-        snapshot = self._snapshot_node(snapshot_uuid)
-        if not snapshot:
-            return SessionResult("error", reason="snapshot not found")
+        error = self._snapshot_error(document, "initiative")
+        if error:
+            return SessionResult("error", reason=error)
+        content = document["content"]
         requested = str(name or "").strip() or str(
-            snapshot.data.get("source_name") or snapshot.data.get("name") or "Kanban Board"
+            document.get("source_name") or document.get("name") or "Kanban Board"
         )
         created = self.session.create_child(
             self._kanban_container().uuid,
             {
                 "type": "kanban_board",
                 "name": self._distinct_name(requested, self._board_names()),
-                "objective": str(snapshot.data.get("objective") or ""),
+                "objective": str(content.get("objective") or ""),
             },
             {},
         )
         if created.status != "ok":
             return created
-        copied = self._copy_snapshot_board_content(snapshot, created.value.uuid)
+        copied = self._import_snapshot_board_content(content, created.value.uuid)
         if copied.status != "ok":
             self.session.delete(created.value.uuid)
             return copied
@@ -526,57 +517,60 @@ class InitiativeLogic:
             effects=[*created.effects, *copied.effects],
         )
 
-    def delete_snapshot(self, snapshot_uuid: str) -> SessionResult:
-        snapshot = self._snapshot_node(snapshot_uuid)
-        if not snapshot:
-            return SessionResult("error", reason="snapshot not found")
-        return self.session.delete(snapshot.uuid)
-
-    def _copy_snapshot_board_content(
-        self, source: ProtocolNode, target_uuid: str,
+    def _import_snapshot_board_content(
+        self, content: dict, target_uuid: str,
     ) -> SessionResult:
-        """Copy columns/cards only, resetting people and activity history."""
         effects = []
-        for column in source.live_children():
-            if column.data.get("type") != "kanban_column":
-                continue
+        columns = content.get("columns")
+        if not isinstance(columns, list):
+            return SessionResult("error", reason="snapshot columns are invalid")
+        for column in columns:
+            if not isinstance(column, dict) or not isinstance(column.get("cards"), list):
+                return SessionResult("error", reason="snapshot column is invalid")
             made_column = self.session.create_child(
-                target_uuid, dict(column.data), dict(column.weights),
+                target_uuid,
+                {
+                    "type": "kanban_column",
+                    "name": str(column.get("name") or "Column"),
+                    "order": column.get("order", 0),
+                },
+                {},
             )
             if made_column.status != "ok":
                 return made_column
             effects.extend(made_column.effects)
-            for card in column.live_children():
-                if card.data.get("type") != "kanban_card":
-                    continue
-                data = dict(card.data)
-                data["participants"] = []
-                data["owner"] = None
+            for card in column["cards"]:
+                if not isinstance(card, dict):
+                    return SessionResult("error", reason="snapshot card is invalid")
+                data = {
+                    "type": "kanban_card",
+                    "name": str(card.get("name") or "Card"),
+                    "description": str(card.get("description") or ""),
+                    "participants": [],
+                    "owner": None,
+                    "order": card.get("order", 0),
+                }
                 made_card = self.session.create_child(
-                    made_column.value.uuid, data, dict(card.weights),
+                    made_column.value.uuid, data, {},
                 )
                 if made_card.status != "ok":
                     return made_card
                 effects.extend(made_card.effects)
         return SessionResult("ok", effects=effects)
 
-    def _snapshot_node(self, snapshot_uuid: str) -> ProtocolNode | None:
-        node = self.session.protocol.index.get(snapshot_uuid)
-        return node if (
-            node and not node.deleted and node.data.get("type") == BOARD_SNAPSHOT_TYPE
-        ) else None
-
     @staticmethod
-    def _snapshot_summary(node: ProtocolNode) -> dict:
-        return {
-            "uuid": node.uuid,
-            "name": str(node.data.get("name") or "Saved snapshot"),
-            "description": str(node.data.get("description") or ""),
-            "source_name": str(node.data.get("source_name") or ""),
-            "saved_at": node.created_at,
-            "author_uuid": str(node.data.get("author_uuid") or ""),
-            "author_name": str(node.data.get("author_name") or ""),
-        }
+    def _snapshot_error(document: object, item_type: str) -> str:
+        if not isinstance(document, dict):
+            return "snapshot file is invalid"
+        if document.get("format") != SNAPSHOT_FORMAT:
+            return "not an S-Protocol item snapshot"
+        if document.get("format_version") != SNAPSHOT_FORMAT_VERSION:
+            return "snapshot version is not supported"
+        if document.get("item_type") != item_type:
+            return f"snapshot does not contain an {item_type}"
+        if not isinstance(document.get("content"), dict):
+            return "snapshot content is invalid"
+        return ""
 
     def delete_board(self, board_uuid: str) -> SessionResult:
         # The last board goes too. Refusing it left no way to clear a host
@@ -1498,21 +1492,7 @@ class InitiativeLogic:
     # convention; the rules live in one place.
     def agenda_items(self, board: ProtocolNode | None = None) -> list[ProtocolNode]:
         board = board or self.ensure_board()
-        return self.session.agenda_projection(
-            board.uuid, **self._agenda_perspective_policy(),
-        )
-
-    def _agenda_perspective_policy(self) -> dict:
-        configured = self.config.get(
-            "agenda_perspective_max_age_seconds",
-            DEFAULT_AGENDA_PERSPECTIVE_MAX_AGE_SECONDS,
-        )
-        return {
-            "max_age_seconds": (
-                None if configured is None else float(configured)
-            ),
-            "not_before": self.config.get("agenda_perspective_not_before"),
-        }
+        return self.session.agenda_projection(board.uuid)
 
     def create_agenda_item(
         self, text: str, priority: str | None = None,
@@ -1524,9 +1504,7 @@ class InitiativeLogic:
         )
         if not board:
             return SessionResult("error", reason="board not found")
-        return self.session.create_agenda_item(
-            board.uuid, text, priority, **self._agenda_perspective_policy(),
-        )
+        return self.session.create_agenda_item(board.uuid, text, priority)
 
     def delete_agenda_item(self, item_uuid: str) -> SessionResult:
         if not self.owns_node(item_uuid):
@@ -1546,9 +1524,7 @@ class InitiativeLogic:
     def move_agenda_item(self, item_uuid: str, index: int) -> SessionResult:
         if not self.owns_node(item_uuid):
             return SessionResult("error", reason="agenda item not found")
-        return self.session.move_agenda_item(
-            item_uuid, index, **self._agenda_perspective_policy(),
-        )
+        return self.session.move_agenda_item(item_uuid, index)
 
     def _node(self, uuid: str, node_type: str) -> ProtocolNode | None:
         node = self.session.protocol.index.get(uuid)

@@ -1,3 +1,4 @@
+import json
 import time
 import unittest
 
@@ -84,12 +85,14 @@ class KanbanNewLogicTests(unittest.TestCase):
         logic.create_card_comment(card.uuid, "Activity history")
         logic.create_agenda_item("Runtime agenda", board_uuid=board_uuid)
 
-        saved = logic.save_snapshot(board_uuid, "Launch baseline", "Reusable launch")
+        saved = logic.export_snapshot(board_uuid, "Launch baseline", "Reusable launch")
         logic.delete_board(board_uuid)
-        restored = logic.create_from_snapshot(saved.value, "Next launch")
+        snapshot_file = json.loads(json.dumps(saved.value))
+        restored = logic.create_from_snapshot(snapshot_file, "Next launch")
 
         self.assertEqual(saved.status, "ok", saved.reason)
-        self.assertEqual(logic.snapshots()[0]["description"], "Reusable launch")
+        self.assertEqual(saved.value["format"], "s-protocol.item-snapshot")
+        self.assertEqual(saved.value["description"], "Reusable launch")
         copy = session.protocol.index[restored.value]
         copied_card = logic.cards(logic.columns(copy)[0])[0]
         self.assertEqual(copied_card.data["name"], "Prepare")
@@ -98,8 +101,10 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(copied_card.live_children(), [])
         self.assertEqual(logic.agenda_items(copy), [])
         self.assertNotEqual(copy.uuid, board_uuid)
-        self.assertEqual(logic.delete_snapshot(saved.value).status, "ok")
-        self.assertEqual(logic.snapshots(), [])
+        self.assertEqual(
+            [item.data["type"] for item in logic._kanban_container().live_children()],
+            ["kanban_board"],
+        )
 
     def test_move_card_does_not_touch_sibling_hashes(self):
         runtime = self.runtime(8363)

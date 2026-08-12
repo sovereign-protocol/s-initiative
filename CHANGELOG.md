@@ -6,8 +6,9 @@
   Core policy. Initiative retains only the position timestamp and its explicit
   card eligibility rules; comparison and adoption execution live in Core.
 - Agenda items are projected directly from verified perspectives instead of
-  being automatically adopted. The default two-hour perspective limit accepts
-  relative and absolute application overrides.
+  being automatically adopted. The two-hour perspective limit is now Core's
+  default rather than an Initiative declaration; the unused
+  `agenda_perspective_*` configuration keys are gone.
 
 - Reactions now use Core's shared control: a divergence with a single available
   act is a button naming that act rather than a "React" menu with one entry.
