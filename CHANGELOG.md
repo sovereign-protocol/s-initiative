@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- A ghost is now the seat a card has left, not the copy somebody else holds.
+  Whoever made the move sees their card solid at its new position, and the
+  position it came from stays as a ghost until the other side catches up — the
+  same rule read from either screen, whether the move was yours or theirs. A
+  deletion takes effect at once and leaves the same ghost behind. Ghosts only
+  appear once the peer has been seen holding the old seat, so a peer who adopts
+  automatically produces none at all, and your own move no longer flashes one up
+  while it travels. Dragging a card the peer has just moved adopts their move
+  first: setting your move against theirs from a base neither of you is at any
+  more would classify as a conflict, out of two ordinary moves.
+- Changing the auto-adopt mode now reconsiders what the old mode held. The mode
+  is read at the moment each change is decided, so changing it changes answers
+  already given; two of the four modes declare the same handling to Core, which
+  is why the declaration alone could not be the trigger. A card held under the
+  old mode used to wait for the peer's next message, and if none came, for good.
+- The auto-adopt mode is now published to Core as declared adoption metadata:
+  a topic default per board, plus `hold` on the cards the mode protects. A
+  protected card still admits comments, which are additive and author-stamped;
+  under "never" the topic default holds everything and no card needs an entry.
+  The entries are rebuilt before each adoption pass, since they derive from the
+  mode and from card ownership, both of which move. The eligibility callback,
+  the protected-descendant walk and the shallow column pre-pass are all gone:
+  Core enforces the declaration, and a node not yet held is classified at first
+  sight — an incoming agenda item is never adopted, and a card arriving already
+  marked as yours is held before it is taken rather than after.
+
 - Kanban card-position last-write-wins reconciliation is now declared as a
   Core policy. Initiative retains only the position timestamp and its explicit
   card eligibility rules; comparison and adoption execution live in Core.

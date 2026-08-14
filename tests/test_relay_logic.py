@@ -1508,6 +1508,9 @@ class RelayLogicTests(unittest.TestCase):
             kanban_a.update_card(card.uuid, "After", "", [], None)
             relay_a.publish_due_topics()
             relay_b.poll_and_apply()
+            session_b.set_topic_adoption_default(
+                board_uuid, adopt="auto", additions="auto",
+            )
             session_b.reconcile_peer_changes("relay:A", board_uuid)
             relay_b.publish_due_topics()
 
@@ -2338,10 +2341,12 @@ class RelayLogicTests(unittest.TestCase):
             # Accepted boards default to "never" (manual review), matching
             # the live-join accept path - opt in explicitly to prove the
             # later card is visible to auto-adopt once the user does so.
+            # Opting in reconsiders what the old mode held, so the card is
+            # taken there and then; the pass that follows finds nothing left.
+            self.assertIsNone(session_b.protocol.index.get(card.uuid))
             kanban_b.set_auto_adopt_mode("always")
-            changed = kanban_b.on_peer_update()
-            self.assertTrue(changed.value)
             self.assertIsNotNone(session_b.protocol.index.get(card.uuid))
+            self.assertFalse(kanban_b.on_peer_update().value)
 
 
     def test_default_state_file_differs_per_identity_not_just_per_config(self):

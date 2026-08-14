@@ -309,9 +309,21 @@ class InitiativeLogic:
         if not board:
             return SessionResult("error", reason="board not found")
         normalized = self._normalize_auto_adopt_mode(mode)
-        return self.session.set_auto_adopt_mode(
+        result = self.session.set_auto_adopt_mode(
             board.uuid, normalized, AUTO_ADOPT_MODES,
         )
+        if result.status != "ok":
+            return result
+        # The mode is read at the moment each decision is made, so changing it
+        # changes answers already given. Two of the four modes declare the same
+        # handling to Core, which means the declaration alone cannot be the
+        # trigger: a card held under the old mode would sit there until the
+        # peer happened to send something else, and if they sent nothing it
+        # would sit there for good. Core does the reconsidering; this only says
+        # that the ground it was decided on has moved.
+        self.publish_adoption_metadata(board)
+        self.session.reconsider_adoption(board.uuid)
+        return result
 
     @staticmethod
     def _normalize_auto_adopt_mode(value: Any) -> str:
@@ -853,90 +865,105 @@ class InitiativeLogic:
             source_addr, node_uuid, rollback_absence,
         )
 
-    def adopt_incoming_changes(self, board: ProtocolNode | None = None) -> bool:
+    def publish_adoption_metadata(
+        self, board: ProtocolNode | None = None,
+    ) -> None:
+        """Translate this board's mode into Core's declared handling.
+
+        Everything written here is derived from the mode alone, so it changes
+        only when the mode does - republishing the same values decides nothing
+        and Core treats it as a no-op. Which card the mode protects is *not*
+        written down: ownership moves, including through a peer's edit this
+        client adopts, so it is answered by the resolver at the moment it
+        matters. See Core's DESIGN_ADOPTION_METADATA.md.
+        """
         board = board or self.ensure_board()
         mode = self.auto_adopt_mode(board)
+        # "Always" adopts outright. The ownership modes hold each card and let
+        # the resolver decide it, while still admitting comments, which are
+        # additive and author-stamped. "Never" holds everything, comments
+        # included.
+        self.session.set_topic_adoption_default(
+            board.uuid,
+            adopt="auto" if mode == "always" else "hold",
+            additions="hold" if mode == "never" else "auto",
+        )
+        self.session.set_topic_reconciliation_policies(
+            board.uuid, (KANBAN_POSITION_POLICY,),
+        )
+        self.session.set_adoption_resolver(
+            board.uuid,
+            lambda peer_node, local_node, peer_addr, uuid=board.uuid: (
+                self._resolve_held_card(uuid, local_node or peer_node)
+            ),
+        )
+        # Bound to this board: a client can hold several, each with its own
+        # mode, and the one being reconciled is not necessarily the one on
+        # screen.
+        self.session.set_adoption_classifier(
+            board.uuid,
+            lambda node, default, uuid=board.uuid: (
+                self._classify_incoming_node(uuid, node)
+            ),
+        )
+        # Agendas are Session's: an agenda item is projected from its author's
+        # perspective, never adopted, so a copy of one has no business in this
+        # tree. The classifier covers an incoming item; this covers any already
+        # held, which a classifier is never asked about.
+        self.session.set_adoption_metadata_for_subtree(
+            board.uuid, adopt="never", additions="never",
+            node_type="agenda_item",
+        )
 
-        def eligible(node: ProtocolNode, event_type: str) -> bool:
-            node_type = node.data.get("type")
-            if node_type == "kanban_card":
-                return self._auto_adopt_allows_node(mode, node)
-            if node_type == "card_comment":
-                # Comments are additive and author-stamped - always adopt one
-                # (including a brand-new one) so a peer's note appears under any
-                # auto-adopt mode, the way agenda items follow their author.
-                return True
-            # Missing columns under restricted modes are adopted shallowly
-            # before this generic pass. Any other missing container would
-            # still graft its whole subtree, so only "always" may accept it.
-            if event_type == "local_missing_node":
-                return mode == "always"
-            return True
+    def _resolve_held_card(self, board_uuid: str, node) -> str:
+        """Whether a held node settles now or waits for this client.
 
-        changed = False
-        for addr in self.session.peer_addresses():
-            if not self.session.peer_discusses_node(addr, board.uuid):
-                continue
-            if mode in ("not_owner", "not_member"):
-                changed = (
-                    self._adopt_missing_columns_shallowly(addr, board.uuid)
-                    or changed
-                )
+        Asked at the moment of decision rather than recorded, because what it
+        reads moves: a card's owner and members change, including through a
+        peer's edit this client adopts, and a verdict written down when the
+        card first appeared would go on being true after it stopped being true.
 
-            def source_eligible(node: ProtocolNode, event_type: str) -> bool:
-                if mode == "never":
-                    return False
-                # Agenda changes are handled above using author authority;
-                # never accept a forwarded/stale copy from another peer.
-                if node.data.get("type") == "agenda_item":
-                    return False
-                # Deleting a container removes its whole subtree at the
-                # protocol level (no orphans), so Kanban decides here, before
-                # the protocol acts: decline a column/board deletion while it
-                # still holds a card this mode protects, or a later prune would
-                # take that card with it. The container stays as a divergence
-                # to resolve by hand; unprotected cards in it still delete
-                # through their own per-node events.
-                if (event_type == "peer_made_changes"
-                        and node.data.get("type") in ("kanban_column", "kanban_board")):
-                    peer = self.session.get_cached_peer_subtree(addr, node.uuid)
-                    if (peer is not None and peer.deleted
-                            and self._has_protected_descendant(mode, node)):
-                        return False
-                return eligible(node, event_type)
+        Nothing is ever refused: the mode says which cards this client wants to
+        look at, not which changes are illegitimate.
+        """
+        board = self.session.protocol.index.get(board_uuid)
+        mode = self.auto_adopt_mode(board) if board else "always"
+        return "adopt" if self._auto_adopt_allows_node(mode, node) else "defer"
 
-            changed = self.session.reconcile_peer_changes(
-                addr, board.uuid,
-                node_is_eligible=source_eligible,
-                reconciliation_policies=(KANBAN_POSITION_POLICY,),
-            ) or changed
-        return changed
+    def _classify_incoming_node(self, board_uuid, node):
+        """How a node this board does not yet hold is to be handled.
 
-    def _adopt_missing_columns_shallowly(
-        self, peer_addr: str, board_uuid: str,
-    ) -> bool:
-        """Create peer columns first without bypassing per-card policy."""
-        changed = False
-        for event in self.session.analyze_peer_transitions(
-            peer_addr, board_uuid,
+        Asked once, at first sight, because a node that does not exist locally
+        carries no entry and its parent's `additions` cannot tell one kind of
+        incoming node from another. Two questions only:
+
+        - an agenda item is Session's, projected from its author's perspective
+          and never adopted, so a copy of one has no business in this tree;
+        - a card arriving already marked as mine is one this mode protects, and
+          the entry has to say so before it is taken rather than after.
+        """
+        node_type = node.data.get("type")
+        if node_type == "agenda_item":
+            return {"adopt": "never", "additions": "never"}
+        board = self.session.protocol.index.get(board_uuid)
+        if node_type == "kanban_card" and not self._auto_adopt_allows_node(
+            self.auto_adopt_mode(board), node,
         ):
-            if event["type"] != "local_missing_node":
-                continue
-            peer_node = self.session.get_cached_peer_subtree(
-                peer_addr, event.get("node_uuid"),
-            )
-            if (
-                not peer_node
-                or peer_node.data.get("type") != "kanban_column"
-            ):
-                continue
-            result = self.session.accept_peer_node(
-                peer_addr,
-                peer_node.uuid,
-                adopt_descendants=False,
-            )
-            changed = changed or result.status == "ok"
-        return changed
+            return {"adopt": "hold", "additions": "auto"}
+        return None
+
+    def adopt_incoming_changes(self, board: ProtocolNode | None = None) -> bool:
+        board = board or self.ensure_board()
+        # Declaring can itself adopt: Core applies a changed declaration when
+        # it is written, so by the time the pass below runs there may be
+        # nothing left to do. Report what happened to the board, not which of
+        # the two calls did it.
+        held = self.session.protocol.index.get(board.uuid)
+        before = held.state_hash if held else None
+        self.publish_adoption_metadata(board)
+        changed = self.session.reapply_adoption(board.uuid)
+        held = self.session.protocol.index.get(board.uuid)
+        return changed or (held.state_hash if held else None) != before
 
     @staticmethod
     def _position_now() -> str:
@@ -955,20 +982,6 @@ class InitiativeLogic:
         if mode == "not_member":
             return my_id not in (node.data.get("participants") or [])
         return True
-
-    def _has_protected_descendant(self, mode: str, node: ProtocolNode) -> bool:
-        # True if any live card under `node` is one this mode keeps (an owned
-        # card under not_owner, a joined card under not_member) - i.e. adopting
-        # a deletion of `node` would remove a card the policy protects.
-        for child in node.children:
-            if child.deleted:
-                continue
-            if child.data.get("type") == "kanban_card":
-                if not self._auto_adopt_allows_node(mode, child):
-                    return True
-            elif self._has_protected_descendant(mode, child):
-                return True
-        return False
 
     def on_peer_update(self) -> SessionResult:
         changed = self.adopt_all_incoming_changes()

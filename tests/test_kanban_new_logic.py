@@ -571,6 +571,101 @@ class KanbanNewLogicTests(unittest.TestCase):
             "Renamed (uninvolved)",
         )
 
+    def test_changing_the_mode_reconsiders_what_the_old_one_held(self):
+        """A setting is read when a change arrives, so changing it re-decides.
+
+        Both ownership modes declare the same handling to Core and differ only
+        in the answer they give per card, so nothing about the declaration
+        marks this as new. Without the mode change asking for a pass, the card
+        would wait for the peer's next message - and if none came, for good.
+        """
+        left = self.runtime(8545)
+        right = self.runtime(8546)
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        right.logic.set_auto_adopt_mode("always")
+        column = left.logic.columns(board)[0]
+        right_id = right.logic.user_profile().uuid
+        left_id = left.logic.user_profile().uuid
+        # A card I'm on but don't own: held by "not_member", taken by
+        # "not_owner", and the two declare the same handling to Core.
+        card = left.logic.create_card(
+            column.uuid, "On it", "", [right_id, left_id], owner=left_id,
+        ).value
+        sync(left, right)
+        right.logic.board_payload()
+
+        right.logic.set_auto_adopt_mode("not_member")
+        left.logic.update_card(
+            card.uuid, "Renamed", "", [right_id, left_id], owner=left_id,
+        )
+        sync(left, right)
+        right.logic.board_payload()
+        self.assertEqual(
+            right.session.protocol.index[card.uuid].data["name"], "On it",
+        )
+
+        # No further traffic from the peer, and nothing else asks for a pass.
+        right.logic.set_auto_adopt_mode("not_owner")
+
+        self.assertEqual(
+            right.session.protocol.index[card.uuid].data["name"], "Renamed",
+        )
+
+    def test_switching_to_always_adopts_without_waiting_for_the_peer(self):
+        left = self.runtime(8547)
+        right = self.runtime(8548)
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        right.logic.set_auto_adopt_mode("always")
+        column = left.logic.columns(board)[0]
+        card = left.logic.create_card(column.uuid, "Card", "", []).value
+        sync(left, right)
+        right.logic.board_payload()
+
+        right.logic.set_auto_adopt_mode("never")
+        left.logic.update_card(card.uuid, "Renamed", "", [])
+        sync(left, right)
+        right.logic.board_payload()
+        self.assertEqual(
+            right.session.protocol.index[card.uuid].data["name"], "Card",
+        )
+
+        right.logic.set_auto_adopt_mode("always")
+
+        self.assertEqual(
+            right.session.protocol.index[card.uuid].data["name"], "Renamed",
+        )
+
+    def test_narrowing_the_mode_adopts_nothing(self):
+        """Reconsidering asks the new mode; it does not wave changes through."""
+        left = self.runtime(8549)
+        right = self.runtime(8550)
+        board = left.logic.ensure_board()
+        connect(left, right)
+        connect(left, right, board.uuid)
+        right.logic.set_auto_adopt_mode("always")
+        column = left.logic.columns(board)[0]
+        right_id = right.logic.user_profile().uuid
+        card = left.logic.create_card(
+            column.uuid, "Mine", "", [right_id],
+        ).value
+        sync(left, right)
+        right.logic.board_payload()
+
+        right.logic.set_auto_adopt_mode("not_member")
+        left.logic.update_card(card.uuid, "Renamed", "", [right_id])
+        sync(left, right)
+        right.logic.board_payload()
+
+        right.logic.set_auto_adopt_mode("never")
+
+        self.assertEqual(
+            right.session.protocol.index[card.uuid].data["name"], "Mine",
+        )
+
     def test_not_member_auto_adopts_new_empty_column_and_its_order(self):
         left = self.runtime(8375)
         right = self.runtime(8376)

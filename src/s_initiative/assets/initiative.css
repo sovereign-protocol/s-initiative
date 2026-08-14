@@ -704,8 +704,22 @@ body.card-drag-active * {
   50% { opacity: 0.25; }
 }
 
+/* A ghost is only drawn once the other side has been seen still holding the
+   old seat, which is a beat after the change itself. Fading it in reads as
+   information arriving rather than as the board glitching. */
+.card.ghost,
+.column.ghost {
+  animation: ghost-settle 220ms ease-out both;
+}
+
+@keyframes ghost-settle {
+  from { opacity: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .card.stage-in_flight::after { animation: none; }
+  .card.ghost,
+  .column.ghost { animation: none; }
 }
 
 .card.stage-in_flight { border-left-color: #4c9aff; }
