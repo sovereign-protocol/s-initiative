@@ -27,9 +27,6 @@
       <section id="board" class="board"></section>
     </main>
 
-    <div id="reactionMenu" class="reaction-menu" role="menu" hidden></div>
-
-
     <dialog id="cardModal">
       <form method="dialog" id="cardForm">
         <h2 id="cardModalTitle">Card</h2>
@@ -38,7 +35,7 @@
         <label>Name<input id="cardName" /></label>
         <label>Description<textarea id="cardDescription" rows="5"></textarea></label>
         <div class="card-owner-row">
-          <label>Owner<select id="cardOwner"></select></label>
+          <label>Owner<select id="cardOwner" class="ui-select"></select></label>
           <div class="card-files">
             <span class="card-files-label">Files</span>
             <input id="cardFileInput" type="file" hidden />
@@ -89,7 +86,6 @@
     <script>
       let state = null;
       let draggedCard = null;
-      let draggedColumn = null;
       let dragActive = false;
       let modalCard = null;
       let modalColumn = null;
@@ -144,11 +140,83 @@
         return needsManualAdopt(node);
       }
 
-      function peerCopyOf(node) {
+      // A ghost is the seat a card has left: the position one side still
+      // gives it after the other has moved or deleted it. The solid card is
+      // always the current decision, wherever it now sits - the peer's if
+      // they made the move and we have not taken it yet, ours if we made it.
+      // Whoever is behind sees the ghost until they catch up, which is the
+      // same rule read from either screen.
+      function peerRootOf(node) {
         const info = transitionInfo(node.uuid);
-        if (!info || !info.peer_addr) return null;
-        const peerRoot = state.peers?.[info.peer_addr];
-        return peerRoot ? findNode(peerRoot, node.uuid) : null;
+        return info?.peer_addr ? state.peers?.[info.peer_addr] || null : null;
+      }
+
+      function peerCopyOf(node) {
+        const root = peerRootOf(node);
+        return root ? findNode(root, node.uuid) : null;
+      }
+
+      function movedByPeer(localNode) {
+        // The peer moved or deleted this and we have not taken it: our copy
+        // marks the seat it left, theirs holds the current one.
+        const info = transitionInfo(localNode.uuid);
+        if (!info || info.stage !== "awaiting_me") return false;
+        const root = peerRootOf(localNode);
+        // Without their tree there is no second position to know about, so
+        // nothing has been displaced as far as this screen can tell.
+        if (!root) return false;
+        const peerNode = findNode(root, localNode.uuid);
+        if (!peerNode || peerNode.deleted) return true;
+        return peerNode.parent_uuid !== localNode.parent_uuid;
+      }
+
+      function movedByMe(peerNode) {
+        // The mirror image: I moved or deleted it and the peer still shows
+        // the old seat. Deliberately not drawn while my change is only
+        // "in_flight" - that stage means nobody has been seen holding out
+        // yet, and a ghost that flashes up after every move I make would say
+        // nothing except that syncing takes a moment. "awaiting_peer" is the
+        // fact that they have observed my revision and kept theirs, which is
+        // exactly when their copy becomes a seat somebody is still sitting
+        // in. So auto-adopting peers never produce a ghost here at all.
+        //
+        // A conflict is drawn the same way for want of a better answer: with
+        // both sides having moved there is no agreed seat, so ours stays
+        // solid and theirs shows as the position they are still arguing for.
+        const info = transitionInfo(peerNode.uuid);
+        if (!info || !["awaiting_peer", "conflict"].includes(info.stage)) {
+          return false;
+        }
+        const localNode = findNode(state.board, peerNode.uuid);
+        if (!localNode || localNode.deleted) return true;
+        return localNode.parent_uuid !== peerNode.parent_uuid;
+      }
+
+      function peerOnlyNode(peerNode) {
+        // Nothing was displaced - the peer simply holds something we have
+        // never had. There is no seat to mark, so the ghost stands for the
+        // node itself, as it always has.
+        const info = transitionInfo(peerNode.uuid);
+        if (!info || info.stage !== "awaiting_me") return false;
+        return !findNode(state.board, peerNode.uuid);
+      }
+
+      function currentSeatOf(node) {
+        // The copy drawn solid for this uuid, or null when every side that
+        // had it has let it go - a deletion nobody has answered yet.
+        const local = findNode(state.board, node.uuid);
+        if (!local || local.deleted) return null;
+        if (!movedByPeer(local)) return local;
+        const peerNode = peerCopyOf(local);
+        return peerNode && !peerNode.deleted ? peerNode : null;
+      }
+
+      function localViewOf(node) {
+        // A card drawn at the seat the peer moved it to is their copy. The
+        // dialog compares versions and writes to ours, so it must be opened
+        // on the local node even when the tile came from their tree.
+        const local = findNode(state.board, node.uuid);
+        return local && !local.deleted ? local : node;
       }
 
       function isContainerOnlyDivergence(node) {
@@ -322,24 +390,20 @@
 
       function renderOwnerSelect() {
         const select = el("cardOwner");
-        select.replaceChildren();
-        const blank = document.createElement("option");
-        blank.value = "";
-        blank.textContent = "Unassigned";
-        select.append(blank);
-        for (const id of modalParticipants) {
-          const option = document.createElement("option");
-          option.value = id;
-          option.textContent = userForParticipant(id).name;
-          select.append(option);
-        }
-        select.value = modalParticipants.includes(modalOwner) ? modalOwner : "";
+        SovereignUI.selectOptions(
+          select,
+          modalParticipants.map((id) => [id, userForParticipant(id).name]),
+          {
+            emptyLabel: "Unassigned",
+            value: modalParticipants.includes(modalOwner) ? modalOwner : "",
+            disabled: modalReadOnlyPerspective,
+          },
+        );
         modalOwner = select.value || null;
-        select.disabled = modalReadOnlyPerspective;
       }
 
       async function loadBoard() {
-        if (dragActive) return;
+        if (dragActive || el("board")?.dataset.reordering === "true") return;
         try {
           state = await api("/api/initiative/board");
 
@@ -377,10 +441,16 @@
       function renderBoard() {
         const board = el("board");
 
-        // Alle Spalten (regulär + ghost) aus dem State holen und markieren
-        const activeCols = columns(state.board).map((c) => ({ ...c, _isGhost: false }));
+        // Alle Spalten (regulär + ghost) aus dem State holen und markieren.
+        // A column the peer has deleted stops being live here at once and is
+        // left as a ghost, and ghosts sort in among the live columns rather
+        // than after them - a ghost stands for a seat, so it belongs where
+        // that seat was.
+        const activeCols = columns(state.board)
+          .filter((column) => !movedByPeer(column))
+          .map((c) => ({ ...c, _isGhost: false }));
         const ghostCols = ghostColumns().map((c) => ({ ...c, _isGhost: true }));
-        const allCols = [...activeCols, ...ghostCols];
+        const allCols = sortNodes([...activeCols, ...ghostCols]);
 
         // Diffing für Spalten
         reconcileDOM(
@@ -405,15 +475,32 @@
             );
         }
         board.appendChild(addBtn);
+        SovereignUI.reorderableList({
+          container: board,
+          itemSelector: ".column:not(.ghost)",
+          axis: "horizontal",
+          getId: (column) => column.dataset.uuid,
+          onMove: ({id, index}) => api("/api/initiative/columns/move", {
+            column_uuid: id, index,
+          }),
+          onChanged: async () => {
+            showToast("Column moved");
+            await loadBoard();
+          },
+          onError: error => showToast(error.message, true),
+        });
       }
 
       // --- NEUE HELFER FÜR DAS DIFFING ---
 
       function updateColumnDOM(colEl, col) {
         // Spaltentitel-Input schützen, falls der Cursor drin ist
-        const nameInput = colEl.querySelector("input");
+        const nameInput = colEl.querySelector(".column-name");
         if (nameInput && document.activeElement !== nameInput) {
-          nameInput.value = col.data.name || "Column";
+          SovereignUI.editableText({
+            element: nameInput,
+            value: col.data.name || "Column",
+          });
         }
 
         // P2P Konflikt-Klassen/Adopt-Tools aktualisieren - sonst bleibt ein
@@ -425,22 +512,25 @@
         const tools = colEl.querySelector(".adopt-tools");
         if (tools) {
           tools.replaceChildren();
-          if (needsReaction(col) && (col._isGhost || !isContainerOnlyDivergence(col))) {
-            tools.append(reactionButton(col));
+          if (col._isGhost || !isContainerOnlyDivergence(col)) {
+            tools.append(...reactionTools(col));
           }
         }
 
         const cardList = colEl.querySelector(".card-list");
         if (!cardList) return;
 
-        // Karten für diese Spalte ermitteln
-        const activeCards = cards(col).map((c) => ({ ...c, _isGhost: false }));
+        // Karten für diese Spalte ermitteln - identisch zur Vollansicht,
+        // sonst zeigt eine gepatchte Spalte eine andere Wahrheit als eine
+        // frisch gerenderte.
+        const activeCards = (col._isGhost ? cards(col) : solidCards(col))
+          .map((c) => ({ ...c, _isGhost: false }));
         const gCards = col._isGhost
           ? []
           : ghostCards(col.uuid).map((c) => ({ ...c, _isGhost: true }));
         // Sorted together, exactly as the full render does: a ghost carries
-        // the position the peer gave it, and appending it after the real
-        // cards showed one the peer had put first sitting last.
+        // the position it was given, and appending it after the real cards
+        // showed one that belonged first sitting last.
         const allCards = sortNodes([...activeCards, ...gCards]);
 
         // Diffing für Karten
@@ -461,7 +551,8 @@
         cardEl.onclick = (event) => {
           if (card._isGhost) return;
           if (isInteractiveCardTarget(event)) return;
-          openCard(card, card.parent_uuid);
+          const view = localViewOf(card);
+          openCard(view, view.parent_uuid);
         };
 
         // Aktualisiert nur Text und Klassen, erhält Drag&Drop-Listener
@@ -507,34 +598,34 @@
         const article = document.createElement("article");
         article.className = "column";
         if (ghost) article.classList.add("ghost");
-        article.draggable = !ghost;
-        if (!ghost) {
-          article.onmousedown = (event) => {
-            article.draggable = !event.target.closest(".card");
-          };
-          article.onmouseup = () => {
-            article.draggable = true;
-          };
-        }
         article.dataset.uuid = column.uuid;
+        article.dataset.reorderId = column.uuid;
         applyTransitionClass(article, column.uuid, {
           suppress: !ghost && isContainerOnlyDivergence(column),
         });
 
         const head = document.createElement("div");
         head.className = "column-head";
-        const name = document.createElement("input");
-        name.value = column.data.name || "Column";
-        name.disabled = ghost;
-        name.onchange = () =>
-          run(
-            () =>
-              api("/api/initiative/columns/rename", {
-                column_uuid: column.uuid,
-                name: name.value,
-              }),
-            "Column renamed",
-          );
+        if (!ghost) {
+          head.append(SovereignUI.reorderHandle({label: "Reorder column"}));
+        }
+        const name = document.createElement("h3");
+        name.className = "column-name";
+        SovereignUI.editableText({
+          element: name,
+          value: column.data.name || "Column",
+          placeholder: "Column name",
+          editable: !ghost,
+          onCommit: (value) => api("/api/initiative/columns/rename", {
+            column_uuid: column.uuid,
+            name: value,
+          }),
+          onChanged: async () => {
+            showToast("Column renamed");
+            await loadBoard();
+          },
+          onError: error => showToast(error.message, true),
+        });
         const del = iconButton(ICON_DELETE, "Delete column", () =>
           confirmAction("Delete column?", "This deletes the column and all cards inside it.", () =>
             run(
@@ -551,8 +642,8 @@
         head.append(name, del);
         const tools = document.createElement("div");
         tools.className = "adopt-tools";
-        if (needsReaction(column) && (ghost || !isContainerOnlyDivergence(column))) {
-          tools.append(reactionButton(column));
+        if (ghost || !isContainerOnlyDivergence(column)) {
+          tools.append(...reactionTools(column));
         }
         head.append(tools);
         article.append(head);
@@ -565,12 +656,13 @@
           list.ondrop = (event) => dropCard(event, column.uuid);
         }
         // Ghosts are ordered among the real cards, not appended after them.
-        // A ghost carries the position the peer gave it, so tacking it onto
-        // the end showed a card the peer had put first sitting last - and
-        // then made it jump on adoption, as though adopting had moved it.
+        // A ghost carries the position the seat had, so tacking it onto the
+        // end showed a card that belonged first sitting last - and then made
+        // it jump on adoption, as though adopting had moved it.
         const ghosts = ghost ? [] : ghostCards(column.uuid);
         const ghostUuids = new Set(ghosts.map((card) => card.uuid));
-        sortNodes([...cards(column), ...ghosts]).forEach((card) =>
+        const solid = ghost ? cards(column) : solidCards(column);
+        sortNodes([...solid, ...ghosts]).forEach((card) =>
           list.append(renderCard(card, ghostUuids.has(card.uuid))),
         );
         article.append(list);
@@ -581,25 +673,6 @@
         add.onclick = () => openCard(null, column.uuid);
         if (!ghost) article.append(add);
 
-        if (!ghost) {
-          article.ondragstart = (event) => {
-            if (event.target.closest(".card")) return;
-            draggedColumn = column.uuid;
-            dragActive = true;
-            article.classList.add("dragging");
-            if (event.dataTransfer) {
-              event.dataTransfer.effectAllowed = "move";
-              event.dataTransfer.setData("text/plain", column.uuid);
-            }
-          };
-          article.ondragend = () => {
-            article.classList.remove("dragging");
-            draggedColumn = null;
-            dragActive = false;
-          };
-          article.ondragover = (event) => event.preventDefault();
-          article.ondrop = (event) => dropColumn(event, column.uuid);
-        }
         return article;
       }
 
@@ -633,7 +706,8 @@
             return;
           }
           if (isInteractiveCardTarget(event)) return;
-          openCard(card, card.parent_uuid);
+          const view = localViewOf(card);
+          openCard(view, view.parent_uuid);
         };
         if (!ghost) {
           node.onmousedown = (event) => {
@@ -776,112 +850,47 @@
         // The board root inherits every descendant hash difference. Only
         // offer a board-level decision when the board's own fields differ.
         if (isContainerOnlyDivergence(board)) return;
-        if (needsReaction(board)) {
-          tools.append(reactionButton(board));
-        }
+        tools.append(...reactionTools(board));
       }
 
-      function reactionButton(node) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.setAttribute("aria-label", "React to differences");
-        button.className = "react-button";
-        button.textContent = "React";
-        const info = transitionInfo(node.uuid);
-        if (info) button.title = transitionLabel(info);
-        button.onclick = (event) => {
-          event.stopPropagation();
-          openReactionMenu(button, node.uuid);
-        };
-        return button;
+      // The control itself is Core's - one available act reads as a button
+      // naming it, several become a menu - so a divergence looks the same
+      // here, in the Cockpit and in the collaboration pane. Kanban decides
+      // only which nodes are offered one.
+      function reactionTools(node) {
+        if (!needsReaction(node)) return [];
+        const control = SovereignUI.reactionControl({
+          info: transitionInfo(node.uuid),
+          className: "react-button",
+          onReact: (choice) => applyReaction(node.uuid, choice),
+        });
+        return control ? [control] : [];
       }
 
       function cardReactionTools(card, ghost = false) {
-        // A moved card can be rendered once at our position and once as a
-        // ghost at the peer position. Keep a single reaction entry point on
-        // the real local card; a brand-new peer-only card has only a ghost.
-        if (ghost && findNode(state.board, card.uuid)) return [];
-        return needsReaction(card) ? [reactionButton(card)] : [];
+        // A moved card is drawn twice: solid at the seat it holds now, ghost
+        // at the one it left. One reaction entry point per node, and it goes
+        // on the solid card - that is the version being decided about.
+        //
+        // A ghost keeps the button only when there is no solid card left to
+        // put it on: a deletion neither side has answered, or a card only
+        // the peer has. Otherwise a card I deleted, which survives locally
+        // as a tombstone and is drawn only as their ghost, would lose the
+        // one control there was and leave no way to take the deletion back.
+        if (ghost && currentSeatOf(card)) return [];
+        return reactionTools(card);
       }
 
-      function reactionChoices(uuid) {
-        const info = transitionInfo(uuid);
-        const contributingEvents = info?.events || (info ? [info] : []);
-        const eventByAddr = new Map(contributingEvents.map((event) => [event.peer_addr, event]));
-        const contributingAddrs = new Set(eventByAddr.keys());
-        const peers = Object.entries(state.peers || {})
-          .map(([addr, root]) => ({
-            addr,
-            missing: !(root && findNode(root, uuid)),
-            event: eventByAddr.get(addr),
-          }))
-          .filter((item) => contributingAddrs.has(item.addr));
-        return peers.map((item) => ({
-          // Named for the act, from the side being offered the choice: the
-          // old labels were built from peer-relative summaries, which is how
-          // taking back a card creation came out as "keep your card".
-          label: transitionReactionLabel(item.event),
-          action: item.event?.reaction || "adopt",
-          peer: item,
-        }));
-      }
-
-      function closeReactionMenu() {
-        const menu = el("reactionMenu");
-        menu.hidden = true;
-        menu.replaceChildren();
-      }
-
-      function openReactionMenu(anchor, uuid) {
-        const reactions = reactionChoices(uuid);
-        if (!reactions.length) return showToast("No reaction available", true);
-        const menu = el("reactionMenu");
-        menu.replaceChildren();
-        for (const reaction of reactions) {
-          const option = document.createElement("button");
-          option.type = "button";
-          option.className = "reaction-menu-option";
-          option.textContent = reaction.label;
-          option.onclick = async (event) => {
-            event.stopPropagation();
-            closeReactionMenu();
-            await applyReaction(uuid, reaction);
-          };
-          menu.append(option);
-        }
-        menu.hidden = false;
-        const rect = anchor.getBoundingClientRect();
-        const margin = 8;
-        const left = Math.max(margin, Math.min(
-          rect.left, window.innerWidth - menu.offsetWidth - margin,
-        ));
-        let top = rect.bottom + 4;
-        if (top + menu.offsetHeight > window.innerHeight - margin) {
-          top = Math.max(margin, rect.top - menu.offsetHeight - 4);
-        }
-        menu.style.left = `${left}px`;
-        menu.style.top = `${top}px`;
-      }
-
-      document.addEventListener("click", (event) => {
-        if (!event.target.closest("#reactionMenu")) closeReactionMenu();
-      });
-      document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") closeReactionMenu();
-      });
-      window.addEventListener("resize", closeReactionMenu);
-      window.addEventListener("scroll", closeReactionMenu, true);
-
-      async function applyReaction(uuid, reaction) {
-        const endpoint = reaction.action === "rollback"
+      async function applyReaction(uuid, choice) {
+        const endpoint = choice.action === "rollback"
           ? "/api/initiative/rollback"
           : "/api/initiative/adopt";
         await run(() => api(endpoint, {
           node_uuid: uuid,
-          source_addr: reaction.peer.addr,
-          adopt_absence: reaction.action === "adopt" && reaction.peer.missing,
-          rollback_absence: reaction.action === "rollback" && reaction.peer.missing,
-        }), reaction.action === "rollback" ? "Rolled back" : "Adopted");
+          source_addr: choice.peerAddr,
+          adopt_absence: choice.action === "adopt" && choice.absent,
+          rollback_absence: choice.action === "rollback" && choice.absent,
+        }), choice.action === "rollback" ? "Rolled back" : "Adopted");
       }
 
       function openCard(card, columnUuid) {
@@ -1263,15 +1272,12 @@
           label.textContent = field.label;
           let control;
           if (field.type === "select") {
-            control = document.createElement("select");
-            control.name = field.name;
-            for (const option of field.options || []) {
-              const opt = document.createElement("option");
-              opt.value = option.value;
-              opt.textContent = option.label;
-              if (option.value === field.value) opt.selected = true;
-              control.append(opt);
-            }
+            const selection = SovereignUI.selectionField({
+              name: field.name,
+              items: field.options || [],
+              value: field.value,
+            });
+            control = selection.control;
           } else if (field.type === "display") {
             control = document.createElement("div");
             control.className = "change-summary";
@@ -1304,45 +1310,40 @@
       async function commitCardDrop(list, columnUuid) {
         if (!draggedCard) return;
         const dragging = document.querySelector(".card.dragging");
-        const order = [...list.querySelectorAll(".card")].map(
+        // Ghosts are seats, not cards: counting them would push the index
+        // past the live card the drop was aimed at.
+        const order = [...list.querySelectorAll(".card:not(.ghost)")].map(
           (item) => item.dataset.uuid,
         );
         const cardUuid = draggedCard;
         draggedCard = null;
+        // Dragging a card the peer has just moved would otherwise set my
+        // move against theirs from a base neither of us is at any more, and
+        // the pair classifies as a real divergence - a conflict invented out
+        // of two ordinary moves. Taking their move first makes mine simply
+        // the next one in the sequence.
+        const info = transitionInfo(cardUuid);
         try {
           await run(
-            () =>
-              api("/api/initiative/cards/move", {
+            async () => {
+              if (info?.stage === "awaiting_me") {
+                await api("/api/initiative/adopt", {
+                  node_uuid: cardUuid,
+                  source_addr: info.peer_addr,
+                  adopt_absence: false,
+                  rollback_absence: false,
+                });
+              }
+              return api("/api/initiative/cards/move", {
                 card_uuid: cardUuid,
                 column_uuid: columnUuid,
                 index: Math.max(0, order.indexOf(cardUuid)),
-              }),
+              });
+            },
             "Card moved",
           );
         } finally {
           dragging?.classList.remove("dragging");
-          dragActive = false;
-          await loadBoard();
-        }
-      }
-
-      async function dropColumn(event, targetUuid) {
-        event.preventDefault();
-        if (!draggedColumn || draggedColumn === targetUuid) return;
-        const order = columns(state.board).map((item) => item.uuid);
-        const index = order.indexOf(targetUuid);
-        const columnUuid = draggedColumn;
-        draggedColumn = null;
-        try {
-          await run(
-            () =>
-              api("/api/initiative/columns/move", {
-                column_uuid: columnUuid,
-                index,
-              }),
-            "Column moved",
-          );
-        } finally {
           dragActive = false;
           await loadBoard();
         }
@@ -1380,12 +1381,41 @@
           (column.children || []).filter((node) => node.data.type === "kanban_card" && !node.deleted),
         );
       }
+      function solidCards(column) {
+        // What is live in this column now: our own cards, less the ones the
+        // peer has moved out or deleted, plus the ones they have moved in.
+        // The solid card follows the current seat wherever it went.
+        const local = cards(column).filter((card) => !movedByPeer(card));
+        return sortNodes([...local, ...arrivedCards(column.uuid)]);
+      }
+      function arrivedCards(columnUuid) {
+        // Read from our own tree, not by scanning peer columns: the peer who
+        // authored the move is the one the transition names, so two peers
+        // moving the same card cannot land it in two columns at once.
+        const arrivals = new Map();
+        for (const column of columns(state.board)) {
+          for (const card of cards(column)) {
+            if (!movedByPeer(card)) continue;
+            const peerNode = peerCopyOf(card);
+            if (peerNode && !peerNode.deleted
+                && peerNode.parent_uuid === columnUuid) {
+              arrivals.set(card.uuid, peerNode);
+            }
+          }
+        }
+        return [...arrivals.values()];
+      }
       function ghostColumns() {
-        const localIds = new Set(columns(state.board).map((column) => column.uuid));
         const ghosts = new Map();
+        // A column cannot change parent, so the only seat it leaves is the
+        // one a deletion empties - ours when the peer deleted it.
+        for (const column of columns(state.board)) {
+          if (movedByPeer(column)) ghosts.set(column.uuid, column);
+        }
         for (const root of boardPeerRoots()) {
-          for (const column of columns(root || { children: [] })) {
-            if (!localIds.has(column.uuid) && !autoAdoptAllowsNode(column)) {
+          for (const column of columns(root)) {
+            if (ghosts.has(column.uuid)) continue;
+            if (movedByMe(column) || peerOnlyNode(column)) {
               ghosts.set(column.uuid, column);
             }
           }
@@ -1393,13 +1423,20 @@
         return sortNodes([...ghosts.values()]);
       }
       function ghostCards(columnUuid) {
-        const localColumn = findNode(state.board, columnUuid);
-        const localIds = new Set(cards(localColumn || { children: [] }).map((card) => card.uuid));
         const ghosts = new Map();
+        // The seat a card left when the peer moved or deleted it: our own
+        // copy, still sitting here, no longer the current one.
+        const localColumn = findNode(state.board, columnUuid);
+        for (const card of cards(localColumn || { children: [] })) {
+          if (movedByPeer(card)) ghosts.set(card.uuid, card);
+        }
+        // The seat the peer still gives a card after I moved or deleted it,
+        // and cards only they hold - both drawn from their copy.
         for (const root of boardPeerRoots()) {
           const peerColumn = findNode(root, columnUuid);
           for (const card of cards(peerColumn || { children: [] })) {
-            if (!localIds.has(card.uuid) && !autoAdoptAllowsNode(card)) {
+            if (ghosts.has(card.uuid)) continue;
+            if (movedByMe(card) || peerOnlyNode(card)) {
               ghosts.set(card.uuid, card);
             }
           }
@@ -1572,6 +1609,7 @@
           topicKey: 'board_uuid',
           create: '/api/initiative/agenda/create',
           delete: '/api/initiative/agenda/delete',
+          update: '/api/initiative/agenda/update',
           setPriority: '/api/initiative/agenda/set_priority',
           move: '/api/initiative/agenda/move',
         },
@@ -1587,6 +1625,7 @@
           return node ? (node.data.name || node.data.text || '') : '';
         },
         revealNode: (uuid) => highlightCard(uuid),
+        reactNode: (uuid, choice) => applyReaction(uuid, choice),
         onChanged: () => loadBoard(),
       });
       // The board-level decision sits with the board's name; the auto-adopt

@@ -42,7 +42,10 @@ class ServerConfigTests(unittest.TestCase):
 
             loaded = Session("http://127.0.0.1:9121")
             self.assertTrue(app_server.load_session_from_file(loaded, str(path)))
-            self.assertEqual(loaded.protocol.root.children[0].data["name"], "saved")
+            self.assertTrue(any(
+                child.data.get("name") == "saved"
+                for child in loaded.protocol.root.children
+            ))
             self.assertFalse(list(path.parent.glob("state.json.*.tmp")))
 
 

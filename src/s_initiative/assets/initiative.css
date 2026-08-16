@@ -561,8 +561,6 @@ button.auto-adopt-square {
 .column.stage-awaiting_me { outline-color: #f59e0b; }
 .column.stage-conflict { outline-color: #de350b; }
 
-.column.dragging { opacity: 0.55; }
-
 body.card-drag-pending,
 body.card-drag-pending * {
   user-select: none !important;
@@ -592,26 +590,21 @@ body.card-drag-active * {
 
 .column-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 6px;
   padding: 2px 0 8px;
 }
+.column.ghost .column-head {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
 
-.column-head input {
+.column-head .column-name {
+  margin: 0;
   min-width: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
   color: var(--text);
   font-size: 14px;
   font-weight: 700;
-  padding: 6px;
-}
-
-.column-head input:focus {
-  background: rgba(255, 255, 255, 0.06);
-  outline: 2px solid var(--teal);
 }
 
 .card button, .add-card, .add-column {
@@ -629,8 +622,7 @@ body.card-drag-active * {
   justify-content: flex-end;
 }
 
-.adopt,
-.react-button {
+.adopt {
   border-color: var(--border-strong) !important;
   color: var(--text) !important;
   background: transparent !important;
@@ -639,39 +631,27 @@ body.card-drag-active * {
   width: auto;
 }
 
-.reaction-menu {
-  position: fixed;
-  z-index: 10000;
-  display: grid;
-  width: min(30rem, calc(100vw - 16px));
-  max-height: min(24rem, calc(100vh - 16px));
-  overflow-y: auto;
-  padding: 4px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
-}
-
-.reaction-menu[hidden] {
-  display: none;
-}
-
-.reaction-menu-option {
-  width: 100%;
-  border: 0;
-  background: transparent;
+/* Core draws the reaction control; these rules only lift it clear of the
+   generic ".card button" muting, which is more specific than Core's own
+   class and would otherwise grey out the one control a diverged card has. */
+.react-button {
   color: var(--text);
-  padding: 9px 10px;
-  text-align: left;
-  white-space: normal;
+  cursor: pointer;
+  font-weight: 700;
+  width: auto;
 }
 
-.reaction-menu-option:hover,
-.reaction-menu-option:focus-visible {
-  background: rgba(255, 255, 255, 0.08);
-  outline: none;
+.card button.react-button { color: var(--text); }
+
+.card button.react-button:hover,
+.card button.react-button:focus-visible {
+  border-color: var(--teal);
+  background: var(--teal-soft);
+  color: var(--text);
 }
+
+/* The menu itself is Core's (.ui-reaction-menu in shared.css) - only the
+   board's own trigger styling stays here. */
 
 .card-list {
   min-height: 18px;
@@ -724,8 +704,22 @@ body.card-drag-active * {
   50% { opacity: 0.25; }
 }
 
+/* A ghost is only drawn once the other side has been seen still holding the
+   old seat, which is a beat after the change itself. Fading it in reads as
+   information arriving rather than as the board glitching. */
+.card.ghost,
+.column.ghost {
+  animation: ghost-settle 220ms ease-out both;
+}
+
+@keyframes ghost-settle {
+  from { opacity: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .card.stage-in_flight::after { animation: none; }
+  .card.ghost,
+  .column.ghost { animation: none; }
 }
 
 .card.stage-in_flight { border-left-color: #4c9aff; }

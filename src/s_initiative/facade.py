@@ -50,6 +50,12 @@ class InitiativeFacade:
     def copy_board(self, board_uuid: str):
         return self._logic.copy_board(board_uuid)
 
+    def export_snapshot(self, board_uuid: str, name: str = "", description: str = ""):
+        return self._logic.export_snapshot(board_uuid, name, description)
+
+    def create_from_snapshot(self, document: dict, name: str = ""):
+        return self._logic.create_from_snapshot(document, name)
+
     def rename_board(self, board_uuid: str, name: str):
         return self._logic.rename_board(board_uuid, name)
 
@@ -98,6 +104,9 @@ class InitiativeFacade:
 
     def delete_agenda_item(self, item_uuid: str):
         return self._logic.delete_agenda_item(item_uuid)
+
+    def update_agenda_item(self, item_uuid: str, text: str):
+        return self._logic.update_agenda_item(item_uuid, text)
 
     def set_agenda_item_priority(
         self, item_uuid: str, priority: str | None,
