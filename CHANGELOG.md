@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0a5 - 2026-08-16
 
 - A ghost is now the seat a card has left, not the copy somebody else holds.
   Whoever made the move sees their card solid at its new position, and the
