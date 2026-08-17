@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Board highlighting takes the shared stage colours.** The board already
+  keyed on the stage, but with a palette of its own, so the same fact was one
+  colour here and another on a team page — and `in_flight` was grey on a
+  column while being blue on a card. Both are the shared grey now. The purple
+  that separated "awaiting a peer" from "in flight" is gone with it: the
+  header counts both as in transition, and the pulse already says which is
+  still travelling without spending a colour on it.
+
 ## 0.1.0a5 - 2026-08-16
 
 - A ghost is now the seat a card has left, not the copy somebody else holds.

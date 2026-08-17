@@ -553,13 +553,18 @@ button.auto-adopt-square {
 
 /* One colour per stage of the exchange, not per relation: what a person
    needs at a glance is whose turn it is, and the same situation must look
-   the same on both screens. Grey is still travelling, purple is mine and
-   waiting on them, amber is theirs and waiting on me, red is a real
-   two-sided conflict - the only one of the four to act on immediately. */
-.column.stage-in_flight { outline-color: #8c9bab; }
-.column.stage-awaiting_peer { outline-color: #6554c0; }
-.column.stage-awaiting_me { outline-color: #f59e0b; }
-.column.stage-conflict { outline-color: #de350b; }
+   the same on both screens - and on every other surface that reports it.
+   The tokens come from shared.css, so a card here, a dot on a team row and
+   a band in the header are the same colour for the same fact.
+   Grey is not yet anybody's move, amber is theirs and waiting on me, red is
+   a real two-sided conflict - the only one to act on immediately.
+   In flight and awaiting a peer share the grey: the header counts both as
+   "in transition", and what separates them here is the pulse below, which
+   says "still travelling" without spending a second colour on it. */
+.column.stage-in_flight,
+.column.stage-awaiting_peer { outline-color: var(--stage-transit-fill); }
+.column.stage-awaiting_me { outline-color: var(--stage-review-fill); }
+.column.stage-conflict { outline-color: var(--stage-conflict-fill); }
 
 body.card-drag-pending,
 body.card-drag-pending * {
@@ -695,13 +700,8 @@ body.card-drag-active * {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #4c9aff;
+  background: var(--stage-transit-fill);
   animation: stage-pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes stage-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.25; }
 }
 
 /* A ghost is only drawn once the other side has been seen still holding the
@@ -722,10 +722,10 @@ body.card-drag-active * {
   .column.ghost { animation: none; }
 }
 
-.card.stage-in_flight { border-left-color: #4c9aff; }
-.card.stage-awaiting_peer { border-left-color: #6554c0; }
-.card.stage-awaiting_me { border-left-color: #f59e0b; }
-.card.stage-conflict { border-left-color: #de350b; }
+.card.stage-in_flight,
+.card.stage-awaiting_peer { border-left-color: var(--stage-transit-fill); }
+.card.stage-awaiting_me { border-left-color: var(--stage-review-fill); }
+.card.stage-conflict { border-left-color: var(--stage-conflict-fill); }
 
 .card:hover {
   border-color: var(--border-strong);
