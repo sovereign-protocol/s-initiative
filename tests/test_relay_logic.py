@@ -44,6 +44,11 @@ class FakeSftpFile:
     def read(self):
         return self.data
 
+    def stat(self):
+        # paramiko's SFTPFile answers fstat on the open handle, which is how
+        # a read gets its mtime without a second path lookup.
+        return self.client.stat(self.path)
+
     def __enter__(self):
         return self
 
