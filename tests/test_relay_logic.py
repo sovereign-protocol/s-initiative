@@ -201,14 +201,16 @@ class LocalFolderRelayStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             storage = LocalFolderRelayStorage(root)
 
-            storage.write_snapshot("topic-1", "A", "hash-1", {
-                "subtree": {"name": "x"},
-                "parent_uuid": None,
-                "_relay_publication_seq": 7,
-                "_relay_ack_requested": True,
-                "_relay_ack_publication_seq": 7,
-                "_relay_observed_publications": {"B": 4},
-            })
+            storage.write_snapshot(
+                "topic-1", "A", "hash-1",
+                {"subtree": {"name": "x"}, "parent_uuid": None},
+                publication={
+                    "publication_seq": 7,
+                    "ack_requested": True,
+                    "ack_publication_seq": 7,
+                    "observed_publications": {"B": 4},
+                },
+            )
 
             head = storage.read_head("topic-1", "A")
             self.assertEqual(head["hash"], "hash-1")
@@ -218,7 +220,11 @@ class LocalFolderRelayStorageTests(unittest.TestCase):
             self.assertEqual(head["ack_publication_seq"], 7)
             self.assertEqual(head["observed_publications"], {"B": 4})
             snapshot = storage.read_snapshot("topic-1", "A", "hash-1")
-            self.assertEqual(snapshot["subtree"], {"name": "x"})
+            # The head's metadata belongs to the head. A file named after a
+            # hash holds that hash's content and nothing that moves under it.
+            self.assertEqual(
+                snapshot, {"subtree": {"name": "x"}, "parent_uuid": None},
+            )
 
     def test_read_missing_peer_or_topic_returns_none(self):
         with tempfile.TemporaryDirectory() as root:
@@ -398,14 +404,16 @@ class SftpRelayStorageTests(unittest.TestCase):
         fake = FakeSftpClient()
         storage = _sftp_storage_with_fake(fake)
 
-        storage.write_snapshot("topic-1", "A", "hash-1", {
-            "subtree": {"name": "x"},
-            "parent_uuid": None,
-            "_relay_publication_seq": 7,
-            "_relay_ack_requested": True,
-            "_relay_ack_publication_seq": 7,
-            "_relay_observed_publications": {"B": 4},
-        })
+        storage.write_snapshot(
+            "topic-1", "A", "hash-1",
+            {"subtree": {"name": "x"}, "parent_uuid": None},
+            publication={
+                "publication_seq": 7,
+                "ack_requested": True,
+                "ack_publication_seq": 7,
+                "observed_publications": {"B": 4},
+            },
+        )
 
         head = storage.read_head("topic-1", "A")
         self.assertEqual(head["hash"], "hash-1")
@@ -415,7 +423,34 @@ class SftpRelayStorageTests(unittest.TestCase):
         self.assertEqual(head["ack_publication_seq"], 7)
         self.assertEqual(head["observed_publications"], {"B": 4})
         snapshot = storage.read_snapshot("topic-1", "A", "hash-1")
-        self.assertEqual(snapshot["subtree"], {"name": "x"})
+        # The head's metadata belongs to the head. A file named after a hash
+        # holds that hash's content and nothing that moves under it.
+        self.assertEqual(
+            snapshot, {"subtree": {"name": "x"}, "parent_uuid": None},
+        )
+
+    def test_a_head_can_be_written_without_the_subtree(self):
+        # An acknowledgement moves a sequence number and nothing else, so it
+        # writes the head alone and leaves the snapshot where it is.
+        fake = FakeSftpClient()
+        storage = _sftp_storage_with_fake(fake)
+        storage.write_snapshot(
+            "topic-1", "A", "hash-1",
+            {"subtree": {"name": "x"}, "parent_uuid": None},
+            publication={"publication_seq": 1, "ack_requested": True},
+        )
+        before = storage.read_snapshot("topic-1", "A", "hash-1")
+
+        storage.write_head(
+            "topic-1", "A", "hash-1",
+            publication={"publication_seq": 2, "ack_requested": False},
+        )
+
+        head = storage.read_head("topic-1", "A")
+        self.assertEqual(head["publication_seq"], 2)
+        self.assertFalse(head["ack_requested"])
+        self.assertEqual(head["hash"], "hash-1")
+        self.assertEqual(storage.read_snapshot("topic-1", "A", "hash-1"), before)
 
     def test_read_missing_peer_or_topic_returns_none(self):
         fake = FakeSftpClient()
