@@ -24,6 +24,7 @@
 
 
     <main>
+      <section id="initiativeLinks" class="initiative-links"></section>
       <section id="board" class="board"></section>
     </main>
 
@@ -431,6 +432,8 @@
           renderNetwork();
           renderSelfAvatar();
 
+          renderLinks();
+
           // Neues Rendering via Diffing
           renderBoard();
         } catch (error) {
@@ -489,6 +492,109 @@
           },
           onError: error => showToast(error.message, true),
         });
+      }
+
+      // What this initiative belongs to and runs. Rendered whole every time
+      // rather than patched: a link's data never changes once written - a
+      // reference is replaced, not edited - so there is nothing for a patch
+      // to be cheaper about, and no second function to keep in step.
+      function renderLinks() {
+        const container = el("initiativeLinks");
+        container.replaceChildren();
+        for (const link of state.links || []) {
+          container.append(renderLink(link));
+        }
+        const add = document.createElement("button");
+        add.type = "button";
+        add.className = "initiative-link-add ui-button";
+        add.textContent = (state.links || []).length
+          ? "+ Link"
+          : "+ Link a team or flow";
+        add.onclick = openLinkPicker;
+        container.append(add);
+      }
+
+      function renderLink(link) {
+        const chip = document.createElement("span");
+        chip.className = `initiative-link${link.held ? "" : " unheld"}`;
+        chip.dataset.uuid = link.uuid;
+
+        const label = document.createElement("span");
+        label.className = "initiative-link-label";
+        label.textContent = link.label;
+        chip.append(label);
+
+        if (link.held) {
+          const anchor = document.createElement("a");
+          anchor.className = "initiative-link-title";
+          anchor.href = link.href;
+          anchor.textContent = link.title;
+          chip.append(anchor);
+        } else {
+          // Not broken - an invitation. Following it reaches only what a peer
+          // is already publishing here, so it resolves or it says nobody is.
+          const offer = document.createElement("button");
+          offer.type = "button";
+          offer.className = "initiative-link-title";
+          offer.title = "You do not hold this yet - click to take it up";
+          offer.textContent = link.title;
+          offer.onclick = () => run(
+            () => api("/api/initiative/links/follow", {link_uuid: link.uuid}),
+            `Joined ${link.title}`,
+          );
+          chip.append(offer);
+        }
+
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "initiative-link-remove";
+        remove.textContent = "×";
+        // One reference, gone. The team or flow is untouched, and so is
+        // everybody else's reference to it - which is why this asks nothing.
+        remove.title =
+          `Remove this reference. The ${link.label.toLowerCase()} itself is kept`;
+        remove.onclick = () => run(
+          () => api("/api/initiative/links/remove", {link_uuid: link.uuid}),
+          "Reference removed",
+        );
+        chip.append(remove);
+        return chip;
+      }
+
+      function openLinkPicker() {
+        const options = state.linkable_topics || [];
+        if (!options.length) {
+          showToast(
+            "Nothing to link yet - open the team or flow in this client first",
+            true,
+          );
+          return;
+        }
+        openSimple(
+          "Link a team or flow",
+          [{
+            name: "topic",
+            label: "Topic",
+            type: "select",
+            options: options.map((topic) => ({
+              value: topic.topic_uuid,
+              label: `${topic.label} · ${topic.title}`,
+            })),
+            value: options[0].topic_uuid,
+          }],
+          async (form) => {
+            const chosen = options.find(
+              (topic) => topic.topic_uuid === form.get("topic"),
+            );
+            if (!chosen) throw new Error("pick something to link");
+            return api("/api/initiative/links/create", {
+              board_uuid: state.board.uuid,
+              topic_uuid: chosen.topic_uuid,
+              application_id: chosen.application_id,
+              title: chosen.title,
+            });
+          },
+        );
       }
 
       // --- NEUE HELFER FÜR DAS DIFFING ---

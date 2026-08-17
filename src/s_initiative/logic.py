@@ -36,6 +36,15 @@ Contract:
     POST /api/initiative/cards/comments/delete {comment_uuid}
     POST /api/initiative/adopt               {source_addr, node_uuid, adopt_absence}
     POST /api/initiative/rollback            {source_addr, node_uuid}
+    POST /api/initiative/links/create        {board_uuid, topic_uuid, application_id, title}
+    POST /api/initiative/links/remove        {link_uuid}
+    POST /api/initiative/links/follow        {link_uuid}
+
+  Links:
+    An initiative names the team it belongs to (0-1) and the flows it runs
+    (0-n), through Core's topic_link node as a direct child of the board.
+    Removing a link removes the reference and nothing else; the team or flow
+    is the owning application's to delete.
 """
 
 from __future__ import annotations
@@ -60,6 +69,12 @@ AUTO_ADOPT_MODES = ("always", "not_owner", "not_member", "never")
 AGENDA_PRIORITIES = ("high", "medium", "low")
 DISPLAYED_DIVERGENCE_TYPES = frozenset({
     "kanban_board", "kanban_column", "kanban_card",
+    # Anybody on the initiative may add or remove one, and which team an
+    # initiative belongs to is worth a human noticing when two clients
+    # disagree about it. A link's data never changes after it is written -
+    # a reference is replaced, not edited - so what shows here is a link
+    # present on one side and not the other, which is the whole of it.
+    "topic_link",
 })
 OWNED_NODE_TYPES = frozenset({
     *DISPLAYED_DIVERGENCE_TYPES,
@@ -135,6 +150,10 @@ class InitiativeLogic:
             "comments_by_card": self._comments_by_card(board) if board else {},
             "attachments_by_card": (
                 self._attachments_by_card(board) if board else {}
+            ),
+            "links": self.initiative_links(board) if board else [],
+            "linkable_topics": (
+                self.linkable_topics(board.uuid) if board else []
             ),
         }
 
@@ -444,6 +463,150 @@ class InitiativeLogic:
         data = dict(board.data)
         data["objective"] = objective or ""
         return self.session.modify(board.uuid, data, board.weights)
+
+    # An initiative belongs to a team and may run flows. Both are other
+    # applications' topics, and both are referenced with Core's topic link:
+    # an ordinary child of the initiative that says where the reference is
+    # and nothing about what the topic contains.
+    #
+    # A link is a name for a topic and never a key to it. The uuid on its own
+    # opens nothing - following one reaches only what a peer is already
+    # publishing where this client can see it - so naming the team an
+    # initiative belongs to hands nobody access they did not already have.
+    LINKED_APPLICATIONS = {
+        "team": {"label": "Team", "path": "/apps/team?team="},
+        "flow": {"label": "Flow", "path": "/apps/flow?process_uuid="},
+    }
+
+    def initiative_links(self, board: ProtocolNode) -> list[dict]:
+        """What this initiative references, ready to render.
+
+        The recorded title is what a link says before the topic is held.
+        Once it is held its own name wins, because a copied title is the
+        name something had on the day the link was made.
+        """
+        out = []
+        for child in board.children:
+            if child.deleted or child.data.get("type") != "topic_link":
+                continue
+            application_id = str(child.data.get("application_id") or "")
+            entry = self.LINKED_APPLICATIONS.get(application_id)
+            if not entry:
+                continue
+            topic_uuid = str(child.data.get("topic_uuid") or "")
+            held = self.session.get_node(topic_uuid)
+            out.append({
+                "uuid": child.uuid,
+                "topic_uuid": topic_uuid,
+                "application_id": application_id,
+                "label": entry["label"],
+                "title": self._link_title(held, child),
+                "href": f"{entry['path']}{topic_uuid}",
+                "held": held is not None,
+            })
+        return sorted(out, key=lambda link: (
+            link["label"], link["title"].lower(),
+        ))
+
+    @staticmethod
+    def _link_title(held: ProtocolNode | None, link: ProtocolNode) -> str:
+        if held is not None:
+            live = str(held.data.get("title") or held.data.get("name") or "")
+            if live:
+                return live
+        return str(link.data.get("title") or "Untitled")
+
+    def link_topic(
+        self, board_uuid: str, topic_uuid: str,
+        application_id: str, title: str = "",
+    ) -> SessionResult:
+        board = self._node(board_uuid, "kanban_board")
+        if not board:
+            return SessionResult("error", reason="initiative not found")
+        if application_id not in self.LINKED_APPLICATIONS:
+            return SessionResult(
+                "error", reason="an initiative does not link to that",
+            )
+        # One team, as the blueprint has it. A second one is not a second
+        # opinion about whose initiative this is, it is a contradiction, and
+        # the way to change the answer is to remove the first.
+        if application_id == "team" and self.team_link(board):
+            return SessionResult(
+                "error",
+                reason="this initiative already names a team",
+            )
+        # Core refuses only what this client has already said, because a
+        # team's list of what it runs is the union of its members' own
+        # references. An initiative is not that: what it belongs to and what
+        # it runs are properties of the initiative, so one reference is the
+        # whole of it whoever wrote it, and a second would draw twice.
+        existing = {link["topic_uuid"] for link in self.initiative_links(board)}
+        if topic_uuid in existing:
+            return SessionResult(
+                "error", reason="this initiative already names that",
+            )
+        return self.session.create_topic_link(
+            board.uuid, topic_uuid, application_id, title,
+        )
+
+    def team_link(self, board: ProtocolNode) -> dict | None:
+        for link in self.initiative_links(board):
+            if link["application_id"] == "team":
+                return link
+        return None
+
+    def unlink_topic(self, link_uuid: str) -> SessionResult:
+        """Remove one reference. The team or flow itself is untouched, and
+        so is everybody else's reference to it."""
+        return self.session.remove_topic_link(link_uuid)
+
+    def follow_link(self, link_uuid: str) -> SessionResult:
+        return self.session.follow_topic_link(link_uuid)
+
+    def linkable_topics(self, board_uuid: str | None = None) -> list[dict]:
+        """Teams and flows this client holds that this initiative could name.
+
+        Only what is already here. There is nothing to search: a topic this
+        client has never been told about is not merely unlisted, it is
+        unreachable, and offering to link it would be offering a uuid to
+        type in.
+        """
+        board = (
+            self._node(board_uuid, "kanban_board") if board_uuid
+            else self._selected_board(self.boards())
+        )
+        linked = {
+            link["topic_uuid"] for link in self.initiative_links(board)
+        } if board else set()
+        out = []
+        for topic_uuid in self.session.shared_topic_uuids():
+            if topic_uuid in linked:
+                continue
+            topic = self.session.get_node(topic_uuid)
+            # Core answers which application owns a root type, so this never
+            # has to know what a team or a process is - and this
+            # application's own topics are left out by the same test.
+            handler = (
+                self.session.shared_topic_handler_for(topic) if topic else None
+            )
+            application_id = str(
+                getattr(handler, "application_id", "") or "",
+            )
+            entry = self.LINKED_APPLICATIONS.get(application_id)
+            if not entry:
+                continue
+            out.append({
+                "topic_uuid": topic_uuid,
+                "application_id": application_id,
+                "label": entry["label"],
+                "title": str(
+                    topic.data.get("title") or topic.data.get("name")
+                    or "Untitled",
+                ),
+            })
+        return sorted(out, key=lambda item: (
+            item["label"], item["title"].lower(),
+        ))
 
     def copy_board(self, board_uuid: str) -> SessionResult:
         board = self._node(board_uuid, "kanban_board")
@@ -1097,6 +1260,7 @@ class InitiativeLogic:
             "kanban_column": "Column",
             "kanban_board": "Board",
             "agenda_item": "Discussion topic",
+            "topic_link": "Link",
         }.get(node_type, "Item")
         if not local:
             return self._annotate_authorship([{

@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- **An initiative names the team it belongs to and the flows it runs.** Both
+  are other applications' topics, referenced through Core's `topic_link` as
+  direct children of the initiative. One team — a second is not a second
+  opinion about whose initiative this is, and the way to change the answer is
+  to remove the first — and as many flows as it likes. The picker offers only
+  what this client already holds, because a topic nobody has told you about is
+  not merely unlisted, it is unreachable.
+
+  A link is a name for a topic and never a key to it: following one reaches
+  only what a peer is already publishing where this client can see it, which
+  is why naming the team hands nobody access they did not have. A link to
+  something not held here is drawn as an invitation rather than an error, and
+  clicking it takes it up if anybody here is publishing it. The recorded title
+  is what the link says until the topic is held; after that its own name wins.
+  Removing a link removes the reference and nothing else — the team or flow is
+  untouched, and so is everybody else's reference to it. Links replicate and
+  appear among the divergences, so two clients disagreeing about which team an
+  initiative belongs to is something a human sees. One reference per topic
+  whoever wrote it, which this application says for itself: Core allows two
+  actors to reference one topic from one parent, because a team's list of what
+  it runs is the union of its members' own references — but what an initiative
+  belongs to and runs is a property of the initiative, so a second would only
+  draw twice.
+
+- `DESIGN_INITIATIVE.md` records what an initiative is beyond its board — the
+  objective everybody shares, the needs it addresses, the approach, the
+  timeline and its milestones, expected impact against assessed impact, and
+  committed availability. Only the links in it are built.
+
 - **Board highlighting takes the shared stage colours.** The board already
   keyed on the stage, but with a palette of its own, so the same fact was one
   colour here and another on a team page — and `in_flight` was grey on a
