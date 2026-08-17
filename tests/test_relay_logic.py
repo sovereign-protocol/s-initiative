@@ -1512,6 +1512,15 @@ class RelayLogicTests(unittest.TestCase):
                 board_uuid, adopt="auto", additions="auto",
             )
             session_b.reconcile_peer_changes("relay:A", board_uuid)
+            # B carries work of its own as well, so what it publishes is
+            # content this client does not already hold. Without that, taking
+            # A's change leaves B's board identical to A's, and a head naming
+            # a hash we already hold is answered from our own tree - there is
+            # no snapshot read left to fail, and nothing for this test to say.
+            board_on_b = session_b.protocol.index[board_uuid]
+            session_b.modify(
+                board_uuid, {**board_on_b.data, "name": "Shared, renamed by B"}, {},
+            )
             relay_b.publish_due_topics()
 
             original_read_snapshot = relay_a.storage.read_snapshot
