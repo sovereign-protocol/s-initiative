@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- **The auto-adopt square left the header.** A setting is not a header
+  control, and a glyph nobody can read without its tooltip is not a control
+  at all: adoption policy is now a labelled row in the collaboration pane
+  beside the queue it governs. The two card-scoped modes are all this
+  application supplies — "always" and "never" are worded by Core and
+  inherited, where three copies of that table had been drifting. The bar's
+  label is "Initiative" rather than "Board", and the mark is a board with its
+  column names. See Core's `DESIGN_VOCABULARY.md` and
+  `DESIGN_UI_CONSISTENCY.md` U7 and U8.
+
+- **S-Initiative says how an initiative is made, and needs no facades at
+  all.** Its registration carries the noun, the boards a new one can be
+  copied from, and one `make_board` covering blank, copy-and-rename and
+  from-snapshot. Making the team or flow it names goes through Core's
+  registry, so the facade lookup this application briefly took is gone again
+  and `LINKED_APPLICATIONS` is down to two words.
+
+- **An initiative's links are the shell's, and it can make what it
+  names.** `.initiative-link` and the section above the board are gone; the
+  team and the flows appear on the navigation row beneath the topic name,
+  where S-Team's work appears too. `create_linked_topic` makes a team or a flow through that
+  application's facade and names it in one act, from a template or a snapshot
+  file, using the shell's dialog. A kind whose application is not running
+  here is not offered rather than refused after asking, and
+  `LINKED_APPLICATIONS` no longer carries anybody's route.
+
 - **An initiative names the team it belongs to and the flows it runs.** Both
   are other applications' topics, referenced through Core's `topic_link` as
   direct children of the initiative. One team — a second is not a second

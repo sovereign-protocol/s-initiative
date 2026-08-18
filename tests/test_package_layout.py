@@ -202,7 +202,13 @@ class AssetTests(unittest.TestCase):
 
     def test_topic_header_delegates_navigation_and_creation_to_the_shell(self):
         self.assertNotIn("onCreateTopic", self.kanban)
-        self.assertIn("SovereignShell.setTopicSelector", self.kanban)
+        self.assertIn("SovereignShell.setTopicName", self.kanban)
+        # No list of this client's other boards in this application's bar.
+        # Reaching another initiative is the Cockpit's.
+        self.assertNotIn("boards.map", self.kanban)
+        self.assertNotIn("/api/initiative/boards/select", self.kanban.split(
+            "async function selectBoardFromUrl", 1,
+        )[0])
 
     def test_people_and_add_actions_use_the_shared_ui_primitives(self):
         self.assertIn("SovereignUI.avatar", self.kanban)

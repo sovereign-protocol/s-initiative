@@ -3,3 +3,11 @@ Copyright 2026 Sovereign Protocol contributors
 
 This product uses Sovereign Core, distributed separately under
 LGPL-3.0-or-later. Documentation is licensed under CC-BY-4.0.
+
+Third-party notices
+-------------------
+
+Interface icons. The two-column board mark in
+src/s_initiative/application.py follows the geometry of Tabler Icons
+(https://github.com/tabler/tabler-icons), Copyright (c) Paweł Kuna, released under
+the MIT licence - full text in LICENSES/MIT.txt. It applies to that mark only.

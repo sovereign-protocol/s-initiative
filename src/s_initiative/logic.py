@@ -109,6 +109,43 @@ class InitiativeLogic:
             assignment_scoped=True,
             mount_invitation=True,
             on_peer_update=self.on_peer_update,
+            topic_noun="Initiative",
+            # An initiative may start from nothing. What makes a template a
+            # template here is that it is one of this client's own boards.
+            list_templates=self.board_templates,
+            create_topic=self.make_board,
+        )
+
+    def board_templates(self) -> list[dict]:
+        return [
+            {"value": board.uuid, "name": str(board.data.get("name") or "Untitled")}
+            for board in self.boards()
+        ]
+
+    def make_board(
+        self, name: str, template: str = "", snapshot: dict | None = None,
+    ) -> SessionResult:
+        """One initiative, however it starts. Core's create contract.
+
+        Copying names the copy after its source, so the name asked for here
+        is applied afterwards - which is the whole difference between this
+        and the three calls it wraps.
+        """
+        if snapshot is not None:
+            return self.create_from_snapshot(snapshot, name)
+        source = str(template or "").strip()
+        if not source:
+            return self.create_board(name)
+        copied = self.copy_board(source)
+        if copied.status != "ok":
+            return copied
+        board_uuid = str(getattr(copied.value, "uuid", copied.value) or "")
+        renamed = self.rename_board(board_uuid, name)
+        if renamed.status != "ok":
+            return renamed
+        return SessionResult(
+            "ok", value=board_uuid,
+            effects=[*copied.effects, *renamed.effects],
         )
 
     def board_payload(self, network: dict | None = None) -> dict:
@@ -155,6 +192,7 @@ class InitiativeLogic:
             "linkable_topics": (
                 self.linkable_topics(board.uuid) if board else []
             ),
+            "link_kinds": self.link_kinds() if board else [],
         }
 
     def board_snapshot(self) -> dict:
@@ -473,10 +511,11 @@ class InitiativeLogic:
     # opens nothing - following one reaches only what a peer is already
     # publishing where this client can see it - so naming the team an
     # initiative belongs to hands nobody access they did not already have.
-    LINKED_APPLICATIONS = {
-        "team": {"label": "Team", "path": "/apps/team?team="},
-        "flow": {"label": "Flow", "path": "/apps/flow?process_uuid="},
-    }
+    # Which kinds an initiative may name, and the word it uses for each.
+    # Nothing else: where that application's page is, what one of its topics
+    # starts from and which call makes one are all answered elsewhere - by
+    # the shell for the route, by Core's registry for the making.
+    LINKED_APPLICATIONS = {"team": "Team", "flow": "Flow"}
 
     def initiative_links(self, board: ProtocolNode) -> list[dict]:
         """What this initiative references, ready to render.
@@ -485,13 +524,17 @@ class InitiativeLogic:
         Once it is held its own name wins, because a copied title is the
         name something had on the day the link was made.
         """
+        mine = {
+            link.uuid for link in
+            self.session.topic_links(board.uuid, authored_here=True)
+        }
         out = []
         for child in board.children:
             if child.deleted or child.data.get("type") != "topic_link":
                 continue
             application_id = str(child.data.get("application_id") or "")
-            entry = self.LINKED_APPLICATIONS.get(application_id)
-            if not entry:
+            label = self.LINKED_APPLICATIONS.get(application_id)
+            if not label:
                 continue
             topic_uuid = str(child.data.get("topic_uuid") or "")
             held = self.session.get_node(topic_uuid)
@@ -499,10 +542,13 @@ class InitiativeLogic:
                 "uuid": child.uuid,
                 "topic_uuid": topic_uuid,
                 "application_id": application_id,
-                "label": entry["label"],
+                "label": label,
                 "title": self._link_title(held, child),
-                "href": f"{entry['path']}{topic_uuid}",
                 "held": held is not None,
+                # A peer's reference is not this client's to take off: it is
+                # adopted same-origin, so a deletion written over it is one
+                # their peers refuse and the next sync brings back.
+                "mine": child.uuid in mine,
             })
         return sorted(out, key=lambda link: (
             link["label"], link["title"].lower(),
@@ -549,6 +595,54 @@ class InitiativeLogic:
             board.uuid, topic_uuid, application_id, title,
         )
 
+    # ---- making one, and naming it in the same act ----------------------
+
+    def link_kinds(self) -> list[dict]:
+        """What can be made from here, and what each one starts from.
+
+        Core answers it. This only says which kinds an initiative may name -
+        it does not know what a team or a flow is made of, what one starts
+        from, or which call makes one, and it used to carry a table of
+        exactly that.
+        """
+        return [
+            kind for kind in self.session.topic_kinds()
+            if kind["application_id"] in self.LINKED_APPLICATIONS
+        ]
+
+    def create_linked_topic(
+        self, board_uuid: str, application_id: str, title: str,
+        template: str = "", snapshot: dict | None = None,
+    ) -> SessionResult:
+        """Make a team or a flow and name it here, in one act.
+
+        The making is Core's to route and the owning application's to do.
+        The naming is this one's, and it is the same reference `link_topic`
+        writes, under the same rule: one team, and no topic named twice.
+        """
+        board = self._node(board_uuid, "kanban_board")
+        if not board:
+            return SessionResult("error", reason="initiative not found")
+        if str(application_id or "").strip() not in self.LINKED_APPLICATIONS:
+            return SessionResult(
+                "error", reason="an initiative does not link to that",
+            )
+        created = self.session.create_application_topic(
+            application_id, title, template, snapshot,
+        )
+        if created.status != "ok":
+            return created
+        topic_uuid = str(created.value or "")
+        linked = self.link_topic(
+            board.uuid, topic_uuid, application_id, str(title or "").strip(),
+        )
+        if linked.status != "ok":
+            return linked
+        return SessionResult(
+            "ok", value=topic_uuid,
+            effects=[*created.effects, *linked.effects],
+        )
+
     def team_link(self, board: ProtocolNode) -> dict | None:
         for link in self.initiative_links(board):
             if link["application_id"] == "team":
@@ -592,13 +686,13 @@ class InitiativeLogic:
             application_id = str(
                 getattr(handler, "application_id", "") or "",
             )
-            entry = self.LINKED_APPLICATIONS.get(application_id)
-            if not entry:
+            label = self.LINKED_APPLICATIONS.get(application_id)
+            if not label:
                 continue
             out.append({
                 "topic_uuid": topic_uuid,
                 "application_id": application_id,
-                "label": entry["label"],
+                "label": label,
                 "title": str(
                     topic.data.get("title") or topic.data.get("name")
                     or "Untitled",

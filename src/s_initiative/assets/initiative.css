@@ -154,26 +154,6 @@ button:hover { background: rgba(255, 255, 255, 0.08); border-color: var(--border
   gap: 8px;
 }
 
-.auto-adopt-header-control {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  border-radius: 6px;
-  padding: 4px 6px;
-}
-
-.auto-adopt-header-control:hover {
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.auto-adopt-header-label {
-  max-width: 90px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.2;
-}
-
 .brand-mark {
   width: 18px;
   height: 18px;
@@ -518,79 +498,6 @@ button.auto-adopt-square {
 .peer-graph-peer-meta {
   font-size: 12px;
   color: var(--muted);
-}
-
-/* What the initiative belongs to and runs. Above the board because it is
-   what the board is for, and a single quiet row because it is a handful of
-   references rather than a section of its own. */
-.initiative-links {
-  flex: 0 0 auto;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px 0;
-}
-
-.initiative-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 4px 3px 8px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface-2);
-  font-size: 0.85rem;
-}
-
-.initiative-link-label {
-  color: var(--muted);
-  font-size: 0.72rem;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.initiative-link-title {
-  color: var(--text);
-  background: none;
-  border: 0;
-  padding: 0;
-  font: inherit;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.initiative-link-title:hover { text-decoration: underline; }
-
-/* A link to a topic this client does not hold. Dashed rather than greyed
-   out: it is an offer to take it up, not a broken reference. */
-.initiative-link.unheld {
-  border-style: dashed;
-  background: transparent;
-}
-
-.initiative-link.unheld .initiative-link-title { color: var(--muted); }
-
-.initiative-link-remove {
-  color: var(--muted);
-  background: none;
-  border: 0;
-  border-radius: 999px;
-  width: 18px;
-  height: 18px;
-  line-height: 1;
-  padding: 0;
-  cursor: pointer;
-}
-
-.initiative-link-remove:hover {
-  color: var(--text);
-  background: var(--card-hover);
-}
-
-.initiative-link-add {
-  font-size: 0.85rem;
-  padding: 3px 10px;
 }
 
 .board {

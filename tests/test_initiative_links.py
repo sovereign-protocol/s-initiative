@@ -9,15 +9,36 @@ uuid, which is the whole of what a link carries.
 import unittest
 
 from s_initiative.logic import InitiativeLogic
-from sovereign import ApplicationRegistration
+from sovereign import ApplicationRegistration, SessionResult
 from sovereign.protocol import ProtocolNode
 from sovereign.session import Session
 
 
 def register_stand_in(
     session: Session, application_id: str, root_type: str,
+    noun: str = "", made: dict | None = None, template_required: bool = False,
 ) -> list[ProtocolNode]:
+    """Another application on this session, owning one root type.
+
+    Given a noun it also says how one of its topics is made, which is how a
+    real one says it and the only way an initiative can make one. What
+    starts from nothing, from a template or from a file is its own answer
+    and S-Initiative knows none of it.
+    """
     topics: list[ProtocolNode] = []
+
+    def create_topic(title, template, snapshot):
+        if made is not None:
+            made.update(title=title, template=template, snapshot=snapshot)
+        if template_required and not template and snapshot is None:
+            return SessionResult("error", reason="choose a workflow to start from")
+        created = session.create_child(
+            session.root_uuid(), {"type": root_type, "title": title}, {},
+        )
+        topics.append(created.value)
+        session.start_discussion(created.value.uuid)
+        return created
+
     session.register_application(ApplicationRegistration(
         application_id=application_id,
         root_types=frozenset({root_type}),
@@ -25,6 +46,13 @@ def register_stand_in(
         accept_invitation=session.accept_topic_invitation,
         assignment_scoped=True,
         mount_invitation=True,
+        topic_noun=noun,
+        template_required=template_required,
+        list_templates=lambda: [
+            {"value": item.uuid, "name": str(item.data.get("title") or "")}
+            for item in topics
+        ],
+        create_topic=create_topic if noun else None,
     ))
     return topics
 
@@ -212,6 +240,65 @@ class InitiativeLinkTests(unittest.TestCase):
             [link["topic_uuid"] for link in payload["links"]], [team.uuid],
         )
         self.assertEqual(payload["linkable_topics"], [])
+
+    def test_a_flow_can_be_made_and_named_here_in_one_act(self):
+        """The making is S-Flow's; the naming is this application's.
+
+        Nothing here knows what a process is beyond that it is made by
+        asking Core for one - and a client without S-Flow is not offered
+        the kind at all rather than refused after asking.
+        """
+        session, logic = initiative()
+        board = logic.ensure_board()
+
+        # Without the application there is nothing to offer.
+        self.assertEqual(logic.link_kinds(), [])
+        made = {}
+        register_stand_in(
+            session, "flow", "flow_process",
+            noun="Flow", made=made, template_required=True,
+        )
+        self.assertEqual(
+            [(kind["application_id"], kind["noun"], kind["template_required"])
+             for kind in logic.link_kinds()],
+            [("flow", "Flow", True)],
+        )
+
+        created = logic.create_linked_topic(
+            board.uuid, "flow", "Choosing a facilitator", "election",
+        )
+
+        self.assertEqual(created.status, "ok")
+        self.assertEqual(
+            (made["title"], made["template"]),
+            ("Choosing a facilitator", "election"),
+        )
+        links = logic.initiative_links(session.protocol.index[board.uuid])
+        self.assertEqual(
+            [(link["label"], link["title"], link["held"], link["mine"])
+             for link in links],
+            [("Flow", "Choosing a facilitator", True, True)],
+        )
+
+    def test_what_the_owning_application_refuses_is_not_named_here(self):
+        """A refusal travels back unchanged and nothing is linked.
+
+        Which template ids are real is S-Flow's answer, not this one's -
+        this application does not know a workflow from a uuid.
+        """
+        session, logic = initiative()
+        board = logic.ensure_board()
+        register_stand_in(
+            session, "flow", "flow_process", noun="Flow", template_required=True,
+        )
+
+        refused = logic.create_linked_topic(board.uuid, "flow", "Nameless")
+
+        self.assertEqual(refused.status, "error")
+        self.assertIn("workflow", refused.reason)
+        self.assertEqual(
+            logic.initiative_links(session.protocol.index[board.uuid]), [],
+        )
 
 
 if __name__ == "__main__":

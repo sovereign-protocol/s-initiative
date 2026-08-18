@@ -9,22 +9,17 @@
   </head>
   <body>
     <div id="toast" class="toast"></div>
-    <!-- The shell owns the bar. Kanban's own controls are handed to it:
-         the board title goes in the topic region, the auto-adopt indicator
-         and adopt tools in the application-actions slot. -->
+    <!-- The shell owns the bar and holds nothing of an application's (U7).
+         The board title goes in the topic region, and the adopt tools go
+         beside it, because that is the thing they decide about. -->
     <header class="topbar"><div id="shell"></div></header>
 
     <template id="kanbanHeaderControls">
       <div id="boardAdoptTools" class="adopt-tools"></div>
-      <div id="autoAdoptHeaderControl" class="auto-adopt-header-control">
-        <span id="autoAdoptIndicator" class="auto-adopt-square" title="Auto-adopt"></span>
-        <span id="autoAdoptHeaderLabel" class="auto-adopt-header-label"></span>
-      </div>
     </template>
 
 
     <main>
-      <section id="initiativeLinks" class="initiative-links"></section>
       <section id="board" class="board"></section>
     </main>
 
@@ -98,18 +93,19 @@
       let modalReadOnlyPerspective = false;
 
       const AUTO_ADOPT_MODES = ["always", "not_owner", "not_member", "never"];
+      // Only the two modes Core does not know about. The wording for
+      // "always" and "never" is Core's and is inherited, so the same setting
+      // cannot read one way here and another in the Cockpit - which is what
+      // three copies of this table produced (DESIGN_VOCABULARY.md).
       const AUTO_ADOPT_LABELS = {
-        always: "Always",
         not_owner: "Except cards I own",
         not_member: "Except cards I'm on",
-        never: "Never",
       };
       const AUTO_ADOPT_FILL = { always: 4, not_owner: 2, not_member: 1, never: 0 };
       const AUTO_ADOPT_DESCRIPTIONS = {
-        always: "Peer changes are automatically adopted into every card.",
-        not_owner: "Peer changes are automatically adopted, except on cards you own.",
-        not_member: "Peer changes are automatically adopted, except on cards you're a member of.",
-        never: "Peer changes are never auto-adopted - you review and adopt each one yourself.",
+        not_owner: "Changes from other people are adopted automatically, except on cards you own.",
+        not_member:
+          "Changes from other people are adopted automatically, except on cards you're a member of.",
       };
 
       const el = (id) => document.getElementById(id);
@@ -259,19 +255,6 @@
         SovereignShell.refreshAvatar();
       }
 
-      function renderAutoAdoptIndicator() {
-        const peers = boardPeerAddresses();
-        const control = el("autoAdoptHeaderControl");
-        control.style.display = peers.length ? "flex" : "none";
-        if (!peers.length) return;
-        const label = AUTO_ADOPT_LABELS[state.auto_adopt_mode] || "Always";
-        const indicator = el("autoAdoptIndicator");
-        renderAutoAdoptSquare(indicator);
-        indicator.title = `Auto-adopt: ${label} - click to change`;
-        el("autoAdoptHeaderLabel").textContent = `Auto-adopt: ${label}`;
-        control.title = `Auto-adopt: ${label} - click to change`;
-      }
-
       function avatarElement(user, online) {
         const avatar = document.createElement("span");
         avatar.className = "header-avatar";
@@ -317,14 +300,6 @@
         if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
         if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
         return `${Math.floor(seconds / 86400)}d ago`;
-      }
-
-      function selectBoard(boardUuid) {
-        if (!boardUuid || boardUuid === state.board.uuid) return;
-        run(
-          () => api("/api/initiative/boards/select", { board_uuid: boardUuid }),
-          "Board selected",
-        );
       }
 
       const AGENDA_PRIORITY_LABELS = { "": "No priority", high: "High", medium: "Medium", low: "Low" };
@@ -408,15 +383,12 @@
         try {
           state = await api("/api/initiative/board");
 
-          // Core owns the same title-plus-switcher control for every topic app.
-          SovereignShell.setTopicSelector({
-            label: "Board",
-            topics: (state.boards || []).map((board) => ({
-              uuid: board.uuid,
-              title: board.data.name || "Kanban Board",
-            })),
-            selectedUuid: state.board.uuid,
-            onSelect: selectBoard,
+          // Core owns the name of the topic in every application's bar.
+          // Reaching another initiative is the Cockpit's, not a list of
+          // this client's boards hidden in this one's header.
+          SovereignShell.setTopicName({
+            label: "Initiative",
+            title: state.board.data.name || "Kanban Board",
             onRename: (name) => run(
               () => api("/api/initiative/boards/rename", {
                 board_uuid: state.board.uuid,
@@ -426,7 +398,6 @@
             ),
           });
 
-          renderAutoAdoptIndicator();
           renderBoardAdoptTools();
 
           renderNetwork();
@@ -494,107 +465,54 @@
         });
       }
 
-      // What this initiative belongs to and runs. Rendered whole every time
-      // rather than patched: a link's data never changes once written - a
-      // reference is replaced, not edited - so there is nothing for a patch
-      // to be cheaper about, and no second function to keep in step.
+      // What this initiative belongs to and runs, beside its name in the
+      // shell's bar. Core draws the chips and carries out taking one up and
+      // removing one; this says what there is and what making one calls.
       function renderLinks() {
-        const container = el("initiativeLinks");
-        container.replaceChildren();
-        for (const link of state.links || []) {
-          container.append(renderLink(link));
-        }
-        const add = document.createElement("button");
-        add.type = "button";
-        add.className = "initiative-link-add ui-button";
-        add.textContent = (state.links || []).length
-          ? "+ Link"
-          : "+ Link a team or flow";
-        add.onclick = openLinkPicker;
-        container.append(add);
-      }
-
-      function renderLink(link) {
-        const chip = document.createElement("span");
-        chip.className = `initiative-link${link.held ? "" : " unheld"}`;
-        chip.dataset.uuid = link.uuid;
-
-        const label = document.createElement("span");
-        label.className = "initiative-link-label";
-        label.textContent = link.label;
-        chip.append(label);
-
-        if (link.held) {
-          const anchor = document.createElement("a");
-          anchor.className = "initiative-link-title";
-          anchor.href = link.href;
-          anchor.textContent = link.title;
-          chip.append(anchor);
-        } else {
-          // Not broken - an invitation. Following it reaches only what a peer
-          // is already publishing here, so it resolves or it says nobody is.
-          const offer = document.createElement("button");
-          offer.type = "button";
-          offer.className = "initiative-link-title";
-          offer.title = "You do not hold this yet - click to take it up";
-          offer.textContent = link.title;
-          offer.onclick = () => run(
+        SovereignShell.setTopicLinks({
+          links: state.links || [],
+          make: (state.link_kinds || []).map((kind) => ({
+            label: `New ${kind.noun.toLowerCase()}`,
+            onSelect: () => SovereignShell.openNewTopicDialog({
+              noun: kind.noun,
+              templates: (kind.templates || []).map(
+                (option) => [option.value, option.name],
+              ),
+              templateRequired: kind.template_required,
+              snapshotType: kind.application_id,
+              onCreate: ({name, template, snapshot}) => run(
+                () => api("/api/initiative/links/make", {
+                  board_uuid: state.board.uuid,
+                  application_id: kind.application_id,
+                  title: name,
+                  template,
+                  snapshot,
+                }),
+                `${name} is named here`,
+              ),
+            }),
+          })),
+          link: (state.linkable_topics || []).map((topic) => ({
+            label: `${topic.title} · ${topic.label}`,
+            onSelect: () => run(
+              () => api("/api/initiative/links/create", {
+                board_uuid: state.board.uuid,
+                topic_uuid: topic.topic_uuid,
+                application_id: topic.application_id,
+                title: topic.title,
+              }),
+              `${topic.title} is named here`,
+            ),
+          })),
+          onFollow: (link) => run(
             () => api("/api/initiative/links/follow", {link_uuid: link.uuid}),
             `Joined ${link.title}`,
-          );
-          chip.append(offer);
-        }
-
-        const remove = document.createElement("button");
-        remove.type = "button";
-        remove.className = "initiative-link-remove";
-        remove.textContent = "×";
-        // One reference, gone. The team or flow is untouched, and so is
-        // everybody else's reference to it - which is why this asks nothing.
-        remove.title =
-          `Remove this reference. The ${link.label.toLowerCase()} itself is kept`;
-        remove.onclick = () => run(
-          () => api("/api/initiative/links/remove", {link_uuid: link.uuid}),
-          "Reference removed",
-        );
-        chip.append(remove);
-        return chip;
-      }
-
-      function openLinkPicker() {
-        const options = state.linkable_topics || [];
-        if (!options.length) {
-          showToast(
-            "Nothing to link yet - open the team or flow in this client first",
-            true,
-          );
-          return;
-        }
-        openSimple(
-          "Link a team or flow",
-          [{
-            name: "topic",
-            label: "Topic",
-            type: "select",
-            options: options.map((topic) => ({
-              value: topic.topic_uuid,
-              label: `${topic.label} · ${topic.title}`,
-            })),
-            value: options[0].topic_uuid,
-          }],
-          async (form) => {
-            const chosen = options.find(
-              (topic) => topic.topic_uuid === form.get("topic"),
-            );
-            if (!chosen) throw new Error("pick something to link");
-            return api("/api/initiative/links/create", {
-              board_uuid: state.board.uuid,
-              topic_uuid: chosen.topic_uuid,
-              application_id: chosen.application_id,
-              title: chosen.title,
-            });
-          },
-        );
+          ),
+          onRemove: (link) => run(
+            () => api("/api/initiative/links/remove", {link_uuid: link.uuid}),
+            "Reference removed",
+          ),
+        });
       }
 
       // --- NEUE HELFER FÜR DAS DIFFING ---
@@ -1695,13 +1613,12 @@
         }
       }
 
-      // The header indicator still opens the setting, which now lives in the
-      // shell's collaboration pane rather than this page's own panel.
-      // Hand the application's own header controls to the shell before it
-      // renders, so they land in its regions rather than beside it.
+      // The adopt tools belong beside the board's name, which is the thing
+      // they decide about. The auto-adopt indicator that used to sit in the
+      // shell's right-hand slot is gone: a setting is not a header control,
+      // and it is read as a labelled row in the collaboration pane (U7).
       const kanbanControls = el("kanbanHeaderControls").content;
       const adoptTools = kanbanControls.querySelector("#boardAdoptTools");
-      const autoAdoptIndicator = kanbanControls.querySelector("#autoAdoptHeaderControl");
 
       SovereignShell.mount({
         container: el("shell"),
@@ -1734,26 +1651,25 @@
         reactNode: (uuid, choice) => applyReaction(uuid, choice),
         onChanged: () => loadBoard(),
       });
-      // The board-level decision sits with the board's name; the auto-adopt
-      // indicator is a setting for the application, so it stays on the right.
-      SovereignShell.setAppActions(autoAdoptIndicator);
       SovereignShell.setTopicActions(adoptTools);
 
-      el("autoAdoptHeaderControl").onclick = () => SovereignShell.openConnectionPanel();
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") SovereignShell.closeCollab();
       });
 
+      // `topic` and not `board`: one name for "open this one", so the shell
+      // can compose a link to any application's topic without knowing what
+      // that application calls its topics.
       async function selectBoardFromUrl() {
         const params = new URLSearchParams(window.location.search);
-        const boardUuid = params.get("board");
+        const boardUuid = params.get("topic");
         if (!boardUuid) return;
         try {
           await api("/api/initiative/boards/select", { board_uuid: boardUuid });
         } catch (error) {
           showToast(error.message, true);
         }
-        params.delete("board");
+        params.delete("topic");
         const query = params.toString();
         window.history.replaceState({}, "", window.location.pathname + (query ? `?${query}` : ""));
       }

@@ -185,6 +185,16 @@ def build_routes(logic, runtime) -> list[Route]:
             data.get("title", ""),
         ))
 
+    async def api_make_link(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.create_linked_topic(
+            data["board_uuid"],
+            data.get("application_id", ""),
+            data.get("title", ""),
+            data.get("template", ""),
+            data.get("snapshot"),
+        ))
+
     async def api_remove_link(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.unlink_topic(data["link_uuid"]))
@@ -228,6 +238,7 @@ def build_routes(logic, runtime) -> list[Route]:
         Route("/api/initiative/agenda/set_priority", api_set_agenda_item_priority, methods=["POST"]),
         Route("/api/initiative/agenda/move", api_move_agenda_item, methods=["POST"]),
         Route("/api/initiative/links/create", api_create_link, methods=["POST"]),
+        Route("/api/initiative/links/make", api_make_link, methods=["POST"]),
         Route("/api/initiative/links/remove", api_remove_link, methods=["POST"]),
         Route("/api/initiative/links/follow", api_follow_link, methods=["POST"]),
     ]
