@@ -995,3 +995,83 @@ menu button {
 .mandate-claims {
   color: var(--text);
 }
+
+/* Regions on the mandate ---------------------------------------------- */
+
+.mandate-region {
+  margin: 0 auto;
+  max-width: 760px;
+  padding-top: 20px;
+}
+
+.mandate-region-title {
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+.mandate-empty {
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+/* Content: edited in place, reordered, and lamped. */
+.need-row {
+  align-items: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+  padding: 8px 10px;
+}
+
+.need-row.diff {
+  outline: 2px solid var(--stage-review-fill);
+}
+
+.need-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.need-text {
+  margin: 0;
+}
+
+.need-beneficiary {
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.88rem;
+  gap: 8px;
+  margin: 2px 0 0;
+}
+
+/* The live name sits beside the recorded label, never instead of it: the
+   two disagreeing is information. */
+.need-beneficiary-actor {
+  font-style: italic;
+  opacity: 0.85;
+}
+
+.need-actions {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.need-delete {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  padding: 2px 4px;
+}
+
+.need-delete:hover {
+  color: var(--warning);
+}

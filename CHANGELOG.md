@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **The mandate holds Needs.** `initiative_need` — text, a beneficiary label,
+  an optional beneficiary actor and an order — as a direct child of the
+  initiative, decidable like the rest of the mandate: edited in place,
+  reordered, deleted by anybody holding the topic, and carrying a divergence
+  lamp, because what an initiative is addressing is agreed rather than
+  observed. Needs travel inside the initiative's own subtree, so they add no
+  payload key; the page resolves the beneficiary from `state.users` the way it
+  already resolves a card's participants.
+
+  **The beneficiary is named by a label first.** That inverts S-Team's rule
+  that a name is read from the Actor and never stored, for the reason
+  `DESIGN_INITIATIVE.md` §3 gives: the beneficiary of a need is very often not
+  an actor in this system at all — a customer, a neighbourhood, somebody who
+  will never hold a key. The uuid is the optional refinement, it is not
+  checked against the actors this client happens to know, and where it does
+  resolve the live name is drawn *beside* the label rather than instead of it.
+  The two disagreeing is information.
+
+  Needs are content, so a snapshot carries them and a snapshot written before
+  they existed still restores. A record — somebody's observation, somebody's
+  committed time — never will.
+
 - **There is a second face, the Mandate, and the initiative has dates.** The
   application had one surface because the board *was* the topic; it is not any
   more. A switch in the content area — not the shell bar, per U7 — moves

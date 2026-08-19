@@ -124,6 +124,163 @@ class InitiativeNewLogicTests(unittest.TestCase):
         self.assertIn("actual_start", by_field)
         self.assertEqual(by_field["actual_start"]["label"], "Started")
 
+    # Needs ---------------------------------------------------------------
+
+    def test_a_need_is_created_ordered_and_read_back(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+
+        logic.create_need("Onboarding takes three weeks", "New joiners")
+        logic.create_need("Support load is unpredictable")
+
+        held = [need.data for need in logic.needs(session.get_node(initiative.uuid))]
+        self.assertEqual(
+            [need["text"] for need in held],
+            ["Onboarding takes three weeks", "Support load is unpredictable"],
+        )
+        self.assertEqual(held[0]["beneficiary_label"], "New joiners")
+        # Required, may be empty - so it is always present rather than absent.
+        self.assertEqual(held[1]["beneficiary_label"], "")
+        self.assertEqual([need["order"] for need in held], [0, 1])
+
+    def test_a_need_without_text_is_refused(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        logic.ensure_initiative()
+
+        result = logic.create_need("   ")
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(logic.needs(), [])
+
+    def test_updating_one_field_of_a_need_leaves_the_others_alone(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        logic.ensure_initiative()
+        need = logic.create_need("Onboarding is slow", "New joiners").value
+
+        logic.update_need(need.uuid, text="Onboarding takes three weeks")
+
+        held = session.get_node(need.uuid)
+        self.assertEqual(held.data["text"], "Onboarding takes three weeks")
+        self.assertEqual(held.data["beneficiary_label"], "New joiners")
+
+    def test_a_beneficiary_actor_is_optional_and_clearing_removes_it(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        logic.ensure_initiative()
+        need = logic.create_need("Onboarding is slow", "New joiners").value
+
+        # Absent until said, like the dates - "no actor" and "an empty actor"
+        # are not the same fact.
+        self.assertNotIn("beneficiary_actor_uuid", session.get_node(need.uuid).data)
+
+        logic.update_need(need.uuid, beneficiary_actor_uuid="actor-1")
+        self.assertEqual(
+            session.get_node(need.uuid).data["beneficiary_actor_uuid"], "actor-1",
+        )
+
+        logic.update_need(need.uuid, beneficiary_actor_uuid="")
+        self.assertNotIn("beneficiary_actor_uuid", session.get_node(need.uuid).data)
+
+    def test_a_beneficiary_actor_this_client_cannot_resolve_is_still_accepted(self):
+        # A beneficiary somebody else can resolve and we cannot is ordinary
+        # for a shared topic. Refusing it would make the guard a statement
+        # about who this replica happens to know.
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        logic.ensure_initiative()
+        need = logic.create_need("Waiting times", "Residents").value
+
+        result = logic.update_need(need.uuid, beneficiary_actor_uuid="unknown-actor")
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(
+            session.get_node(need.uuid).data["beneficiary_actor_uuid"],
+            "unknown-actor",
+        )
+
+    def test_a_need_is_reordered_and_deleted(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        logic.ensure_initiative()
+        first = logic.create_need("First").value
+        second = logic.create_need("Second").value
+
+        logic.move_need(second.uuid, 0)
+        self.assertEqual(
+            [need.data["text"] for need in logic.needs()], ["Second", "First"],
+        )
+
+        logic.delete_need(first.uuid)
+        self.assertEqual([need.data["text"] for need in logic.needs()], ["Second"])
+
+    def test_a_need_travels_inside_the_initiative_rather_than_its_own_key(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        logic.ensure_initiative()
+        logic.create_need("Onboarding takes three weeks", "New joiners")
+
+        payload = logic.board_payload()
+
+        self.assertNotIn("needs", payload)
+        children = payload["initiative"]["children"]
+        texts = [
+            child["data"]["text"] for child in children
+            if child["data"]["type"] == "initiative_need"
+        ]
+        self.assertEqual(texts, ["Onboarding takes three weeks"])
+
+    def test_a_need_is_decidable_and_its_divergence_is_described(self):
+        left = self.runtime(9311)
+        right = self.runtime(9312)
+        initiative = left.logic.ensure_initiative()
+        connect(left, right)
+        connect(left, right, initiative.uuid)
+        need = left.logic.create_need("Onboarding is slow", "New joiners").value
+        sync(left, right)
+        right.logic.board_payload()
+        right.logic.set_auto_adopt_mode("never")
+
+        left.logic.update_need(need.uuid, text="Onboarding takes three weeks")
+        sync(left, right)
+
+        changes = right.logic.describe_peer_changes(left.peer_addr, need.uuid)
+        by_field = {change.get("field"): change for change in changes}
+        self.assertIn("text", by_field)
+        self.assertEqual(by_field["text"]["node_label"], "Need")
+
+    def test_a_snapshot_carries_the_needs_and_restores_them(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+        logic.create_need("Onboarding takes three weeks", "New joiners")
+        logic.create_need("Support load is unpredictable")
+
+        document = logic.export_snapshot(initiative.uuid).value
+        restored_uuid = logic.create_from_snapshot(document, "Restored").value
+        restored = session.get_node(restored_uuid)
+
+        self.assertEqual(
+            [need.data["text"] for need in logic.needs(restored)],
+            ["Onboarding takes three weeks", "Support load is unpredictable"],
+        )
+        self.assertEqual(
+            logic.needs(restored)[0].data["beneficiary_label"], "New joiners",
+        )
+
+    def test_a_snapshot_written_before_needs_existed_still_restores(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+        document = logic.export_snapshot(initiative.uuid).value
+        document["content"].pop("needs")
+
+        restored_uuid = logic.create_from_snapshot(document, "Restored").value
+
+        self.assertEqual(logic.needs(session.get_node(restored_uuid)), [])
+
     def test_board_snapshot_never_consults_transport_under_session(self):
         class NoTransport:
             def network_info(self, _topic_uuid=None):

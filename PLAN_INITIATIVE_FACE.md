@@ -188,7 +188,7 @@ the same will be true of any face added later.
 
 ---
 
-### Phase 2 — Needs
+### Phase 2 — Needs  *(done)*
 
 `initiative_need`, region 2. One flat decidable type with no children, chosen
 second because it exercises the entire content pipeline — create, edit, reorder,
@@ -210,6 +210,25 @@ outside an initiative is refused.
 
 **Done when:** a need can be written, reordered, and shown diverging between two
 clients.
+
+**Done.** 299 tests pass, up from 284. Fifteen new ones: the CRUD and the
+ordering, empty text refused, one field updated without disturbing the others,
+the optional actor uuid absent until said and removed when cleared, an
+unresolvable actor uuid still accepted, the four routes reaching their
+commands, a `initiative_need`-typed node outside an initiative refused, a
+two-client divergence on `text` labelled `Need`, snapshots carrying needs and
+older snapshots without them still restoring, and — from the page's side — the
+shared composer/reorder/editor, the lamp, and the label drawn beside the live
+name rather than replaced by it.
+
+**Checklist item 7 did not apply.** A need is a plain child of the initiative,
+so it arrives inside `state.initiative` exactly as a column does and needs no
+key of its own in `board_payload`; the page resolves the beneficiary from
+`state.users`, which already carries every actor this client knows. The item is
+for types whose display data has to be *prepared* — `comments_by_card`,
+`links` — and the distinction is worth keeping in mind for the phases below:
+Resources (Phase 6) will need one, because "whoever holds the topic" is not in
+the subtree.
 
 ---
 

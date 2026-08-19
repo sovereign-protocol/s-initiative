@@ -30,6 +30,11 @@ Contract:
       # either date omitted is left alone; empty clears it
     POST /api/initiative/initiatives/claim_date   {initiative_uuid, field, value}
       # field is actual_start or actual_end; empty value takes the claim back
+    POST /api/initiative/needs/create         {text, beneficiary_label, beneficiary_actor_uuid}
+    POST /api/initiative/needs/update         {need_uuid, text, beneficiary_label, beneficiary_actor_uuid}
+      # any field omitted is left alone; empty clears the two beneficiary ones
+    POST /api/initiative/needs/delete         {need_uuid}
+    POST /api/initiative/needs/move           {need_uuid, index}
     POST /api/initiative/agenda/create        {text, priority}  # priority optional
     POST /api/initiative/agenda/delete        {item_uuid}
     POST /api/initiative/agenda/set_priority  {item_uuid, priority}  # priority optional, clears if omitted
@@ -60,6 +65,15 @@ Contract:
     and `teams`. "Board" therefore survives only where the Kanban board -
     the columns and the cards - is what is meant.
 
+  Needs:
+    initiative_need data: {type, text, beneficiary_label, order} and an
+    optional beneficiary_actor_uuid - a direct child of the initiative, and
+    decidable. The label is the primary fact and the uuid refines it where
+    the beneficiary happens to be an actor this system knows; the page draws
+    the live name beside the label rather than instead of it, because the
+    two disagreeing is information. Needs travel inside the initiative's own
+    subtree, so there is no payload key of their own.
+
   Links:
     An initiative names the team it belongs to (0-1) and the flows it runs
     (0-n), through Core's topic_link node as a direct child of the initiative.
@@ -89,6 +103,10 @@ AUTO_ADOPT_MODES = ("always", "not_owner", "not_member", "never")
 AGENDA_PRIORITIES = ("high", "medium", "low")
 DISPLAYED_DIVERGENCE_TYPES = frozenset({
     "initiative", "kanban_column", "kanban_card",
+    # What the initiative addresses is agreed, not observed: anybody
+    # holding the topic may write one, and two clients disagreeing about
+    # what is being addressed is worth a human seeing.
+    "initiative_need",
     # Anybody on the initiative may add or remove one, and which team an
     # initiative belongs to is worth a human noticing when two clients
     # disagree about it. A link's data never changes after it is written -
@@ -838,6 +856,20 @@ class InitiativeLogic:
             "content": {
                 "objective": str(initiative.data.get("objective") or ""),
                 "columns": columns,
+                # Content, so a template carries it. What a snapshot must
+                # never carry is a record - somebody's observation or
+                # somebody's committed time - because a new initiative is
+                # nobody's yet.
+                "needs": [
+                    {
+                        "text": str(need.data.get("text") or ""),
+                        "beneficiary_label": str(
+                            need.data.get("beneficiary_label") or "",
+                        ),
+                        "order": need.data.get("order", 0),
+                    }
+                    for need in self.needs(initiative)
+                ],
             },
         })
 
@@ -876,6 +908,24 @@ class InitiativeLogic:
         self, content: dict, target_uuid: str,
     ) -> SessionResult:
         effects = []
+        # A snapshot written before needs existed simply has none, which is
+        # not the same as a malformed one.
+        for order, need in enumerate(content.get("needs") or []):
+            if not isinstance(need, dict):
+                return SessionResult("error", reason="snapshot need is invalid")
+            made_need = self.session.create_child(
+                target_uuid,
+                {
+                    "type": "initiative_need",
+                    "text": str(need.get("text") or ""),
+                    "beneficiary_label": str(need.get("beneficiary_label") or ""),
+                    "order": need.get("order", order),
+                },
+                {},
+            )
+            if made_need.status != "ok":
+                return made_need
+            effects.extend(made_need.effects)
         columns = content.get("columns")
         if not isinstance(columns, list):
             return SessionResult("error", reason="snapshot columns are invalid")
@@ -984,6 +1034,92 @@ class InitiativeLogic:
                 seen.add(user["id"])
             out.append(user)
         return out
+
+    # What the initiative addresses, and whose it is. Direct children of the
+    # initiative, ordered, and decidable like everything else on the mandate:
+    # anybody holding the topic may write one, and two clients disagreeing
+    # about what is being addressed is worth a human noticing.
+    #
+    # The beneficiary is named by a *label* and only optionally by a uuid,
+    # which inverts S-Team's rule that a name is read from the Actor and
+    # never stored. The reason is in DESIGN_INITIATIVE.md 3: the beneficiary
+    # of a need is very often not an actor in this system at all - a
+    # customer, a neighbourhood, somebody who will never hold a key. So the
+    # label is the primary fact and the uuid refines it where it can.
+    def needs(self, initiative: ProtocolNode | None = None) -> list[ProtocolNode]:
+        initiative = initiative or self.ensure_initiative()
+        return sorted(
+            [child for child in initiative.live_children()
+             if child.data.get("type") == "initiative_need"],
+            key=lambda node: (node.data.get("order", 0), node.uuid),
+        )
+
+    def create_need(
+        self, text: str, beneficiary_label: str = "",
+        beneficiary_actor_uuid: str = "",
+    ) -> SessionResult:
+        initiative = self.ensure_initiative()
+        text = (text or "").strip()
+        if not text:
+            return SessionResult("error", reason="need text is required")
+        data = {
+            "type": "initiative_need",
+            "text": text,
+            "beneficiary_label": (beneficiary_label or "").strip(),
+            "order": self.session.next_child_order(
+                initiative.uuid, "initiative_need",
+            ),
+        }
+        if actor := (beneficiary_actor_uuid or "").strip():
+            data["beneficiary_actor_uuid"] = actor
+        return self.session.create_child(initiative.uuid, data, {})
+
+    def update_need(
+        self, need_uuid: str, text: str | None = None,
+        beneficiary_label: str | None = None,
+        beneficiary_actor_uuid: str | None = None,
+    ) -> SessionResult:
+        """Rewrite a need. None leaves a field alone; "" clears it.
+
+        The actor uuid is not checked against the actors this client holds.
+        A beneficiary somebody else can resolve and we cannot is the ordinary
+        case for a topic shared across two clients, and refusing it here
+        would make the guard a statement about who this replica happens to
+        know rather than about the need.
+        """
+        need = self._node(need_uuid, "initiative_need")
+        if not need:
+            return SessionResult("error", reason="need not found")
+        data = dict(need.data)
+        if text is not None:
+            text = text.strip()
+            if not text:
+                return SessionResult("error", reason="need text is required")
+            data["text"] = text
+        if beneficiary_label is not None:
+            data["beneficiary_label"] = beneficiary_label.strip()
+        if beneficiary_actor_uuid is not None:
+            actor = beneficiary_actor_uuid.strip()
+            if actor:
+                data["beneficiary_actor_uuid"] = actor
+            else:
+                data.pop("beneficiary_actor_uuid", None)
+        return self.session.modify(need.uuid, data, need.weights)
+
+    def delete_need(self, need_uuid: str) -> SessionResult:
+        need = self._node(need_uuid, "initiative_need")
+        if not need:
+            return SessionResult("error", reason="need not found")
+        return self.session.delete(need.uuid)
+
+    def move_need(self, need_uuid: str, index: int) -> SessionResult:
+        initiative = self.ensure_initiative()
+        need = self._node(need_uuid, "initiative_need")
+        if not need or need.parent_uuid != initiative.uuid:
+            return SessionResult("error", reason="need not found")
+        return self.session.move_child_to_parent_index(
+            need.uuid, initiative.uuid, index,
+        )
 
     def create_column(self, name: str) -> SessionResult:
         initiative = self.ensure_initiative()
@@ -1441,6 +1577,7 @@ class InitiativeLogic:
             "initiative": "Initiative",
             "agenda_item": "Discussion topic",
             "topic_link": "Link",
+            "initiative_need": "Need",
         }.get(node_type, "Item")
         if not local:
             return self._annotate_authorship([{
@@ -1550,6 +1687,7 @@ class InitiativeLogic:
             "planned_end": "Planned end",
             "actual_start": "Started",
             "actual_end": "Ended",
+            "beneficiary_label": "Beneficiary",
         }
         for field, label in scalar_labels.items():
             local_value = local.data.get(field)

@@ -232,6 +232,32 @@ class AssetTests(unittest.TestCase):
         # freeze. The JSON string is the honest comparison.
         self.assertNotIn("revision", body)
 
+    def test_needs_use_the_shared_composer_reorder_and_editor(self):
+        region = self._function_body("needsRegion")
+        self.assertIn("SovereignUI.reorderableList", region)
+        row = self._function_body("needRow")
+        self.assertIn("SovereignUI.reorderHandle", row)
+        self.assertIn("SovereignUI.editableText", row)
+        self.assertIn("SovereignUI.addComposer", self._function_body("needComposer"))
+
+    def test_a_need_carries_a_divergence_lamp(self):
+        # Content gets a lamp and a reaction control; the absence of one on a
+        # record is what tells the two apart, so this half has to be present.
+        row = self._function_body("needRow")
+        self.assertIn("reactionTools(need)", row)
+        self.assertIn("applyTransitionClass", row)
+
+    def test_the_beneficiary_label_is_drawn_beside_the_live_name_not_replaced(self):
+        # S-Team's rule inverted: the beneficiary of a need is very often not
+        # an actor in this system at all, so the label is the primary fact.
+        # Where the uuid does resolve, both are drawn - the two disagreeing is
+        # information, and hiding one throws it away.
+        line = self._function_body("beneficiaryLine")
+        self.assertIn("beneficiary_label", line)
+        self.assertIn("actorName(need.data.beneficiary_actor_uuid)", line)
+        self.assertIn("line.append(label)", line)
+        self.assertIn("known here as", line)
+
     def test_the_second_face_is_not_named_after_the_whole_topic(self):
         # The topic is the initiative. A face called Initiative would give one
         # word to a part and to the whole, which is the stutter 9 avoids

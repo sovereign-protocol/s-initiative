@@ -72,6 +72,32 @@ def build_routes(logic, runtime) -> list[Route]:
         data = await request.json()
         return await _json_result(runtime, logic.delete_initiative(data["initiative_uuid"]))
 
+    async def api_create_need(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.create_need(
+            data.get("text", ""), data.get("beneficiary_label", ""),
+            data.get("beneficiary_actor_uuid", ""),
+        ))
+
+    async def api_update_need(request: Request):
+        data = await request.json()
+        # Absent means "leave it alone" and empty means "clear it", so one
+        # field can be rewritten without restating the others.
+        return await _json_result(runtime, logic.update_need(
+            data["need_uuid"], data.get("text"),
+            data.get("beneficiary_label"), data.get("beneficiary_actor_uuid"),
+        ))
+
+    async def api_delete_need(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.delete_need(data["need_uuid"]))
+
+    async def api_move_need(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.move_need(
+            data["need_uuid"], int(data.get("index", 0)),
+        ))
+
     async def api_create_column(request: Request):
         data = await request.json()
         return await _json_result(
@@ -244,6 +270,10 @@ def build_routes(logic, runtime) -> list[Route]:
               methods=["POST"]),
         Route("/api/initiative/initiatives/delete", api_delete_initiative,
               methods=["POST"]),
+        Route("/api/initiative/needs/create", api_create_need, methods=["POST"]),
+        Route("/api/initiative/needs/update", api_update_need, methods=["POST"]),
+        Route("/api/initiative/needs/delete", api_delete_need, methods=["POST"]),
+        Route("/api/initiative/needs/move", api_move_need, methods=["POST"]),
         Route("/api/initiative/columns/create", api_create_column, methods=["POST"]),
         Route("/api/initiative/columns/rename", api_rename_column, methods=["POST"]),
         Route("/api/initiative/columns/delete", api_delete_column, methods=["POST"]),

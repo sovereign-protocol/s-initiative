@@ -82,6 +82,41 @@ class InitiativeOwnershipControllerTests(unittest.TestCase):
             "planned_start", self.session.get_node(initiative.uuid).data,
         )
 
+    def test_the_needs_routes_are_wired_to_their_commands(self):
+        self.logic.ensure_initiative()
+
+        created = self._post("/api/initiative/needs/create", {
+            "text": "Onboarding takes three weeks",
+            "beneficiary_label": "New joiners",
+        })
+        need = self.logic.needs()[0]
+        updated = self._post("/api/initiative/needs/update", {
+            "need_uuid": need.uuid, "beneficiary_label": "Newcomers",
+        })
+        moved = self._post("/api/initiative/needs/move", {
+            "need_uuid": need.uuid, "index": 0,
+        })
+        removed = self._post("/api/initiative/needs/delete", {
+            "need_uuid": need.uuid,
+        })
+
+        for response in (created, updated, moved, removed):
+            self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.logic.needs(), [])
+
+    def test_delete_need_rejects_a_need_typed_node_outside_an_initiative(self):
+        foreign = self.session.create_child(
+            self.session.root_uuid(),
+            {"type": "initiative_need", "text": "foreign", "order": 0}, {},
+        ).value
+
+        response = self._post(
+            "/api/initiative/needs/delete", {"need_uuid": foreign.uuid},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(self.session.protocol.index[foreign.uuid].deleted)
+
     def test_delete_column_rejects_a_kanban_typed_node_outside_a_board(self):
         foreign = self.session.create_child(
             self.session.root_uuid(), {"type": "kanban_column", "name": "foreign"}, {},

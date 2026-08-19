@@ -80,6 +80,32 @@ class InitiativeFacade:
     ):
         return self._logic.claim_initiative_date(initiative_uuid, field, value)
 
+    def needs(self, initiative: ProtocolNode | None = None) -> list[ProtocolNode]:
+        return self._logic.needs(initiative)
+
+    def create_need(
+        self, text: str, beneficiary_label: str = "",
+        beneficiary_actor_uuid: str = "",
+    ):
+        return self._logic.create_need(
+            text, beneficiary_label, beneficiary_actor_uuid,
+        )
+
+    def update_need(
+        self, need_uuid: str, text: str | None = None,
+        beneficiary_label: str | None = None,
+        beneficiary_actor_uuid: str | None = None,
+    ):
+        return self._logic.update_need(
+            need_uuid, text, beneficiary_label, beneficiary_actor_uuid,
+        )
+
+    def delete_need(self, need_uuid: str):
+        return self._logic.delete_need(need_uuid)
+
+    def move_need(self, need_uuid: str, index: int):
+        return self._logic.move_need(need_uuid, index)
+
     def move_card(self, card_uuid: str, column_uuid: str, index: int):
         return self._logic.move_card(card_uuid, column_uuid, index)
 

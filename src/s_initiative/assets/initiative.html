@@ -506,7 +506,146 @@
         const encoded = JSON.stringify(initiative.data ?? null);
         if (encoded === renderedMandateJson) return;
         renderedMandateJson = encoded;
-        article.replaceChildren(mandateHead(initiative));
+        article.replaceChildren(mandateHead(initiative), needsRegion(initiative));
+      }
+
+      function needs(initiative) {
+        return sortNodes(
+          (initiative?.children || []).filter(
+            (child) => !child.deleted && child.data.type === "initiative_need",
+          ),
+        );
+      }
+
+      // Region 2. Content, so it is edited in place, reordered, and carries a
+      // divergence lamp - which is the half that tells it apart from a record
+      // further down the page.
+      function needsRegion(initiative) {
+        const section = document.createElement("section");
+        section.className = "mandate-region";
+        const heading = document.createElement("h3");
+        heading.className = "mandate-region-title";
+        heading.textContent = "Needs";
+        const list = document.createElement("div");
+        list.className = "need-list";
+        const items = needs(initiative);
+        if (!items.length) {
+          const empty = document.createElement("p");
+          empty.className = "mandate-empty";
+          empty.textContent = "No needs recorded yet.";
+          list.append(empty);
+        }
+        for (const need of items) list.append(needRow(need));
+        SovereignUI.reorderableList({
+          container: list,
+          itemSelector: ".need-row",
+          getId: (row) => row.dataset.uuid,
+          onMove: ({id, index}) => api("/api/initiative/needs/move", {
+            need_uuid: id, index,
+          }),
+          onChanged: async () => {
+            showToast("Need moved");
+            await loadBoard();
+          },
+          onError: error => showToast(error.message, true),
+        });
+        section.append(heading, list, needComposer());
+        return section;
+      }
+
+      function needRow(need) {
+        const row = document.createElement("div");
+        row.className = "need-row";
+        row.dataset.uuid = need.uuid;
+        row.append(SovereignUI.reorderHandle({label: "Reorder need"}));
+
+        const body = document.createElement("div");
+        body.className = "need-body";
+        body.append(SovereignUI.editableText({
+          tag: "p",
+          className: "need-text",
+          value: need.data.text || "",
+          placeholder: "What is being addressed?",
+          onCommit: (value) => api("/api/initiative/needs/update", {
+            need_uuid: need.uuid,
+            text: value,
+          }),
+          onChanged: async () => {
+            showToast("Need saved");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }), beneficiaryLine(need));
+
+        const actions = document.createElement("div");
+        actions.className = "need-actions";
+        actions.append(...reactionTools(need));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "need-delete";
+        remove.textContent = "Remove";
+        remove.onclick = () => run(
+          () => api("/api/initiative/needs/delete", {need_uuid: need.uuid}),
+          "Need removed",
+        );
+        actions.append(remove);
+
+        row.append(body, actions);
+        applyTransitionClass(row, need.uuid, {});
+        return row;
+      }
+
+      // The label is the primary fact, because the beneficiary of a need is
+      // very often not an actor in this system at all. Where the uuid does
+      // resolve to somebody this client holds, the live name is drawn
+      // *beside* the label and not instead of it - the two disagreeing is
+      // information, so hiding one of them would throw it away.
+      function beneficiaryLine(need) {
+        const line = document.createElement("p");
+        line.className = "need-beneficiary";
+        const label = SovereignUI.editableText({
+          tag: "span",
+          className: "need-beneficiary-label",
+          value: need.data.beneficiary_label || "",
+          placeholder: "Whose need is it?",
+          onCommit: (value) => api("/api/initiative/needs/update", {
+            need_uuid: need.uuid,
+            beneficiary_label: value,
+          }),
+          onChanged: async () => {
+            showToast("Beneficiary saved");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        });
+        line.append(label);
+        const live = actorName(need.data.beneficiary_actor_uuid);
+        if (live && live !== (need.data.beneficiary_label || "")) {
+          const known = document.createElement("span");
+          known.className = "need-beneficiary-actor";
+          known.textContent = `known here as ${live}`;
+          line.append(known);
+        }
+        return line;
+      }
+
+      function actorName(actorUuid) {
+        if (!actorUuid) return "";
+        const user = (state.users || []).find((item) => item.id === actorUuid);
+        return user?.name || "";
+      }
+
+      function needComposer() {
+        return SovereignUI.addComposer({
+          noun: "need",
+          placeholder: "What is being addressed?",
+          onSubmit: async (text) => {
+            await api("/api/initiative/needs/create", {text});
+            showToast("Need added");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        });
       }
 
       // The head is not a disclosure. One paragraph and four dates, always
