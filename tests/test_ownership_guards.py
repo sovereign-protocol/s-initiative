@@ -36,11 +36,11 @@ def _post_request(path: str, payload: dict) -> Request:
     }, receive)
 
 
-class KanbanOwnershipControllerTests(unittest.TestCase):
+class InitiativeOwnershipControllerTests(unittest.TestCase):
     def setUp(self):
         self.session = Session("local")
         self.logic = InitiativeLogic(self.session)
-        self.logic.ensure_board()
+        self.logic.ensure_initiative()
         self.routes = build_routes(self.logic, _Runtime())
 
     def _post(self, path: str, payload: dict):

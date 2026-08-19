@@ -22,39 +22,39 @@ def build_routes(logic, runtime) -> list[Route]:
         data = await request.json()
         return await _json_result(
             runtime, logic.set_auto_adopt_mode(
-                data.get("mode", "always"), data.get("board_uuid"),
+                data.get("mode", "always"), data.get("initiative_uuid"),
             ),
         )
 
-    async def api_create_board(request: Request):
+    async def api_create_initiative(request: Request):
         data = await request.json()
         return await _json_result(
-            runtime, logic.create_board(data.get("name", "Kanban Board")),
+            runtime, logic.create_initiative(data.get("name", "Initiative")),
         )
 
-    async def api_select_board(request: Request):
+    async def api_select_initiative(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.select_board(data["board_uuid"]))
+        return await _json_result(runtime, logic.select_initiative(data["initiative_uuid"]))
 
-    async def api_rename_board(request: Request):
+    async def api_rename_initiative(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.rename_board(
-            data["board_uuid"], data.get("name", "Kanban Board"),
+        return await _json_result(runtime, logic.rename_initiative(
+            data["initiative_uuid"], data.get("name", "Initiative"),
         ))
 
-    async def api_set_board_objective(request: Request):
+    async def api_set_initiative_objective(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.set_board_objective(
-            data["board_uuid"], data.get("objective", ""),
+        return await _json_result(runtime, logic.set_initiative_objective(
+            data["initiative_uuid"], data.get("objective", ""),
         ))
 
-    async def api_copy_board(request: Request):
+    async def api_copy_initiative(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.copy_board(data["board_uuid"]))
+        return await _json_result(runtime, logic.copy_initiative(data["initiative_uuid"]))
 
-    async def api_delete_board(request: Request):
+    async def api_delete_initiative(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.delete_board(data["board_uuid"]))
+        return await _json_result(runtime, logic.delete_initiative(data["initiative_uuid"]))
 
     async def api_create_column(request: Request):
         data = await request.json()
@@ -155,7 +155,7 @@ def build_routes(logic, runtime) -> list[Route]:
     async def api_create_agenda_item(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.create_agenda_item(
-            data.get("text", ""), data.get("priority"), data.get("board_uuid"),
+            data.get("text", ""), data.get("priority"), data.get("initiative_uuid"),
         ))
 
     async def api_delete_agenda_item(request: Request):
@@ -179,7 +179,7 @@ def build_routes(logic, runtime) -> list[Route]:
     async def api_create_link(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.link_topic(
-            data["board_uuid"],
+            data["initiative_uuid"],
             data["topic_uuid"],
             data.get("application_id", ""),
             data.get("title", ""),
@@ -188,7 +188,7 @@ def build_routes(logic, runtime) -> list[Route]:
     async def api_make_link(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.create_linked_topic(
-            data["board_uuid"],
+            data["initiative_uuid"],
             data.get("application_id", ""),
             data.get("title", ""),
             data.get("template", ""),
@@ -212,12 +212,18 @@ def build_routes(logic, runtime) -> list[Route]:
     return [
         Route("/api/initiative/board", api_board),
         Route("/api/initiative/auto_adopt", api_auto_adopt, methods=["POST"]),
-        Route("/api/initiative/boards/create", api_create_board, methods=["POST"]),
-        Route("/api/initiative/boards/select", api_select_board, methods=["POST"]),
-        Route("/api/initiative/boards/rename", api_rename_board, methods=["POST"]),
-        Route("/api/initiative/boards/set_objective", api_set_board_objective, methods=["POST"]),
-        Route("/api/initiative/boards/copy", api_copy_board, methods=["POST"]),
-        Route("/api/initiative/boards/delete", api_delete_board, methods=["POST"]),
+        Route("/api/initiative/initiatives/create", api_create_initiative,
+              methods=["POST"]),
+        Route("/api/initiative/initiatives/select", api_select_initiative,
+              methods=["POST"]),
+        Route("/api/initiative/initiatives/rename", api_rename_initiative,
+              methods=["POST"]),
+        Route("/api/initiative/initiatives/set_objective",
+              api_set_initiative_objective, methods=["POST"]),
+        Route("/api/initiative/initiatives/copy", api_copy_initiative,
+              methods=["POST"]),
+        Route("/api/initiative/initiatives/delete", api_delete_initiative,
+              methods=["POST"]),
         Route("/api/initiative/columns/create", api_create_column, methods=["POST"]),
         Route("/api/initiative/columns/rename", api_rename_column, methods=["POST"]),
         Route("/api/initiative/columns/delete", api_delete_column, methods=["POST"]),

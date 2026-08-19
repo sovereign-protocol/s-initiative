@@ -13,10 +13,10 @@ class CardCommentTests(unittest.TestCase):
         return relay_runtime(self, port, self._relay_root)
 
     def _board_card(self, runtime):
-        board = runtime.logic.ensure_board()
-        column = runtime.logic.columns(board)[0]
+        initiative = runtime.logic.ensure_initiative()
+        column = runtime.logic.columns(initiative)[0]
         card = runtime.logic.create_card(column.uuid, "Card", "", []).value
-        return board, card
+        return initiative, card
 
     def _pair(self, port_a, port_b):
         return self.runtime(port_a), self.runtime(port_b)
@@ -51,10 +51,10 @@ class CardCommentTests(unittest.TestCase):
         # A comment changes the card's subtree hash but not its own content
         # hash, so the card's own transition stays in_agreement.
         left, right = self._pair(8404, 8405)
-        board = left.logic.ensure_board()
-        column = left.logic.columns(board)[0]
+        initiative = left.logic.ensure_initiative()
+        column = left.logic.columns(initiative)[0]
         card = left.logic.create_card(column.uuid, "Card", "", []).value
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("never")
 
         left.logic.create_card_comment(card.uuid, "note")
@@ -66,10 +66,10 @@ class CardCommentTests(unittest.TestCase):
 
     def test_only_the_author_can_delete_a_comment(self):
         left, right = self._pair(8406, 8407)
-        board = left.logic.ensure_board()
-        column = left.logic.columns(board)[0]
+        initiative = left.logic.ensure_initiative()
+        column = left.logic.columns(initiative)[0]
         card = left.logic.create_card(column.uuid, "Card", "", []).value
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("always")
 
         comment = left.logic.create_card_comment(card.uuid, "A's note").value
@@ -81,10 +81,10 @@ class CardCommentTests(unittest.TestCase):
 
     def test_peer_comment_auto_adopts_even_under_not_owner(self):
         left, right = self._pair(8408, 8409)
-        board = left.logic.ensure_board()
-        column = left.logic.columns(board)[0]
+        initiative = left.logic.ensure_initiative()
+        column = left.logic.columns(initiative)[0]
         card = left.logic.create_card(column.uuid, "Card", "", []).value
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("not_owner")
 
         comment = left.logic.create_card_comment(card.uuid, "hi from A").value
@@ -96,10 +96,10 @@ class CardCommentTests(unittest.TestCase):
 
     def test_concurrent_comments_from_two_clients_both_survive(self):
         left, right = self._pair(8410, 8411)
-        board = left.logic.ensure_board()
-        column = left.logic.columns(board)[0]
+        initiative = left.logic.ensure_initiative()
+        column = left.logic.columns(initiative)[0]
         card = left.logic.create_card(column.uuid, "Card", "", []).value
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         left.logic.set_auto_adopt_mode("always")
         right.logic.set_auto_adopt_mode("always")
 
@@ -172,10 +172,10 @@ class CardAttachmentTests(unittest.TestCase):
         # Same reasoning as comments: a file is a child node, so it moves the
         # card's subtree hash while leaving its own content untouched.
         left, right = self._pair(8422, 8423)
-        board = left.logic.ensure_board()
-        column = left.logic.columns(board)[0]
+        initiative = left.logic.ensure_initiative()
+        column = left.logic.columns(initiative)[0]
         card = left.logic.create_card(column.uuid, "Card", "", []).value
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("never")
 
         left.logic.create_card_attachment(card.uuid, self._reference(left))
@@ -187,10 +187,10 @@ class CardAttachmentTests(unittest.TestCase):
 
     def test_only_the_author_can_remove_an_attachment(self):
         left, right = self._pair(8424, 8425)
-        board = left.logic.ensure_board()
-        column = left.logic.columns(board)[0]
+        initiative = left.logic.ensure_initiative()
+        column = left.logic.columns(initiative)[0]
         card = left.logic.create_card(column.uuid, "Card", "", []).value
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("always")
 
         node = left.logic.create_card_attachment(
@@ -206,19 +206,19 @@ class CardAttachmentTests(unittest.TestCase):
 
     def test_attached_file_is_reachable_as_a_blob_reference(self):
         # Core's GC/transfer walker must see a card attachment without any
-        # Kanban-specific knowledge, or the bytes would be collected as
+        # S-Initiative-specific knowledge, or the bytes would be collected as
         # unreferenced while the card still points at them.
         from sovereign.blob_store import referenced_blob_ids
 
         rt = self.runtime(8426)
-        board, card = self._board_card(rt)
+        initiative, card = self._board_card(rt)
         reference = self._reference(rt)
 
         rt.logic.create_card_attachment(card.uuid, reference)
 
         self.assertIn(
             reference["blob_id"],
-            referenced_blob_ids(rt.session.protocol.index[board.uuid]),
+            referenced_blob_ids(rt.session.protocol.index[initiative.uuid]),
         )
 
 

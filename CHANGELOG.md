@@ -2,6 +2,79 @@
 
 ## Unreleased
 
+- **Every identifier that means the *application* now says "initiative" too.**
+  The app id was already `initiative`; the names around it were not.
+  `_kanban_container()` and `_kanban_containers()` (they return the
+  `initiative_app` folder) are `_initiative_container()` and
+  `_initiative_containers()`, `KANBAN_POSITION_POLICY` is
+  `INITIATIVE_POSITION_POLICY`, the page's templates are
+  `initiativeHeaderControls` and `initiativeControls`, the auto-adopt trace
+  event is `initiative.adopt_all_incoming_changes_check`, and the suites are
+  `test_initiative_new_logic.py`, `test_initiative_integration.py`,
+  `test_initiative_guard.py` and `test_initiative_desktop.py`. S-Cockpit made
+  the matching move on its side. This is the third naming rule, recorded in
+  `DESIGN_INITIATIVE_UI.md` §9: the route path and the payload trio name the
+  face, everything else names the topic, and the application segment, facade
+  accessor and application-scoped identifiers name the application.
+  `kanban_column`, `kanban_card` and "Kanban board" are untouched — a Kanban
+  board is still what organises an initiative.
+
+- **`config/initiative.example.json` started the server again.** It still set
+  `"primary_application_id": "kanban"`, and Core's `ApplicationHost` rejects a
+  primary id that names no active application, so the shipped example config
+  failed at startup with `primary application 'kanban' is not active`. It now
+  says `"initiative"`, matching the manifest.
+
+- **Every identifier that means the topic now says "initiative".** `boards()`,
+  `create_board`, `ensure_board`, `_selected_board`, `board_uuid` and the
+  `/api/initiative/boards/*` routes were the half of the root rename that
+  `DESIGN_INITIATIVE_UI.md` §9 deferred, and they are done: the commands are
+  `/api/initiative/initiatives/*`, the wire key is `initiative_uuid`, and the
+  payload is keyed `initiative` and `initiatives`. What decided the line was
+  S-Team's own arrangement rather than a fresh preference — the route path and
+  the payload-building trio name the *face*, everything else names the
+  *topic*, which is why `GET /api/team/document` carries `team` and `teams`.
+  So `GET /api/initiative/board`, `board_payload`, `board_snapshot`,
+  `merge_board_observation`, `#board` and `renderBoard` all stay: they are the
+  board face, and §1 says the board is a face. "Board" now means the Kanban
+  board and nothing else.
+
+- **The facade is at version 2.** Renaming `boards()` and its neighbours
+  breaks a versioned contract, so it says so. S-Cockpit's matching constant
+  moves in the same change; released apart, the lookup in Core's `host.py`
+  refuses the facade rather than silently degrading.
+
+- **The page's payload keys are asserted from the page's side.** A source scan
+  parses `board_payload` for the keys it writes and requires every
+  `state.<key>` the page reads to be one of them. §8 already recorded why —
+  S-Team renamed keys and node types in lockstep and nothing failed while the
+  page read `undefined` — and this is the check that would have caught it.
+
+- **A remembered initiative selection resets once.** `selected_board_uuid`
+  became `selected_initiative_uuid` in local application metadata. Same
+  disposable-data position as the root rename, on data that was never shared.
+
+- **The topic root is the initiative, not the board.** `kanban_board` is gone
+  as a node type and `kanban_app` with it: the root is `initiative`, its local
+  container is `initiative_app`, and the columns hang off the initiative
+  exactly where they hung off the board. A Kanban board is how the next few
+  days are organised and is not the thing being organised — the application
+  could not say that while the board *was* the topic. `kanban_column`,
+  `kanban_card`, `card_comment`, `card_attachment` and `agenda_item` are
+  untouched. This lands first because every type in `DESIGN_INITIATIVE.md`
+  hangs off that root and the rename only got dearer with each one added
+  beside it. No migration: a node's content is attested by three hashes and a
+  signature, so a stored tree cannot be re-typed by hand, and pre-release data
+  directories are replaced rather than converted. Board of Boards' settings
+  guard and the stand-in root type in Core's and S-Team's fixtures moved with
+  it. See `DESIGN_INITIATIVE_UI.md` §9.
+
+- **How the new fields are shown is written down.** `DESIGN_INITIATIVE_UI.md`
+  specifies two faces — the board for the next few days, the initiative for
+  the thing itself — the rule that puts a field on the face where its *act*
+  happens rather than beside its own siblings, and the milestone strip that is
+  the one place they touch. Proposed; only §9 is built.
+
 - **The auto-adopt square left the header.** A setting is not a header
   control, and a glyph nobody can read without its tooltip is not a control
   at all: adoption policy is now a labelled row in the collaboration pane

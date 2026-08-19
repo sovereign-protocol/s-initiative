@@ -2,7 +2,7 @@
   "applications": [
     {"module": "s_initiative.application"}
   ],
-  "primary_application_id": "kanban",
+  "primary_application_id": "initiative",
   "advertise_host": "127.0.0.1",
   "offer_http_channel": true
 }

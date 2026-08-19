@@ -33,9 +33,10 @@ def create_application(services: ApplicationServices) -> ApplicationInstance:
         dict(services.settings),
         services.collaboration,
     )
-    # The standalone Kanban product opens with one usable board. Bootstrap it
-    # during application activation; GET /api/initiative/board remains read-only.
-    logic.ensure_board()
+    # The standalone S-Initiative product opens with one usable initiative.
+    # Bootstrap it during application activation; GET /api/initiative/board
+    # remains read-only.
+    logic.ensure_initiative()
     return ApplicationInstance(
         manifest=APPLICATION_MANIFEST,
         logic=logic,

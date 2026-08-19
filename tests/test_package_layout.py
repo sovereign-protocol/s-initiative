@@ -8,6 +8,7 @@ in the pull request that breaks it. Core and S-Cockpit hold theirs.
 
 import ast
 import importlib.metadata
+import re
 import unittest
 from importlib.resources import files
 from pathlib import Path
@@ -145,7 +146,7 @@ class BoundaryTests(unittest.TestCase):
             self.assertFalse(used & forbidden, str(path))
 
     def test_reads_the_transition_ranking_rather_than_copying_it(self):
-        # Kanban and Agreement had each copied Session's ranking and the
+        # S-Initiative and Agreement had each copied Session's ranking and the
         # copies drifted: one ranked divergence 6, the other 5, so the same
         # conflict surfaced differently in each. Session owns the ranking.
         for path in SOURCES:
@@ -193,7 +194,7 @@ class BoundaryTests(unittest.TestCase):
 
 class AssetTests(unittest.TestCase):
     def setUp(self):
-        self.kanban = files("s_initiative.assets").joinpath("initiative.html").read_text(
+        self.initiative = files("s_initiative.assets").joinpath("initiative.html").read_text(
             encoding="utf-8",
         )
         self.css = files("s_initiative.assets").joinpath("initiative.css").read_text(
@@ -201,52 +202,79 @@ class AssetTests(unittest.TestCase):
         )
 
     def test_topic_header_delegates_navigation_and_creation_to_the_shell(self):
-        self.assertNotIn("onCreateTopic", self.kanban)
-        self.assertIn("SovereignShell.setTopicName", self.kanban)
-        # No list of this client's other boards in this application's bar.
+        self.assertNotIn("onCreateTopic", self.initiative)
+        self.assertIn("SovereignShell.setTopicName", self.initiative)
+        # No list of this client's other initiatives in this application's bar.
         # Reaching another initiative is the Cockpit's.
-        self.assertNotIn("boards.map", self.kanban)
-        self.assertNotIn("/api/initiative/boards/select", self.kanban.split(
-            "async function selectBoardFromUrl", 1,
+        self.assertNotIn("initiatives.map", self.initiative)
+        self.assertNotIn("/api/initiative/initiatives/select", self.initiative.split(
+            "async function selectInitiativeFromUrl", 1,
         )[0])
 
+    def test_the_page_only_reads_payload_keys_the_logic_writes(self):
+        # DESIGN_INITIATIVE_UI.md 8: the payload keys are a contract with the
+        # page and are not the node types. S-Team renamed both together once,
+        # in lockstep with its tests, and nothing failed while the page read
+        # `undefined` and drew an empty document beside a team that was there
+        # the whole time. Asserting it from the page's side is what makes half
+        # a rename fail here rather than in front of somebody.
+        source = (ROOT / "src" / "s_initiative" / "logic.py").read_text(
+            encoding="utf-8",
+        )
+        written = set()
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if node.name != "board_payload":
+                continue
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Return) and isinstance(inner.value, ast.Dict):
+                    written |= {
+                        key.value for key in inner.value.keys
+                        if isinstance(key, ast.Constant)
+                    }
+        self.assertIn("initiative", written)
+        read = set(re.findall(r"state\??\.([a-z_]+)", self.initiative))
+        self.assertTrue(read)
+        self.assertEqual(read - written, set())
+
     def test_people_and_add_actions_use_the_shared_ui_primitives(self):
-        self.assertIn("SovereignUI.avatar", self.kanban)
-        self.assertIn('add.textContent = "+ Add card"', self.kanban)
-        self.assertIn('addBtn.textContent = "+ Add column"', self.kanban)
+        self.assertIn("SovereignUI.avatar", self.initiative)
+        self.assertIn('add.textContent = "+ Add card"', self.initiative)
+        self.assertIn('addBtn.textContent = "+ Add column"', self.initiative)
 
     def test_column_and_agenda_text_use_the_shared_editor(self):
-        self.assertIn("SovereignUI.editableText", self.kanban)
-        self.assertIn('className = "column-name"', self.kanban)
-        self.assertNotIn('document.createElement("input")', self.kanban.split(
+        self.assertIn("SovereignUI.editableText", self.initiative)
+        self.assertIn('className = "column-name"', self.initiative)
+        self.assertNotIn('document.createElement("input")', self.initiative.split(
             "function renderColumn", 1,
         )[1].split("function renderCard", 1)[0])
-        self.assertIn("update: '/api/initiative/agenda/update'", self.kanban)
+        self.assertIn("update: '/api/initiative/agenda/update'", self.initiative)
 
     def test_columns_use_the_shared_horizontal_reorder_control(self):
-        self.assertIn("SovereignUI.reorderHandle", self.kanban)
-        self.assertIn("SovereignUI.reorderableList", self.kanban)
-        self.assertIn('axis: "horizontal"', self.kanban)
-        self.assertNotIn("draggedColumn", self.kanban)
-        self.assertNotIn("async function dropColumn", self.kanban)
+        self.assertIn("SovereignUI.reorderHandle", self.initiative)
+        self.assertIn("SovereignUI.reorderableList", self.initiative)
+        self.assertIn('axis: "horizontal"', self.initiative)
+        self.assertNotIn("draggedColumn", self.initiative)
+        self.assertNotIn("async function dropColumn", self.initiative)
 
     def test_assets_never_navigate_to_the_bare_root_with_a_query(self):
         # "/" serves whichever application is primary, so a root-relative link
         # lands somewhere that depends on host configuration. Cross-application
         # navigation must name the target's asset prefix.
-        for number, line in enumerate(self.kanban.splitlines(), start=1):
+        for number, line in enumerate(self.initiative.splitlines(), start=1):
             for pattern in ('href = `/?', 'href="/?', "href='/?"):
                 self.assertNotIn(pattern, line, f"initiative.html:{number}")
 
     def test_card_drop_always_clears_drag_styling(self):
-        drop = self.kanban.split(
+        drop = self.initiative.split(
             "async function commitCardDrop", 1,
         )[1].split("function onCardDragOver", 1)[0]
         self.assertIn('querySelector(".card.dragging")', drop)
         self.assertIn('classList.remove("dragging")', drop)
 
     def test_card_drag_has_preview_and_suppresses_text_selection(self):
-        card = self.kanban.split(
+        card = self.initiative.split(
             "function renderCard", 1,
         )[1].split("function isInteractiveCardTarget", 1)[0]
         self.assertIn("event.preventDefault()", card)

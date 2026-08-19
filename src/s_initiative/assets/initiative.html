@@ -3,18 +3,18 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Kanban Board</title>
+    <title>S-Initiative</title>
     <link rel="stylesheet" href="/shared.css" />
     <link rel="stylesheet" href="/apps/initiative/styles.css" />
   </head>
   <body>
     <div id="toast" class="toast"></div>
     <!-- The shell owns the bar and holds nothing of an application's (U7).
-         The board title goes in the topic region, and the adopt tools go
+         The initiative title goes in the topic region, and the adopt tools
          beside it, because that is the thing they decide about. -->
     <header class="topbar"><div id="shell"></div></header>
 
-    <template id="kanbanHeaderControls">
+    <template id="initiativeHeaderControls">
       <div id="boardAdoptTools" class="adopt-tools"></div>
     </template>
 
@@ -184,7 +184,7 @@
         if (!info || !["awaiting_peer", "conflict"].includes(info.stage)) {
           return false;
         }
-        const localNode = findNode(state.board, peerNode.uuid);
+        const localNode = findNode(state.initiative, peerNode.uuid);
         if (!localNode || localNode.deleted) return true;
         return localNode.parent_uuid !== peerNode.parent_uuid;
       }
@@ -195,13 +195,13 @@
         // node itself, as it always has.
         const info = transitionInfo(peerNode.uuid);
         if (!info || info.stage !== "awaiting_me") return false;
-        return !findNode(state.board, peerNode.uuid);
+        return !findNode(state.initiative, peerNode.uuid);
       }
 
       function currentSeatOf(node) {
         // The copy drawn solid for this uuid, or null when every side that
         // had it has let it go - a deletion nobody has answered yet.
-        const local = findNode(state.board, node.uuid);
+        const local = findNode(state.initiative, node.uuid);
         if (!local || local.deleted) return null;
         if (!movedByPeer(local)) return local;
         const peerNode = peerCopyOf(local);
@@ -212,7 +212,7 @@
         // A card drawn at the seat the peer moved it to is their copy. The
         // dialog compares versions and writes to ours, so it must be opened
         // on the local node even when the tile came from their tree.
-        const local = findNode(state.board, node.uuid);
+        const local = findNode(state.initiative, node.uuid);
         return local && !local.deleted ? local : node;
       }
 
@@ -227,7 +227,7 @@
         return (
           JSON.stringify(node.data) === JSON.stringify(peerNode.data) &&
           JSON.stringify(node.weights || {}) === JSON.stringify(peerNode.weights || {}) &&
-          (node.data.type === "kanban_board" || node.parent_uuid === peerNode.parent_uuid)
+          (node.data.type === "initiative" || node.parent_uuid === peerNode.parent_uuid)
         );
       }
 
@@ -245,8 +245,8 @@
       const api = SovereignApi.request;
 
       function renderNetwork() {
-        // The shell draws the cluster; Kanban only says which peers belong
-        // to this board and what each of them looks like.
+        // The shell draws the cluster; S-Initiative only says which peers
+        // belong to this initiative and what each of them looks like.
         SovereignShell.refresh();
       }
 
@@ -313,24 +313,25 @@
         setTimeout(() => target.classList.remove("highlight-flash"), 1500);
       }
 
-      function boardUsers() {
-        const boardPeers = new Set(boardPeerAddresses());
+      function initiativeUsers() {
+        const initiativePeers = new Set(initiativePeerAddresses());
         return (state.users || []).filter(
-          (user) => user.address === state.address || boardPeers.has(user.address),
+          (user) => user.address === state.address || initiativePeers.has(user.address),
         );
       }
 
       function pickerCandidates() {
-        // New assignments are restricted to current board members, but
-        // someone already assigned before they (or we) left the board must
-        // stay visible here too - otherwise there's no way to ever remove
-        // that stale assignment again, since they'd never appear in the list.
-        const board = boardUsers();
-        const boardIds = new Set(board.map((user) => user.id));
+        // New assignments are restricted to current initiative members,
+        // but someone already assigned before they (or we) left the
+        // initiative must stay visible here too - otherwise there's no way to
+        // ever remove that stale assignment again, since they'd never appear
+        // in the list.
+        const members = initiativeUsers();
+        const memberIds = new Set(members.map((user) => user.id));
         const already = modalParticipants
-          .filter((id) => !boardIds.has(id))
+          .filter((id) => !memberIds.has(id))
           .map((id) => userForParticipant(id));
-        return [...board, ...already];
+        return [...members, ...already];
       }
 
       function renderUserPicker(containerId) {
@@ -385,16 +386,16 @@
 
           // Core owns the name of the topic in every application's bar.
           // Reaching another initiative is the Cockpit's, not a list of
-          // this client's boards hidden in this one's header.
+          // this client's initiatives hidden in this one's header.
           SovereignShell.setTopicName({
             label: "Initiative",
-            title: state.board.data.name || "Kanban Board",
+            title: state.initiative.data.name || "Initiative",
             onRename: (name) => run(
-              () => api("/api/initiative/boards/rename", {
-                board_uuid: state.board.uuid,
+              () => api("/api/initiative/initiatives/rename", {
+                initiative_uuid: state.initiative.uuid,
                 name,
               }),
-              "Board renamed",
+              "Initiative renamed",
             ),
           });
 
@@ -420,7 +421,7 @@
         // left as a ghost, and ghosts sort in among the live columns rather
         // than after them - a ghost stands for a seat, so it belongs where
         // that seat was.
-        const activeCols = columns(state.board)
+        const activeCols = columns(state.initiative)
           .filter((column) => !movedByPeer(column))
           .map((c) => ({ ...c, _isGhost: false }));
         const ghostCols = ghostColumns().map((c) => ({ ...c, _isGhost: true }));
@@ -482,7 +483,7 @@
               snapshotType: kind.application_id,
               onCreate: ({name, template, snapshot}) => run(
                 () => api("/api/initiative/links/make", {
-                  board_uuid: state.board.uuid,
+                  initiative_uuid: state.initiative.uuid,
                   application_id: kind.application_id,
                   title: name,
                   template,
@@ -496,7 +497,7 @@
             label: `${topic.title} · ${topic.label}`,
             onSelect: () => run(
               () => api("/api/initiative/links/create", {
-                board_uuid: state.board.uuid,
+                initiative_uuid: state.initiative.uuid,
                 topic_uuid: topic.topic_uuid,
                 application_id: topic.application_id,
                 title: topic.title,
@@ -869,18 +870,18 @@
       function renderBoardAdoptTools() {
         const tools = el("boardAdoptTools");
         tools.replaceChildren();
-        const board = state.board;
-        if (!board) return;
-        // The board root inherits every descendant hash difference. Only
-        // offer a board-level decision when the board's own fields differ.
-        if (isContainerOnlyDivergence(board)) return;
-        tools.append(...reactionTools(board));
+        const initiative = state.initiative;
+        if (!initiative) return;
+        // The initiative root inherits every descendant hash difference. Only
+        // offer a root-level decision when the initiative's own fields differ.
+        if (isContainerOnlyDivergence(initiative)) return;
+        tools.append(...reactionTools(initiative));
       }
 
       // The control itself is Core's - one available act reads as a button
       // naming it, several become a menu - so a divergence looks the same
-      // here, in the Cockpit and in the collaboration pane. Kanban decides
-      // only which nodes are offered one.
+      // here, in the Cockpit and in the collaboration pane. S-Initiative
+      // decides only which nodes are offered one.
       function reactionTools(node) {
         if (!needsReaction(node)) return [];
         const control = SovereignUI.reactionControl({
@@ -947,7 +948,7 @@
           key: "local",
           label: "Mine",
           node: card,
-          columnLabel: columnNameFor(state.board, card.parent_uuid),
+          columnLabel: columnNameFor(state.initiative, card.parent_uuid),
           absent: false,
         }];
         const events = (transitionInfo(card.uuid)?.events || [transitionInfo(card.uuid)])
@@ -1013,7 +1014,7 @@
         const meta = el("cardPerspectiveMeta");
         meta.textContent = perspective?.absent
           ? `This card is absent from ${perspective.label}'s perspective.`
-          : `Column: ${perspective?.columnLabel || columnNameFor(state.board, modalColumn)}`;
+          : `Column: ${perspective?.columnLabel || columnNameFor(state.initiative, modalColumn)}`;
         el("saveCardBtn").style.display = isLocal ? "" : "none";
         el("deleteCardBtn").style.display = modalCard && isLocal ? "inline-block" : "none";
         renderCardPerspectiveSwitcher();
@@ -1169,7 +1170,8 @@
         if (!modalCard || !file) return;
         try {
           // Bytes go to Core's blob endpoint; only the reference goes to
-          // Kanban, so the application never handles the payload itself.
+          // S-Initiative, so the application never handles the payload
+          // itself.
           const response = await fetch("/api/blob", {
             method: "POST",
             headers: {
@@ -1395,9 +1397,9 @@
         ).child;
       }
 
-      function columns(board) {
+      function columns(initiative) {
         return sortNodes(
-          (board.children || []).filter((node) => node.data.type === "kanban_column" && !node.deleted),
+          (initiative.children || []).filter((node) => node.data.type === "kanban_column" && !node.deleted),
         );
       }
       function cards(column) {
@@ -1417,7 +1419,7 @@
         // authored the move is the one the transition names, so two peers
         // moving the same card cannot land it in two columns at once.
         const arrivals = new Map();
-        for (const column of columns(state.board)) {
+        for (const column of columns(state.initiative)) {
           for (const card of cards(column)) {
             if (!movedByPeer(card)) continue;
             const peerNode = peerCopyOf(card);
@@ -1433,10 +1435,10 @@
         const ghosts = new Map();
         // A column cannot change parent, so the only seat it leaves is the
         // one a deletion empties - ours when the peer deleted it.
-        for (const column of columns(state.board)) {
+        for (const column of columns(state.initiative)) {
           if (movedByPeer(column)) ghosts.set(column.uuid, column);
         }
-        for (const root of boardPeerRoots()) {
+        for (const root of initiativePeerRoots()) {
           for (const column of columns(root)) {
             if (ghosts.has(column.uuid)) continue;
             if (movedByMe(column) || peerOnlyNode(column)) {
@@ -1450,13 +1452,13 @@
         const ghosts = new Map();
         // The seat a card left when the peer moved or deleted it: our own
         // copy, still sitting here, no longer the current one.
-        const localColumn = findNode(state.board, columnUuid);
+        const localColumn = findNode(state.initiative, columnUuid);
         for (const card of cards(localColumn || { children: [] })) {
           if (movedByPeer(card)) ghosts.set(card.uuid, card);
         }
         // The seat the peer still gives a card after I moved or deleted it,
         // and cards only they hold - both drawn from their copy.
-        for (const root of boardPeerRoots()) {
+        for (const root of initiativePeerRoots()) {
           const peerColumn = findNode(root, columnUuid);
           for (const card of cards(peerColumn || { children: [] })) {
             if (ghosts.has(card.uuid)) continue;
@@ -1519,17 +1521,17 @@
         // null if unknown. Purely informational, never affects behavior.
         return state.network?.peers?.[address]?.channel || null;
       }
-      function boardPeerAddresses() {
-        const boardUuid = state.board?.uuid;
-        if (!boardUuid) return [];
+      function initiativePeerAddresses() {
+        const initiativeUuid = state.initiative?.uuid;
+        if (!initiativeUuid) return [];
         return Object.entries(state.network?.peers || {})
-          .filter(([, info]) => (info.topic_uuids || []).includes(boardUuid))
+          .filter(([, info]) => (info.topic_uuids || []).includes(initiativeUuid))
           .map(([addr]) => addr);
       }
-      function boardPeerRoots() {
-        const boardUuid = state.board?.uuid;
-        return boardPeerAddresses()
-          .map((addr) => findNode(state.peers?.[addr], boardUuid))
+      function initiativePeerRoots() {
+        const initiativeUuid = state.initiative?.uuid;
+        return initiativePeerAddresses()
+          .map((addr) => findNode(state.peers?.[addr], initiativeUuid))
           .filter(Boolean);
       }
       function userForParticipant(participant) {
@@ -1613,30 +1615,31 @@
         }
       }
 
-      // The adopt tools belong beside the board's name, which is the thing
-      // they decide about. The auto-adopt indicator that used to sit in the
-      // shell's right-hand slot is gone: a setting is not a header control,
-      // and it is read as a labelled row in the collaboration pane (U7).
-      const kanbanControls = el("kanbanHeaderControls").content;
-      const adoptTools = kanbanControls.querySelector("#boardAdoptTools");
+      // The adopt tools belong beside the initiative's name, which is the
+      // thing they decide about. The auto-adopt indicator that used to sit in
+      // the shell's right-hand slot is gone: a setting is not a header
+      // control, and it is read as a labelled row in the collaboration pane
+      // (U7).
+      const initiativeControls = el("initiativeHeaderControls").content;
+      const adoptTools = initiativeControls.querySelector("#boardAdoptTools");
 
       SovereignShell.mount({
         container: el("shell"),
         applicationId: "initiative",
-        topicUuid: () => state?.board?.uuid || "",
+        topicUuid: () => state?.initiative?.uuid || "",
         state: () => state || {},
-        // The pane is the shell's; Kanban supplies where its routes live and
-        // the two extra modes judged against card ownership, which Core
-        // stores without interpreting.
+        // The pane is the shell's; S-Initiative supplies where its routes
+        // live and the two extra modes judged against card ownership, which
+        // Core stores without interpreting.
         agendaRoutes: {
-          topicKey: 'board_uuid',
+          topicKey: 'initiative_uuid',
           create: '/api/initiative/agenda/create',
           delete: '/api/initiative/agenda/delete',
           update: '/api/initiative/agenda/update',
           setPriority: '/api/initiative/agenda/set_priority',
           move: '/api/initiative/agenda/move',
         },
-        autoAdoptRoute: {path: '/api/initiative/auto_adopt', topicKey: 'board_uuid'},
+        autoAdoptRoute: {path: '/api/initiative/auto_adopt', topicKey: 'initiative_uuid'},
         autoAdoptLabels: AUTO_ADOPT_LABELS,
         autoAdoptDescriptions: AUTO_ADOPT_DESCRIPTIONS,
         renderAutoAdoptIndicator: (container, mode) => {
@@ -1644,7 +1647,7 @@
           renderAutoAdoptSquare(container, mode);
         },
         describeNode: (uuid) => {
-          const node = findNode(state?.board, uuid);
+          const node = findNode(state?.initiative, uuid);
           return node ? (node.data.name || node.data.text || '') : '';
         },
         revealNode: (uuid) => highlightCard(uuid),
@@ -1657,15 +1660,15 @@
         if (event.key === "Escape") SovereignShell.closeCollab();
       });
 
-      // `topic` and not `board`: one name for "open this one", so the shell
+      // `topic` and not `initiative`: one name for "open this one", so the
       // can compose a link to any application's topic without knowing what
       // that application calls its topics.
-      async function selectBoardFromUrl() {
+      async function selectInitiativeFromUrl() {
         const params = new URLSearchParams(window.location.search);
-        const boardUuid = params.get("topic");
-        if (!boardUuid) return;
+        const initiativeUuid = params.get("topic");
+        if (!initiativeUuid) return;
         try {
-          await api("/api/initiative/boards/select", { board_uuid: boardUuid });
+          await api("/api/initiative/initiatives/select", { initiative_uuid: initiativeUuid });
         } catch (error) {
           showToast(error.message, true);
         }
@@ -1675,7 +1678,7 @@
       }
 
       setInterval(() => loadBoard(), 1500);
-      selectBoardFromUrl().then(loadBoard);
+      selectInitiativeFromUrl().then(loadBoard);
     </script>
   </body>
 </html>

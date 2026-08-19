@@ -1,25 +1,25 @@
 """
-Kanban app for the new stack.
+S-Initiative: the initiative and the Kanban board that organises it.
 
 Contract:
   Model:
-    - The discussion topic is always the kanban board node.
-    - Board/columns/cards are regular protocol nodes.
+    - The discussion topic is always the initiative node.
+    - Initiative/columns/cards are regular protocol nodes.
     - Column data: {type: "kanban_column", name, order}
     - Card data: {type: "kanban_card", name, description, participants, owner, order}
       owner is a profile uuid that must also be present in participants, or None.
-    Board data additionally carries: objective (short free-text tagline,
+    Initiative data additionally carries: objective (short free-text tagline,
       default ""), used by the Board of Boards summary view.
     Agenda item data: {type: "agenda_item", text, priority, author}
-      - a direct child of the board, same as columns. priority is one of
+      - a direct child of the initiative, same as columns. priority is one of
       "high"/"medium"/"low", or None if not set (optional - a card doesn't
       need one), author is a profile uuid. Purely async: created/deleted
       like any node and projected from each verified perspective via the
-      board's existing topic; observed items are not adopted implicitly.
+      initiative's existing topic; observed items are not adopted implicitly.
 
   API:
     GET  /api/initiative/board
-    POST /api/initiative/boards/set_objective {board_uuid, objective}
+    POST /api/initiative/initiatives/set_objective {initiative_uuid, objective}
     POST /api/initiative/agenda/create        {text, priority}  # priority optional
     POST /api/initiative/agenda/delete        {item_uuid}
     POST /api/initiative/agenda/set_priority  {item_uuid, priority}  # priority optional, clears if omitted
@@ -36,13 +36,23 @@ Contract:
     POST /api/initiative/cards/comments/delete {comment_uuid}
     POST /api/initiative/adopt               {source_addr, node_uuid, adopt_absence}
     POST /api/initiative/rollback            {source_addr, node_uuid}
-    POST /api/initiative/links/create        {board_uuid, topic_uuid, application_id, title}
+    POST /api/initiative/links/create        {initiative_uuid, topic_uuid, application_id, title}
     POST /api/initiative/links/remove        {link_uuid}
     POST /api/initiative/links/follow        {link_uuid}
 
+  Naming:
+    The route path and the payload-building trio name the *face*; every
+    identifier and payload key names the *topic*. So the read is
+    GET /api/initiative/board and its builders are board_payload /
+    board_snapshot / merge_board_observation, while what they carry is an
+    initiative and the collection routes are /initiatives/*. This is the
+    arrangement S-Team already uses for GET /api/team/document over `team`
+    and `teams`. "Board" therefore survives only where the Kanban board -
+    the columns and the cards - is what is meant.
+
   Links:
     An initiative names the team it belongs to (0-1) and the flows it runs
-    (0-n), through Core's topic_link node as a direct child of the board.
+    (0-n), through Core's topic_link node as a direct child of the initiative.
     Removing a link removes the reference and nothing else; the team or flow
     is the owning application's to delete.
 """
@@ -68,7 +78,7 @@ SNAPSHOT_FORMAT_VERSION = 1
 AUTO_ADOPT_MODES = ("always", "not_owner", "not_member", "never")
 AGENDA_PRIORITIES = ("high", "medium", "low")
 DISPLAYED_DIVERGENCE_TYPES = frozenset({
-    "kanban_board", "kanban_column", "kanban_card",
+    "initiative", "kanban_column", "kanban_card",
     # Anybody on the initiative may add or remove one, and which team an
     # initiative belongs to is worth a human noticing when two clients
     # disagree about it. A link's data never changes after it is written -
@@ -80,7 +90,7 @@ OWNED_NODE_TYPES = frozenset({
     *DISPLAYED_DIVERGENCE_TYPES,
     "agenda_item", "card_attachment", "card_comment",
 })
-KANBAN_POSITION_POLICY = LastWriteWinsPolicy(
+INITIATIVE_POSITION_POLICY = LastWriteWinsPolicy(
     node_type="kanban_card",
     timestamp_field="position_updated_at",
     data_fields=("order",),
@@ -94,7 +104,7 @@ class InitiativeLogic:
         self.session = session
         self.config = config or {}
         self.collaboration = collaboration
-        # Revision ownership must exist before the first board/card mutation.
+        # Revision ownership must exist before the first initiative/card mutation.
         # Session.identity bootstraps its own origin without recursion.
         self.session.identity
         with self.session.lock:
@@ -103,26 +113,29 @@ class InitiativeLogic:
     def application_registration(self) -> ApplicationRegistration:
         return ApplicationRegistration(
             INITIATIVE_APPLICATION_ID,
-            frozenset({"kanban_board"}),
-            self.boards,
-            self.accept_board_invitation,
+            frozenset({"initiative"}),
+            self.initiatives,
+            self.accept_initiative_invitation,
             assignment_scoped=True,
             mount_invitation=True,
             on_peer_update=self.on_peer_update,
             topic_noun="Initiative",
             # An initiative may start from nothing. What makes a template a
-            # template here is that it is one of this client's own boards.
-            list_templates=self.board_templates,
-            create_topic=self.make_board,
+            # template here is that it is one of this client's own initiatives.
+            list_templates=self.initiative_templates,
+            create_topic=self.make_initiative,
         )
 
-    def board_templates(self) -> list[dict]:
+    def initiative_templates(self) -> list[dict]:
         return [
-            {"value": board.uuid, "name": str(board.data.get("name") or "Untitled")}
-            for board in self.boards()
+            {
+                "value": initiative.uuid,
+                "name": str(initiative.data.get("name") or "Untitled"),
+            }
+            for initiative in self.initiatives()
         ]
 
-    def make_board(
+    def make_initiative(
         self, name: str, template: str = "", snapshot: dict | None = None,
     ) -> SessionResult:
         """One initiative, however it starts. Core's create contract.
@@ -135,32 +148,31 @@ class InitiativeLogic:
             return self.create_from_snapshot(snapshot, name)
         source = str(template or "").strip()
         if not source:
-            return self.create_board(name)
-        copied = self.copy_board(source)
+            return self.create_initiative(name)
+        copied = self.copy_initiative(source)
         if copied.status != "ok":
             return copied
-        board_uuid = str(getattr(copied.value, "uuid", copied.value) or "")
-        renamed = self.rename_board(board_uuid, name)
+        initiative_uuid = str(getattr(copied.value, "uuid", copied.value) or "")
+        renamed = self.rename_initiative(initiative_uuid, name)
         if renamed.status != "ok":
             return renamed
         return SessionResult(
-            "ok", value=board_uuid,
+            "ok", value=initiative_uuid,
             effects=[*copied.effects, *renamed.effects],
         )
 
     def board_payload(self, network: dict | None = None) -> dict:
         """Return the current board view without reconciling or creating data."""
-        boards = self.boards()
-        board = self._selected_board(boards)
+        initiatives = self.initiatives()
+        initiative = self._selected_initiative(initiatives)
         network = (
-            self._network_info(board.uuid if board else None)
+            self._network_info(initiative.uuid if initiative else None)
             if network is None else network
         )
-        events = self.transition_events(board.uuid, network) if board else []
+        events = self.transition_events(initiative.uuid, network) if initiative else []
         return {
             "address": self.session.address,
-            "board": board.to_dict() if board else None,
-            "boards": [item.to_dict() for item in boards],
+            "initiative": initiative.to_dict() if initiative else None,
             "user_profile": self.user_profile().to_dict(),
             "users": self.users(),
             "network": network,
@@ -171,7 +183,7 @@ class InitiativeLogic:
                 )
             },
             "auto_adopt_mode": (
-                self.auto_adopt_mode(board) if board else "always"
+                self.auto_adopt_mode(initiative) if initiative else "always"
             ),
             # The shell renders the adoption control and the agenda, so it
             # needs this application's mode set and who "mine" is.
@@ -181,27 +193,27 @@ class InitiativeLogic:
             "transition_events": events,
             "transition_by_node": self.transition_by_node(events),
             "agenda_items": (
-                [item.to_dict() for item in self.agenda_items(board)]
-                if board else []
+                [item.to_dict() for item in self.agenda_items(initiative)]
+                if initiative else []
             ),
-            "comments_by_card": self._comments_by_card(board) if board else {},
+            "comments_by_card": self._comments_by_card(initiative) if initiative else {},
             "attachments_by_card": (
-                self._attachments_by_card(board) if board else {}
+                self._attachments_by_card(initiative) if initiative else {}
             ),
-            "links": self.initiative_links(board) if board else [],
+            "links": self.initiative_links(initiative) if initiative else [],
             "linkable_topics": (
-                self.linkable_topics(board.uuid) if board else []
+                self.linkable_topics(initiative.uuid) if initiative else []
             ),
-            "link_kinds": self.link_kinds() if board else [],
+            "link_kinds": self.link_kinds() if initiative else [],
         }
 
     def board_snapshot(self) -> dict:
         """Build board state under Session without consulting transport."""
         payload = self.board_payload({"_include_all": True})
-        board = payload.get("board") or {}
+        initiative = payload.get("initiative") or {}
         return {
             "payload": payload,
-            "topic_uuid": board.get("uuid"),
+            "topic_uuid": initiative.get("uuid"),
         }
 
     @classmethod
@@ -261,14 +273,14 @@ class InitiativeLogic:
             for address in addresses if address
         )
 
-    def _comments_by_card(self, board: ProtocolNode) -> dict:
+    def _comments_by_card(self, initiative: ProtocolNode) -> dict:
         # UI-friendly view of card comments: resolved author labels, sorted by
-        # time, keyed by card uuid. The comments also live in the board tree as
-        # card children, so they sync via the board topic - this is just the
+        # time, keyed by card uuid. The comments also live in the initiative tree as
+        # card children, so they sync via the initiative topic - this is just the
         # convenient shape for the card modal.
         names = {user["id"]: user["name"] for user in self.users() if user.get("id")}
         out = {}
-        for column in self.columns(board):
+        for column in self.columns(initiative):
             for card in self.cards(column):
                 comments = self.card_comments(card)
                 if not comments:
@@ -285,14 +297,14 @@ class InitiativeLogic:
                 ]
         return out
 
-    def _attachments_by_card(self, board: ProtocolNode) -> dict:
+    def _attachments_by_card(self, initiative: ProtocolNode) -> dict:
         # Same shape and reasoning as _comments_by_card: the files live in the
-        # board tree as card children and sync with the board topic; this is
+        # initiative tree as card children and sync with the initiative topic; this is
         # only the convenient view for the modal, with the download URL Core
         # already serves resolved for each blob.
         names = {user["id"]: user["name"] for user in self.users() if user.get("id")}
         out = {}
-        for column in self.columns(board):
+        for column in self.columns(initiative):
             for card in self.cards(column):
                 entries = []
                 for node in self.card_attachments(card):
@@ -311,20 +323,20 @@ class InitiativeLogic:
                     out[card.uuid] = entries
         return out
 
-    def _network_info(self, board_uuid: str | None = None) -> dict:
+    def _network_info(self, initiative_uuid: str | None = None) -> dict:
         return (
-            self.collaboration.network_info(board_uuid)
+            self.collaboration.network_info(initiative_uuid)
             if self.collaboration else self.session.get_network_info()
         )
 
-    def network_info(self, board_uuid: str | None = None) -> dict:
-        return self._network_info(board_uuid)
+    def network_info(self, initiative_uuid: str | None = None) -> dict:
+        return self._network_info(initiative_uuid)
 
     def collaboration_context(
         self, topic_uuid: str, network: dict | None = None,
     ) -> dict:
-        board = self._node(topic_uuid, "kanban_board")
-        if not board:
+        initiative = self._node(topic_uuid, "initiative")
+        if not initiative:
             return {}
         network = (
             self.network_info(topic_uuid) if network is None else network
@@ -332,42 +344,38 @@ class InitiativeLogic:
         events = self.transition_events(topic_uuid, network)
         return {
             "agenda_items": [
-                item.to_dict() for item in self.agenda_items(board)
+                item.to_dict() for item in self.agenda_items(initiative)
             ],
             "transition_events": events,
             "transition_by_node": self.transition_by_node(events),
             "identity_uuid": self.session.identity.uuid,
             "known_identities": self.session.known_identities(),
-            "auto_adopt_mode": self.auto_adopt_mode(board),
+            "auto_adopt_mode": self.auto_adopt_mode(initiative),
             "auto_adopt_modes": list(AUTO_ADOPT_MODES),
         }
 
-    # The policy is Session's; Kanban only adds the two modes that are judged
-    # against card ownership. Settings saved before the move still live under
-    # this application's metadata, so they are read through rather than reset.
-    def auto_adopt_mode(self, board: ProtocolNode | None = None) -> str:
-        board = board or self.ensure_board()
-        legacy = self._metadata().get("auto_adopt_by_board", {})
-        fallback = self._normalize_auto_adopt_mode(
-            legacy[board.uuid] if isinstance(legacy, dict) and board.uuid in legacy
-            else self._metadata().get("auto_adopt", "always")
-        )
+    # The policy is Session's; this application only adds the two modes that
+    # are judged against card ownership. Session stores the mode as an opaque
+    # string and never interprets the extra two, so its answer is normalised
+    # here rather than trusted.
+    def auto_adopt_mode(self, initiative: ProtocolNode | None = None) -> str:
+        initiative = initiative or self.ensure_initiative()
         return self._normalize_auto_adopt_mode(
-            self.session.auto_adopt_mode(board.uuid, fallback)
+            self.session.auto_adopt_mode(initiative.uuid)
         )
 
     def set_auto_adopt_mode(
-        self, mode: str, board_uuid: str | None = None,
+        self, mode: str, initiative_uuid: str | None = None,
     ) -> SessionResult:
-        board = (
-            self._node(board_uuid, "kanban_board")
-            if board_uuid else self.ensure_board()
+        initiative = (
+            self._node(initiative_uuid, "initiative")
+            if initiative_uuid else self.ensure_initiative()
         )
-        if not board:
-            return SessionResult("error", reason="board not found")
+        if not initiative:
+            return SessionResult("error", reason="initiative not found")
         normalized = self._normalize_auto_adopt_mode(mode)
         result = self.session.set_auto_adopt_mode(
-            board.uuid, normalized, AUTO_ADOPT_MODES,
+            initiative.uuid, normalized, AUTO_ADOPT_MODES,
         )
         if result.status != "ok":
             return result
@@ -378,61 +386,59 @@ class InitiativeLogic:
         # peer happened to send something else, and if they sent nothing it
         # would sit there for good. Core does the reconsidering; this only says
         # that the ground it was decided on has moved.
-        self.publish_adoption_metadata(board)
-        self.session.reconsider_adoption(board.uuid)
+        self.publish_adoption_metadata(initiative)
+        self.session.reconsider_adoption(initiative.uuid)
         return result
 
     @staticmethod
     def _normalize_auto_adopt_mode(value: Any) -> str:
-        if isinstance(value, bool):
-            return "always" if value else "never"
         if value in AUTO_ADOPT_MODES:
             return value
         return "always"
 
-    def ensure_board(self) -> ProtocolNode:
-        board = self._selected_board(self.boards())
-        if board:
-            self._remember_board(board.uuid)
-            return board
-        board = self._create_board_node("Kanban Board")
-        self._remember_board(board.uuid)
-        return board
+    def ensure_initiative(self) -> ProtocolNode:
+        initiative = self._selected_initiative(self.initiatives())
+        if initiative:
+            self._remember_initiative(initiative.uuid)
+            return initiative
+        initiative = self._create_initiative_node("Initiative")
+        self._remember_initiative(initiative.uuid)
+        return initiative
 
-    def _selected_board(
-        self, boards: list[ProtocolNode],
+    def _selected_initiative(
+        self, initiatives: list[ProtocolNode],
     ) -> ProtocolNode | None:
-        """Choose a board without changing selection metadata."""
-        remembered_uuid = self._metadata().get("selected_board_uuid")
-        explicit = bool(self._metadata().get("board_selection_explicit"))
+        """Choose an initiative without changing selection metadata."""
+        remembered_uuid = self._metadata().get("selected_initiative_uuid")
+        explicit = bool(self._metadata().get("initiative_selection_explicit"))
         remembered = self.session.protocol.index.get(remembered_uuid) if remembered_uuid else None
-        if explicit and remembered and remembered.data.get("type") == "kanban_board":
+        if explicit and remembered and remembered.data.get("type") == "initiative":
             return remembered
         for active in self.session.active_topics():
-            if active.data.get("type") == "kanban_board":
+            if active.data.get("type") == "initiative":
                 return active
             if active and self._is_initiative_app_topic(active):
-                active_boards = self._boards_under(active)
-                if active_boards:
-                    return active_boards[0]
-        if remembered and remembered.data.get("type") == "kanban_board":
+                active_initiatives = self._initiatives_under(active)
+                if active_initiatives:
+                    return active_initiatives[0]
+        if remembered and remembered.data.get("type") == "initiative":
             return remembered
-        for node in boards:
+        for node in initiatives:
             return node
         return None
 
-    def boards(self) -> list[ProtocolNode]:
-        containers = self._kanban_containers()
-        boards = []
+    def initiatives(self) -> list[ProtocolNode]:
+        containers = self._initiative_containers()
+        initiatives = []
         for container in containers:
-            boards.extend(self._boards_under(container))
-        return sorted(boards, key=lambda node: (
+            initiatives.extend(self._initiatives_under(container))
+        return sorted(initiatives, key=lambda node: (
             str(node.data.get("name", "")),
             node.created_at,
         ))
 
-    # A board is named in the switcher, in Board of Boards and in every
-    # invitation; two boards called the same thing are two different places
+    # An initiative is named in the switcher, in Board of Boards and in every
+    # invitation; two initiatives called the same thing are two different places
     # to work that read as one. What somebody typed is kept and numbered
     # rather than refused.
     _NUMBERED = re.compile(r"\s*\(\d+\)$")
@@ -449,58 +455,60 @@ class InitiativeLogic:
             index += 1
         return f"{base} ({index})"
 
-    def _board_names(self, excluding: str = "") -> list[str]:
+    def _initiative_names(self, excluding: str = "") -> list[str]:
         return [
-            board.data.get("name") for board in self.boards()
-            if board.uuid != excluding
+            initiative.data.get("name") for initiative in self.initiatives()
+            if initiative.uuid != excluding
         ]
 
-    def create_board(self, name: str = "Kanban Board") -> SessionResult:
-        board = self._create_board_node(
-            self._distinct_name(name or "Kanban Board", self._board_names()),
+    def create_initiative(self, name: str = "Initiative") -> SessionResult:
+        initiative = self._create_initiative_node(
+            self._distinct_name(name or "Initiative", self._initiative_names()),
         )
-        self._remember_board(board.uuid, explicit=True)
-        return SessionResult("ok", value=board.uuid)
+        self._remember_initiative(initiative.uuid, explicit=True)
+        return SessionResult("ok", value=initiative.uuid)
 
-    def select_board(self, board_uuid: str) -> SessionResult:
-        board = self._node(board_uuid, "kanban_board")
-        if not board:
-            return SessionResult("error", reason="board not found")
-        self._remember_board(board.uuid, explicit=True)
-        return SessionResult("ok", value=board.uuid)
+    def select_initiative(self, initiative_uuid: str) -> SessionResult:
+        initiative = self._node(initiative_uuid, "initiative")
+        if not initiative:
+            return SessionResult("error", reason="initiative not found")
+        self._remember_initiative(initiative.uuid, explicit=True)
+        return SessionResult("ok", value=initiative.uuid)
 
-    def accept_board_invitation(self, subtree: ProtocolNode) -> SessionResult:
-        # Grafts a board first discovered through any channel into our own
-        # board list. A genuinely new shared board starts
-        # fully collaborative; reconnecting an existing board never reaches
-        # this path and therefore retains its local per-board setting.
+    def accept_initiative_invitation(self, subtree: ProtocolNode) -> SessionResult:
+        # Grafts an initiative first discovered through any channel into our own
+        # initiative list. A genuinely new shared initiative starts
+        # fully collaborative; reconnecting an existing initiative never reaches
+        # this path and therefore retains its local per-initiative setting.
         was_known = subtree.uuid in self.session.protocol.index
-        accepted = self.session.accept_topic_invitation(subtree, self._kanban_container().uuid)
+        accepted = self.session.accept_topic_invitation(subtree, self._initiative_container().uuid)
         if accepted.status == "ok":
             if not was_known:
                 self.session.set_auto_adopt_mode(
                     accepted.value, "always", AUTO_ADOPT_MODES,
                 )
-            self._remember_board(accepted.value)
+            self._remember_initiative(accepted.value)
         return accepted
 
-    def rename_board(self, board_uuid: str, name: str) -> SessionResult:
-        board = self._node(board_uuid, "kanban_board")
-        if not board:
-            return SessionResult("error", reason="board not found")
-        data = dict(board.data)
+    def rename_initiative(self, initiative_uuid: str, name: str) -> SessionResult:
+        initiative = self._node(initiative_uuid, "initiative")
+        if not initiative:
+            return SessionResult("error", reason="initiative not found")
+        data = dict(initiative.data)
         data["name"] = self._distinct_name(
-            name or "Kanban Board", self._board_names(excluding=board.uuid),
+            name or "Initiative", self._initiative_names(excluding=initiative.uuid),
         )
-        return self.session.modify(board.uuid, data, board.weights)
+        return self.session.modify(initiative.uuid, data, initiative.weights)
 
-    def set_board_objective(self, board_uuid: str, objective: str) -> SessionResult:
-        board = self._node(board_uuid, "kanban_board")
-        if not board:
-            return SessionResult("error", reason="board not found")
-        data = dict(board.data)
+    def set_initiative_objective(
+        self, initiative_uuid: str, objective: str,
+    ) -> SessionResult:
+        initiative = self._node(initiative_uuid, "initiative")
+        if not initiative:
+            return SessionResult("error", reason="initiative not found")
+        data = dict(initiative.data)
         data["objective"] = objective or ""
-        return self.session.modify(board.uuid, data, board.weights)
+        return self.session.modify(initiative.uuid, data, initiative.weights)
 
     # An initiative belongs to a team and may run flows. Both are other
     # applications' topics, and both are referenced with Core's topic link:
@@ -517,7 +525,7 @@ class InitiativeLogic:
     # the shell for the route, by Core's registry for the making.
     LINKED_APPLICATIONS = {"team": "Team", "flow": "Flow"}
 
-    def initiative_links(self, board: ProtocolNode) -> list[dict]:
+    def initiative_links(self, initiative: ProtocolNode) -> list[dict]:
         """What this initiative references, ready to render.
 
         The recorded title is what a link says before the topic is held.
@@ -526,10 +534,10 @@ class InitiativeLogic:
         """
         mine = {
             link.uuid for link in
-            self.session.topic_links(board.uuid, authored_here=True)
+            self.session.topic_links(initiative.uuid, authored_here=True)
         }
         out = []
-        for child in board.children:
+        for child in initiative.children:
             if child.deleted or child.data.get("type") != "topic_link":
                 continue
             application_id = str(child.data.get("application_id") or "")
@@ -563,11 +571,11 @@ class InitiativeLogic:
         return str(link.data.get("title") or "Untitled")
 
     def link_topic(
-        self, board_uuid: str, topic_uuid: str,
+        self, initiative_uuid: str, topic_uuid: str,
         application_id: str, title: str = "",
     ) -> SessionResult:
-        board = self._node(board_uuid, "kanban_board")
-        if not board:
+        initiative = self._node(initiative_uuid, "initiative")
+        if not initiative:
             return SessionResult("error", reason="initiative not found")
         if application_id not in self.LINKED_APPLICATIONS:
             return SessionResult(
@@ -576,7 +584,7 @@ class InitiativeLogic:
         # One team, as the blueprint has it. A second one is not a second
         # opinion about whose initiative this is, it is a contradiction, and
         # the way to change the answer is to remove the first.
-        if application_id == "team" and self.team_link(board):
+        if application_id == "team" and self.team_link(initiative):
             return SessionResult(
                 "error",
                 reason="this initiative already names a team",
@@ -586,13 +594,13 @@ class InitiativeLogic:
         # references. An initiative is not that: what it belongs to and what
         # it runs are properties of the initiative, so one reference is the
         # whole of it whoever wrote it, and a second would draw twice.
-        existing = {link["topic_uuid"] for link in self.initiative_links(board)}
+        existing = {link["topic_uuid"] for link in self.initiative_links(initiative)}
         if topic_uuid in existing:
             return SessionResult(
                 "error", reason="this initiative already names that",
             )
         return self.session.create_topic_link(
-            board.uuid, topic_uuid, application_id, title,
+            initiative.uuid, topic_uuid, application_id, title,
         )
 
     # ---- making one, and naming it in the same act ----------------------
@@ -611,7 +619,7 @@ class InitiativeLogic:
         ]
 
     def create_linked_topic(
-        self, board_uuid: str, application_id: str, title: str,
+        self, initiative_uuid: str, application_id: str, title: str,
         template: str = "", snapshot: dict | None = None,
     ) -> SessionResult:
         """Make a team or a flow and name it here, in one act.
@@ -620,8 +628,8 @@ class InitiativeLogic:
         The naming is this one's, and it is the same reference `link_topic`
         writes, under the same rule: one team, and no topic named twice.
         """
-        board = self._node(board_uuid, "kanban_board")
-        if not board:
+        initiative = self._node(initiative_uuid, "initiative")
+        if not initiative:
             return SessionResult("error", reason="initiative not found")
         if str(application_id or "").strip() not in self.LINKED_APPLICATIONS:
             return SessionResult(
@@ -634,7 +642,7 @@ class InitiativeLogic:
             return created
         topic_uuid = str(created.value or "")
         linked = self.link_topic(
-            board.uuid, topic_uuid, application_id, str(title or "").strip(),
+            initiative.uuid, topic_uuid, application_id, str(title or "").strip(),
         )
         if linked.status != "ok":
             return linked
@@ -643,8 +651,8 @@ class InitiativeLogic:
             effects=[*created.effects, *linked.effects],
         )
 
-    def team_link(self, board: ProtocolNode) -> dict | None:
-        for link in self.initiative_links(board):
+    def team_link(self, initiative: ProtocolNode) -> dict | None:
+        for link in self.initiative_links(initiative):
             if link["application_id"] == "team":
                 return link
         return None
@@ -657,7 +665,7 @@ class InitiativeLogic:
     def follow_link(self, link_uuid: str) -> SessionResult:
         return self.session.follow_topic_link(link_uuid)
 
-    def linkable_topics(self, board_uuid: str | None = None) -> list[dict]:
+    def linkable_topics(self, initiative_uuid: str | None = None) -> list[dict]:
         """Teams and flows this client holds that this initiative could name.
 
         Only what is already here. There is nothing to search: a topic this
@@ -665,13 +673,13 @@ class InitiativeLogic:
         unreachable, and offering to link it would be offering a uuid to
         type in.
         """
-        board = (
-            self._node(board_uuid, "kanban_board") if board_uuid
-            else self._selected_board(self.boards())
+        initiative = (
+            self._node(initiative_uuid, "initiative") if initiative_uuid
+            else self._selected_initiative(self.initiatives())
         )
         linked = {
-            link["topic_uuid"] for link in self.initiative_links(board)
-        } if board else set()
+            link["topic_uuid"] for link in self.initiative_links(initiative)
+        } if initiative else set()
         out = []
         for topic_uuid in self.session.shared_topic_uuids():
             if topic_uuid in linked:
@@ -702,33 +710,33 @@ class InitiativeLogic:
             item["label"], item["title"].lower(),
         ))
 
-    def copy_board(self, board_uuid: str) -> SessionResult:
-        board = self._node(board_uuid, "kanban_board")
-        if not board:
-            return SessionResult("error", reason="board not found")
-        container = self._kanban_container()
-        result = self.session.copy(board.uuid, container.uuid)
+    def copy_initiative(self, initiative_uuid: str) -> SessionResult:
+        initiative = self._node(initiative_uuid, "initiative")
+        if not initiative:
+            return SessionResult("error", reason="initiative not found")
+        container = self._initiative_container()
+        result = self.session.copy(initiative.uuid, container.uuid)
         if result.status != "ok":
             return result
         clone = result.value
         data = dict(clone.data)
         data["name"] = self._distinct_name(
-            f"{data.get('name', 'Kanban Board')} copy",
-            self._board_names(excluding=clone.uuid),
+            f"{data.get('name', 'Initiative')} copy",
+            self._initiative_names(excluding=clone.uuid),
         )
         self.session.modify(clone.uuid, data, clone.weights)
-        self._remember_board(clone.uuid, explicit=True)
+        self._remember_initiative(clone.uuid, explicit=True)
         return SessionResult("ok", value=clone.uuid)
 
     def export_snapshot(
-        self, board_uuid: str, name: str = "", description: str = "",
+        self, initiative_uuid: str, name: str = "", description: str = "",
     ) -> SessionResult:
-        board = self._node(board_uuid, "kanban_board")
-        if not board:
-            return SessionResult("error", reason="board not found")
-        source_name = str(board.data.get("name") or "Untitled initiative")
+        initiative = self._node(initiative_uuid, "initiative")
+        if not initiative:
+            return SessionResult("error", reason="initiative not found")
+        source_name = str(initiative.data.get("name") or "Untitled initiative")
         columns = []
-        for column in self.columns(board):
+        for column in self.columns(initiative):
             columns.append({
                 "name": str(column.data.get("name") or "Column"),
                 "order": column.data.get("order", 0),
@@ -750,7 +758,7 @@ class InitiativeLogic:
             "saved_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             "source_name": source_name,
             "content": {
-                "objective": str(board.data.get("objective") or ""),
+                "objective": str(initiative.data.get("objective") or ""),
                 "columns": columns,
             },
         })
@@ -763,30 +771,30 @@ class InitiativeLogic:
             return SessionResult("error", reason=error)
         content = document["content"]
         requested = str(name or "").strip() or str(
-            document.get("source_name") or document.get("name") or "Kanban Board"
+            document.get("source_name") or document.get("name") or "Initiative"
         )
         created = self.session.create_child(
-            self._kanban_container().uuid,
+            self._initiative_container().uuid,
             {
-                "type": "kanban_board",
-                "name": self._distinct_name(requested, self._board_names()),
+                "type": "initiative",
+                "name": self._distinct_name(requested, self._initiative_names()),
                 "objective": str(content.get("objective") or ""),
             },
             {},
         )
         if created.status != "ok":
             return created
-        copied = self._import_snapshot_board_content(content, created.value.uuid)
+        copied = self._import_snapshot_initiative_content(content, created.value.uuid)
         if copied.status != "ok":
             self.session.delete(created.value.uuid)
             return copied
-        self._remember_board(created.value.uuid, explicit=True)
+        self._remember_initiative(created.value.uuid, explicit=True)
         return SessionResult(
             "ok", value=created.value.uuid,
             effects=[*created.effects, *copied.effects],
         )
 
-    def _import_snapshot_board_content(
+    def _import_snapshot_initiative_content(
         self, content: dict, target_uuid: str,
     ) -> SessionResult:
         effects = []
@@ -841,41 +849,41 @@ class InitiativeLogic:
             return "snapshot content is invalid"
         return ""
 
-    def delete_board(self, board_uuid: str) -> SessionResult:
-        # The last board goes too. Refusing it left no way to clear a host
-        # of boards it no longer wants, and there is nothing to protect:
-        # ensure_board() makes a fresh empty one the next time the board
+    def delete_initiative(self, initiative_uuid: str) -> SessionResult:
+        # The last initiative goes too. Refusing it left no way to clear a host
+        # of initiatives it no longer wants, and there is nothing to protect:
+        # ensure_initiative() makes a fresh empty one the next time the initiative
         # view is opened, exactly as it does on a first run.
-        board = self._node(board_uuid, "kanban_board")
-        if not board:
-            return SessionResult("error", reason="board not found")
-        release = self.session.end_topic_sharing(board_uuid)
-        result = self.session.delete(board.uuid)
+        initiative = self._node(initiative_uuid, "initiative")
+        if not initiative:
+            return SessionResult("error", reason="initiative not found")
+        release = self.session.end_topic_sharing(initiative_uuid)
+        result = self.session.delete(initiative.uuid)
         if result.status != "ok":
             return result
         result.effects = [*release.effects, *result.effects]
-        remaining = [item for item in self.boards() if item.uuid != board_uuid]
-        # Clearing the selection matters when nothing is left: a board still
+        remaining = [item for item in self.initiatives() if item.uuid != initiative_uuid]
+        # Clearing the selection matters when nothing is left: an initiative still
         # awaiting its peers' confirmation stays in the index as a deleted
         # node, and a remembered uuid would hand that corpse back as the
-        # current board instead of letting ensure_board() start a new one.
-        self._remember_board(remaining[0].uuid if remaining else "")
+        # current initiative instead of letting ensure_initiative() start a new one.
+        self._remember_initiative(remaining[0].uuid if remaining else "")
         return result
 
-    def _create_board_node(self, name: str) -> ProtocolNode:
-        container = self._kanban_container()
-        board = self.session.create_child(
+    def _create_initiative_node(self, name: str) -> ProtocolNode:
+        container = self._initiative_container()
+        initiative = self.session.create_child(
             container.uuid,
-            {"type": "kanban_board", "name": name, "objective": ""},
+            {"type": "initiative", "name": name, "objective": ""},
             {},
         ).value
         for order, name in enumerate(DEFAULT_COLUMNS):
             self.session.create_child(
-                board.uuid,
+                initiative.uuid,
                 {"type": "kanban_column", "name": name, "order": order},
                 {},
             )
-        return self.session.get_node(board.uuid) or board
+        return self.session.get_node(initiative.uuid) or initiative
 
     def user_profile(self) -> ProtocolNode:
         return self.session.identity
@@ -900,14 +908,14 @@ class InitiativeLogic:
         return out
 
     def create_column(self, name: str) -> SessionResult:
-        board = self.ensure_board()
+        initiative = self.ensure_initiative()
         return self.session.create_child(
-            board.uuid,
+            initiative.uuid,
             {
                 "type": "kanban_column",
                 "name": name or "Column",
                 "order": self.session.next_child_order(
-                    board.uuid, "kanban_column",
+                    initiative.uuid, "kanban_column",
                 ),
             },
             {},
@@ -928,12 +936,12 @@ class InitiativeLogic:
         return self.session.delete(column.uuid)
 
     def move_column(self, column_uuid: str, index: int) -> SessionResult:
-        board = self.ensure_board()
+        initiative = self.ensure_initiative()
         column = self._node(column_uuid, "kanban_column")
-        if not column or column.parent_uuid != board.uuid:
+        if not column or column.parent_uuid != initiative.uuid:
             return SessionResult("error", reason="column not found")
         return self.session.move_child_to_parent_index(
-            column.uuid, board.uuid, index,
+            column.uuid, initiative.uuid, index,
         )
 
     def create_card(self, column_uuid: str, name: str,
@@ -1041,7 +1049,7 @@ class InitiativeLogic:
         # are: two people attaching at once then set-union merge instead of
         # diverging the card's own content. Core's blob machinery walks every
         # node's "attachments", so publication, peer fetch and GC need no
-        # Kanban-specific knowledge.
+        # S-Initiative-specific knowledge.
         card = self._node(card_uuid, "kanban_card")
         if not card:
             return SessionResult("error", reason="card not found")
@@ -1103,7 +1111,7 @@ class InitiativeLogic:
                          adopt_absence: bool = False) -> SessionResult:
         # Session adopts an existing node's own fields shallowly (containers
         # keep their cards) and grafts only a brand-new subtree - no
-        # kanban-specific container handling is needed anymore.
+        # initiative-specific container handling is needed anymore.
         local_exists = node_uuid in self.session.protocol.index
         if ((local_exists and not self.owns_node(node_uuid))
                 or (not adopt_absence
@@ -1123,9 +1131,9 @@ class InitiativeLogic:
         )
 
     def publish_adoption_metadata(
-        self, board: ProtocolNode | None = None,
+        self, initiative: ProtocolNode | None = None,
     ) -> None:
-        """Translate this board's mode into Core's declared handling.
+        """Translate this initiative's mode into Core's declared handling.
 
         Everything written here is derived from the mode alone, so it changes
         only when the mode does - republishing the same values decides nothing
@@ -1134,32 +1142,32 @@ class InitiativeLogic:
         client adopts, so it is answered by the resolver at the moment it
         matters. See Core's DESIGN_ADOPTION_METADATA.md.
         """
-        board = board or self.ensure_board()
-        mode = self.auto_adopt_mode(board)
+        initiative = initiative or self.ensure_initiative()
+        mode = self.auto_adopt_mode(initiative)
         # "Always" adopts outright. The ownership modes hold each card and let
         # the resolver decide it, while still admitting comments, which are
         # additive and author-stamped. "Never" holds everything, comments
         # included.
         self.session.set_topic_adoption_default(
-            board.uuid,
+            initiative.uuid,
             adopt="auto" if mode == "always" else "hold",
             additions="hold" if mode == "never" else "auto",
         )
         self.session.set_topic_reconciliation_policies(
-            board.uuid, (KANBAN_POSITION_POLICY,),
+            initiative.uuid, (INITIATIVE_POSITION_POLICY,),
         )
         self.session.set_adoption_resolver(
-            board.uuid,
-            lambda peer_node, local_node, peer_addr, uuid=board.uuid: (
+            initiative.uuid,
+            lambda peer_node, local_node, peer_addr, uuid=initiative.uuid: (
                 self._resolve_held_card(uuid, local_node or peer_node)
             ),
         )
-        # Bound to this board: a client can hold several, each with its own
+        # Bound to this initiative: a client can hold several, each with its own
         # mode, and the one being reconciled is not necessarily the one on
         # screen.
         self.session.set_adoption_classifier(
-            board.uuid,
-            lambda node, default, uuid=board.uuid: (
+            initiative.uuid,
+            lambda node, default, uuid=initiative.uuid: (
                 self._classify_incoming_node(uuid, node)
             ),
         )
@@ -1168,11 +1176,11 @@ class InitiativeLogic:
         # tree. The classifier covers an incoming item; this covers any already
         # held, which a classifier is never asked about.
         self.session.set_adoption_metadata_for_subtree(
-            board.uuid, adopt="never", additions="never",
+            initiative.uuid, adopt="never", additions="never",
             node_type="agenda_item",
         )
 
-    def _resolve_held_card(self, board_uuid: str, node) -> str:
+    def _resolve_held_card(self, initiative_uuid: str, node) -> str:
         """Whether a held node settles now or waits for this client.
 
         Asked at the moment of decision rather than recorded, because what it
@@ -1183,12 +1191,12 @@ class InitiativeLogic:
         Nothing is ever refused: the mode says which cards this client wants to
         look at, not which changes are illegitimate.
         """
-        board = self.session.protocol.index.get(board_uuid)
-        mode = self.auto_adopt_mode(board) if board else "always"
+        initiative = self.session.protocol.index.get(initiative_uuid)
+        mode = self.auto_adopt_mode(initiative) if initiative else "always"
         return "adopt" if self._auto_adopt_allows_node(mode, node) else "defer"
 
-    def _classify_incoming_node(self, board_uuid, node):
-        """How a node this board does not yet hold is to be handled.
+    def _classify_incoming_node(self, initiative_uuid, node):
+        """How a node this initiative does not yet hold is to be handled.
 
         Asked once, at first sight, because a node that does not exist locally
         carries no entry and its parent's `additions` cannot tell one kind of
@@ -1202,24 +1210,24 @@ class InitiativeLogic:
         node_type = node.data.get("type")
         if node_type == "agenda_item":
             return {"adopt": "never", "additions": "never"}
-        board = self.session.protocol.index.get(board_uuid)
+        initiative = self.session.protocol.index.get(initiative_uuid)
         if node_type == "kanban_card" and not self._auto_adopt_allows_node(
-            self.auto_adopt_mode(board), node,
+            self.auto_adopt_mode(initiative), node,
         ):
             return {"adopt": "hold", "additions": "auto"}
         return None
 
-    def adopt_incoming_changes(self, board: ProtocolNode | None = None) -> bool:
-        board = board or self.ensure_board()
+    def adopt_incoming_changes(self, initiative: ProtocolNode | None = None) -> bool:
+        initiative = initiative or self.ensure_initiative()
         # Declaring can itself adopt: Core applies a changed declaration when
         # it is written, so by the time the pass below runs there may be
-        # nothing left to do. Report what happened to the board, not which of
+        # nothing left to do. Report what happened to the initiative, not which of
         # the two calls did it.
-        held = self.session.protocol.index.get(board.uuid)
+        held = self.session.protocol.index.get(initiative.uuid)
         before = held.state_hash if held else None
-        self.publish_adoption_metadata(board)
-        changed = self.session.reapply_adoption(board.uuid)
-        held = self.session.protocol.index.get(board.uuid)
+        self.publish_adoption_metadata(initiative)
+        changed = self.session.reapply_adoption(initiative.uuid)
+        held = self.session.protocol.index.get(initiative.uuid)
         return changed or (held.state_hash if held else None) != before
 
     @staticmethod
@@ -1248,35 +1256,35 @@ class InitiativeLogic:
 
     def adopt_all_incoming_changes(self) -> bool:
         changed = False
-        for board in self.boards():
-            active = self._is_active_discussion_node(board.uuid)
-            mode = self.auto_adopt_mode(board)
+        for initiative in self.initiatives():
+            active = self._is_active_discussion_node(initiative.uuid)
+            mode = self.auto_adopt_mode(initiative)
             self.session.trace_event(
-                "kanban.adopt_all_incoming_changes_check",
-                board_uuid=board.uuid,
+                "initiative.adopt_all_incoming_changes_check",
+                initiative_uuid=initiative.uuid,
                 active=active,
                 mode=mode,
             )
             if active:
-                changed = self.adopt_incoming_changes(board) or changed
+                changed = self.adopt_incoming_changes(initiative) or changed
         return changed
 
     def transition_events(
-        self, board_uuid: str | None = None, network: dict | None = None,
+        self, initiative_uuid: str | None = None, network: dict | None = None,
     ) -> list[dict]:
-        board = (
-            self._node(board_uuid, "kanban_board")
-            if board_uuid else self._selected_board(self.boards())
+        initiative = (
+            self._node(initiative_uuid, "initiative")
+            if initiative_uuid else self._selected_initiative(self.initiatives())
         )
-        if not board:
+        if not initiative:
             return []
-        board_uuid = board_uuid or board.uuid
+        initiative_uuid = initiative_uuid or initiative.uuid
         events = []
         for addr in self.session.peer_addresses():
-            if not self.session.peer_discusses_node(addr, board.uuid):
+            if not self.session.peer_discusses_node(addr, initiative.uuid):
                 continue
-            liveness = self._peer_liveness(addr, board_uuid, network)
-            for event in self.session.analyze_peer_transitions(addr, board_uuid):
+            liveness = self._peer_liveness(addr, initiative_uuid, network)
+            for event in self.session.analyze_peer_transitions(addr, initiative_uuid):
                 if not self._is_displayed_divergence(addr, event):
                     continue
                 # A peer without a live, explicitly selected topic channel
@@ -1352,7 +1360,7 @@ class InitiativeLogic:
         node_label = {
             "kanban_card": "Card",
             "kanban_column": "Column",
-            "kanban_board": "Board",
+            "initiative": "Initiative",
             "agenda_item": "Discussion topic",
             "topic_link": "Link",
         }.get(node_type, "Item")
@@ -1410,15 +1418,15 @@ class InitiativeLogic:
                 ),
             })
 
-        # A board is a topic root, and every peer grafts a topic under its
+        # An initiative is a topic root, and every peer grafts a topic under its
         # own local container - so the two parents always differ, and always
         # will. That is how topics are shared, not something either side
-        # did: reporting it as a move told the reader the board had been
-        # "moved to <the peer's container>", and offered them a board move
+        # did: reporting it as a move told the reader the initiative had been
+        # "moved to <the peer's container>", and offered them an initiative move
         # to adopt when all that changed was the name. Session already
         # excludes it from classification; this is the same exclusion for
         # the description.
-        if node_type != "kanban_board" and local.parent_uuid != peer.parent_uuid:
+        if node_type != "initiative" and local.parent_uuid != peer.parent_uuid:
             local_parent = self.session.protocol.index.get(local.parent_uuid)
             peer_parent = self.session.get_cached_peer_subtree(
                 peer_addr, peer.parent_uuid,
@@ -1745,10 +1753,10 @@ class InitiativeLogic:
             and self.session.peer_identity_key_for_address(peer_addr) == origin
         )
 
-    def columns(self, board: ProtocolNode | None = None) -> list[ProtocolNode]:
-        board = board or self.ensure_board()
+    def columns(self, initiative: ProtocolNode | None = None) -> list[ProtocolNode]:
+        initiative = initiative or self.ensure_initiative()
         return sorted(
-            [child for child in board.live_children() if child.data.get("type") == "kanban_column"],
+            [child for child in initiative.live_children() if child.data.get("type") == "kanban_column"],
             key=lambda node: (float(node.data.get("order", 0)), node.created_at),
         )
 
@@ -1759,23 +1767,23 @@ class InitiativeLogic:
         )
 
     # Agendas are Session's - an agenda item is a child of the topic root, and
-    # a board is one. These stay only to keep Kanban's board-scoped calling
-    # convention; the rules live in one place.
-    def agenda_items(self, board: ProtocolNode | None = None) -> list[ProtocolNode]:
-        board = board or self.ensure_board()
-        return self.session.agenda_projection(board.uuid)
+    # an initiative is one. These stay only to keep this application's
+    # initiative-scoped calling convention; the rules live in one place.
+    def agenda_items(self, initiative: ProtocolNode | None = None) -> list[ProtocolNode]:
+        initiative = initiative or self.ensure_initiative()
+        return self.session.agenda_projection(initiative.uuid)
 
     def create_agenda_item(
         self, text: str, priority: str | None = None,
-        board_uuid: str | None = None,
+        initiative_uuid: str | None = None,
     ) -> SessionResult:
-        board = (
-            self._node(board_uuid, "kanban_board")
-            if board_uuid else self.ensure_board()
+        initiative = (
+            self._node(initiative_uuid, "initiative")
+            if initiative_uuid else self.ensure_initiative()
         )
-        if not board:
-            return SessionResult("error", reason="board not found")
-        return self.session.create_agenda_item(board.uuid, text, priority)
+        if not initiative:
+            return SessionResult("error", reason="initiative not found")
+        return self.session.create_agenda_item(initiative.uuid, text, priority)
 
     def delete_agenda_item(self, item_uuid: str) -> SessionResult:
         if not self.owns_node(item_uuid):
@@ -1808,7 +1816,7 @@ class InitiativeLogic:
         return None
 
     def owns_node(self, node_uuid: str, peer_addr: str | None = None) -> bool:
-        """Whether one side's node belongs to a Kanban topic and schema."""
+        """Whether one side's node belongs to an initiative topic and schema."""
         if peer_addr is not None:
             node = self.session.get_cached_peer_subtree(peer_addr, node_uuid)
             if not node or node.data.get("type") not in OWNED_NODE_TYPES:
@@ -1816,11 +1824,11 @@ class InitiativeLogic:
             topic_uuids = set(
                 self.session.peer_topics_for_node(peer_addr, node_uuid),
             )
-            if local_topic := self._local_kanban_topic(node_uuid):
+            if local_topic := self._local_initiative_topic(node_uuid):
                 topic_uuids.add(local_topic.uuid)
             return any(
                 (topic := self.session.get_cached_peer_subtree(peer_addr, topic_uuid))
-                and topic.data.get("type") == "kanban_board"
+                and topic.data.get("type") == "initiative"
                 and self._subtree_contains(topic, node_uuid)
                 for topic_uuid in topic_uuids
             )
@@ -1828,9 +1836,9 @@ class InitiativeLogic:
         node = self.session.protocol.index.get(node_uuid)
         if not node or node.data.get("type") not in OWNED_NODE_TYPES:
             return False
-        return self._local_kanban_topic(node_uuid) is not None
+        return self._local_initiative_topic(node_uuid) is not None
 
-    def _local_kanban_topic(self, node_uuid: str) -> ProtocolNode | None:
+    def _local_initiative_topic(self, node_uuid: str) -> ProtocolNode | None:
         node = self.session.protocol.index.get(node_uuid)
         if not node:
             return None
@@ -1838,7 +1846,7 @@ class InitiativeLogic:
         current = node
         while current and current.uuid not in seen:
             seen.add(current.uuid)
-            if current.data.get("type") == "kanban_board":
+            if current.data.get("type") == "initiative":
                 parent = self.session.protocol.index.get(current.parent_uuid)
                 return current if self._is_initiative_app_topic(parent) else None
             current = self.session.protocol.index.get(current.parent_uuid)
@@ -1851,14 +1859,14 @@ class InitiativeLogic:
             for child in root.children
         )
 
-    def _remember_board(self, board_uuid: str, explicit: bool = False) -> None:
+    def _remember_initiative(self, initiative_uuid: str, explicit: bool = False) -> None:
         # Both keys are one selection decision, so they are written under a
         # single Session transaction rather than as two separate updates.
         with self.session.lock:
             metadata = self.session.application_metadata(INITIATIVE_APPLICATION_ID)
-            metadata["selected_board_uuid"] = board_uuid
+            metadata["selected_initiative_uuid"] = initiative_uuid
             if explicit:
-                metadata["board_selection_explicit"] = True
+                metadata["initiative_selection_explicit"] = True
 
     def _metadata(self) -> dict:
         """Return a detached read copy of this application's metadata.
@@ -1866,17 +1874,17 @@ class InitiativeLogic:
         Session hands out the live namespace only to a caller holding its
         lock. This application's requests are not wrapped in a Session
         transaction, so readers take a snapshot and writers open their own
-        transaction - see _remember_board.
+        transaction - see _remember_initiative.
         """
         with self.session.lock:
             return copy.deepcopy(
                 self.session.application_metadata(INITIATIVE_APPLICATION_ID),
             )
 
-    def _kanban_container(self) -> ProtocolNode:
-        return self._folder(self._apps_folder(), INITIATIVE_APP_NAME, "kanban_app")
+    def _initiative_container(self) -> ProtocolNode:
+        return self._folder(self._apps_folder(), INITIATIVE_APP_NAME, "initiative_app")
 
-    def _kanban_containers(self) -> list[ProtocolNode]:
+    def _initiative_containers(self) -> list[ProtocolNode]:
         active = [
             topic
             for topic in self.session.active_topics()
@@ -1934,14 +1942,14 @@ class InitiativeLogic:
             cached = self.session.get_cached_peer_subtree(address, topic_uuid)
             if cached and self._is_shared_user_topic(cached):
                 return cached.uuid
-        # No "assume it's the profile if it's not a board we recognize"
+        # No "assume it's the profile if it's not an initiative we recognize"
         # fallback here on purpose: that used to be safe when a peer's only
-        # ever-fetched topics were exactly one board plus one profile, but a
-        # mailbox channel may track every topic a peer publishes - a board
+        # ever-fetched topics were exactly one initiative plus one profile, but a
+        # mailbox channel may track every topic a peer publishes - an initiative
         # this side never grafted locally has no entry in
-        # self.session.protocol.index either, so "not a board" and "is the
+        # self.session.protocol.index either, so "not an initiative" and "is the
         # profile" stopped meaning the same thing. Returning "" (unknown
-        # for now) is correct; guessing wrong hands a peer's own board back
+        # for now) is correct; guessing wrong hands a peer's own initiative back
         # as if it were their identity.
         return ""
 
@@ -1957,19 +1965,19 @@ class InitiativeLogic:
         ).value
         return created
 
-    def _boards_under(self, root: ProtocolNode) -> list[ProtocolNode]:
+    def _initiatives_under(self, root: ProtocolNode) -> list[ProtocolNode]:
         out = []
-        if root.data.get("type") == "kanban_board":
+        if root.data.get("type") == "initiative":
             out.append(root)
         for child in root.children:
-            out.extend(self._boards_under(child))
+            out.extend(self._initiatives_under(child))
         return out
 
     def _is_initiative_app_topic(self, node: ProtocolNode | None) -> bool:
         if not node:
             return False
         return (
-            node.data.get("type") == "kanban_app"
+            node.data.get("type") == "initiative_app"
             and node.data.get("name") == INITIATIVE_APP_NAME
         )
 

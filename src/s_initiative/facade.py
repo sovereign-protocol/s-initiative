@@ -7,7 +7,7 @@ from sovereign import ProtocolNode
 from .logic import InitiativeLogic
 
 
-INITIATIVE_FACADE_API_VERSION = 1
+INITIATIVE_FACADE_API_VERSION = 2
 
 
 class InitiativeFacade:
@@ -16,11 +16,11 @@ class InitiativeFacade:
     def __init__(self, logic: InitiativeLogic):
         self._logic = logic
 
-    def boards(self) -> list[ProtocolNode]:
-        return self._logic.boards()
+    def initiatives(self) -> list[ProtocolNode]:
+        return self._logic.initiatives()
 
-    def columns(self, board: ProtocolNode) -> list[ProtocolNode]:
-        return self._logic.columns(board)
+    def columns(self, initiative: ProtocolNode) -> list[ProtocolNode]:
+        return self._logic.columns(initiative)
 
     def cards(self, column: ProtocolNode) -> list[ProtocolNode]:
         return self._logic.cards(column)
@@ -44,26 +44,28 @@ class InitiativeFacade:
     ) -> dict:
         return self._logic.collaboration_context(topic_uuid, network)
 
-    def create_board(self, name: str = "Kanban Board"):
-        return self._logic.create_board(name)
+    def create_initiative(self, name: str = "Initiative"):
+        return self._logic.create_initiative(name)
 
-    def copy_board(self, board_uuid: str):
-        return self._logic.copy_board(board_uuid)
+    def copy_initiative(self, initiative_uuid: str):
+        return self._logic.copy_initiative(initiative_uuid)
 
-    def export_snapshot(self, board_uuid: str, name: str = "", description: str = ""):
-        return self._logic.export_snapshot(board_uuid, name, description)
+    def export_snapshot(
+        self, initiative_uuid: str, name: str = "", description: str = "",
+    ):
+        return self._logic.export_snapshot(initiative_uuid, name, description)
 
     def create_from_snapshot(self, document: dict, name: str = ""):
         return self._logic.create_from_snapshot(document, name)
 
-    def rename_board(self, board_uuid: str, name: str):
-        return self._logic.rename_board(board_uuid, name)
+    def rename_initiative(self, initiative_uuid: str, name: str):
+        return self._logic.rename_initiative(initiative_uuid, name)
 
-    def delete_board(self, board_uuid: str):
-        return self._logic.delete_board(board_uuid)
+    def delete_initiative(self, initiative_uuid: str):
+        return self._logic.delete_initiative(initiative_uuid)
 
-    def set_board_objective(self, board_uuid: str, objective: str):
-        return self._logic.set_board_objective(board_uuid, objective)
+    def set_initiative_objective(self, initiative_uuid: str, objective: str):
+        return self._logic.set_initiative_objective(initiative_uuid, objective)
 
     def move_card(self, card_uuid: str, column_uuid: str, index: int):
         return self._logic.move_card(card_uuid, column_uuid, index)
@@ -98,9 +100,9 @@ class InitiativeFacade:
 
     def create_agenda_item(
         self, text: str, priority: str | None = None,
-        board_uuid: str | None = None,
+        initiative_uuid: str | None = None,
     ):
-        return self._logic.create_agenda_item(text, priority, board_uuid)
+        return self._logic.create_agenda_item(text, priority, initiative_uuid)
 
     def delete_agenda_item(self, item_uuid: str):
         return self._logic.delete_agenda_item(item_uuid)
@@ -117,6 +119,6 @@ class InitiativeFacade:
         return self._logic.move_agenda_item(item_uuid, index)
 
     def set_auto_adopt_mode(
-        self, mode: str, board_uuid: str | None = None,
+        self, mode: str, initiative_uuid: str | None = None,
     ):
-        return self._logic.set_auto_adopt_mode(mode, board_uuid)
+        return self._logic.set_auto_adopt_mode(mode, initiative_uuid)

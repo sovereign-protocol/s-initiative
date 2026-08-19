@@ -1,7 +1,10 @@
 # Initiative — what the thing is
 
-Status: proposed, except for the links in §3, which are built. Nothing else
-here has code against it yet.
+Status: proposed, except for the links in §3 and the `initiative` root itself,
+which are built. Nothing else here has code against it yet.
+
+Where these are shown is `DESIGN_INITIATIVE_UI.md`: two faces, the board and
+the initiative, and the milestone strip that is the one place they touch.
 
 An initiative is a piece of work a team has decided to do: who it is for, what
 it is meant to change, how it will be gone about, when, and what actually

@@ -603,14 +603,14 @@ class RelayManagerTests(unittest.TestCase):
             "saved-target": {
                 "name": "Configured relay", "backend": "sftp",
                 "host": "relay.example", "port": 22, "username": "user",
-                "root": "/boards", "password": "old-password",
-                "poll_interval_seconds": 30, "configured": True,
+                "root": "/initiatives", "password": "old-password",
+                "poll_interval_seconds": 30,
             },
         }})
         config = {
             "relay_backend": "sftp", "relay_identity": "A",
             "relay_sftp_host": "relay.example", "relay_sftp_port": 22,
-            "relay_sftp_username": "user", "relay_sftp_root": "/boards",
+            "relay_sftp_username": "user", "relay_sftp_root": "/initiatives",
             "relay_sftp_password": "new-password",
             "relay_poll_interval_seconds": 4,
         }
@@ -622,7 +622,6 @@ class RelayManagerTests(unittest.TestCase):
         saved = session.component_metadata("relay")["relay_targets"]["saved-target"]
         self.assertEqual(saved["password"], "old-password")
         self.assertEqual(saved["poll_interval_seconds"], 30)
-        self.assertNotIn("configured", saved)
 
     def test_persisted_password_replaces_legacy_startup_private_key(self):
         session = Session("addr-a")
@@ -630,14 +629,14 @@ class RelayManagerTests(unittest.TestCase):
             "saved-target": {
                 "name": "Configured relay", "backend": "sftp",
                 "host": "relay.example", "port": 22, "username": "user",
-                "root": "/boards", "password": "stale-password",
-                "poll_interval_seconds": 3, "configured": True,
+                "root": "/initiatives", "password": "stale-password",
+                "poll_interval_seconds": 3,
             },
         }})
         manager = RelayManager(session, {
             "relay_backend": "sftp", "relay_identity": "A",
             "relay_sftp_host": "relay.example", "relay_sftp_port": 22,
-            "relay_sftp_username": "user", "relay_sftp_root": "/boards",
+            "relay_sftp_username": "user", "relay_sftp_root": "/initiatives",
             "relay_sftp_private_key_path": "current-key.pem",
         })
 
@@ -647,7 +646,7 @@ class RelayManagerTests(unittest.TestCase):
     def test_accepting_same_startup_target_keeps_local_poll_interval(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session = Session("addr-a")
-            board_uuid = InitiativeLogic(session, {}).create_board("Board").value
+            initiative_uuid = InitiativeLogic(session, {}).create_initiative("Board").value
             manager = RelayManager(session, {
                 **self._relay_config(relay_root, "A", state_dir),
                 "relay_poll_interval_seconds": 4,
@@ -656,13 +655,12 @@ class RelayManagerTests(unittest.TestCase):
             result = manager.accept_descriptor({
                 "type": "relay", "descriptor_version": 1, "root": relay_root,
                 "identity": "B", "poll_interval_seconds": 30,
-            }, [board_uuid])
+            }, [initiative_uuid])
 
             self.assertEqual(result.status, "ok")
             self.assertEqual(manager.primary.poll_interval_seconds, 4)
             saved = manager.list_targets()[0]
             self.assertEqual(saved["poll_interval_seconds"], 4)
-            self.assertNotIn("configured", saved)
 
     def test_imported_startup_target_can_be_deleted_and_is_not_recreated(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
@@ -701,14 +699,14 @@ class RelayManagerTests(unittest.TestCase):
     def test_edit_target_location_preserves_board_intent(self):
         with tempfile.TemporaryDirectory() as root_a, tempfile.TemporaryDirectory() as root_b, tempfile.TemporaryDirectory() as state_dir:
             session = Session("addr-a")
-            board_uuid = InitiativeLogic(session, {}).create_board("Board").value
+            initiative_uuid = InitiativeLogic(session, {}).create_initiative("Board").value
             manager = RelayManager(session, {"relay_state_directory": state_dir})
             target_id = manager.create_target({
                 "name": "Old", "backend": "local", "root": root_a,
             }).value
             old_connection = manager.connection_for_target(target_id)
-            manager.assign_topic_target(board_uuid, target_id)
-            old_connection.mark_topics_desired([board_uuid])
+            manager.assign_topic_target(initiative_uuid, target_id)
+            old_connection.mark_topics_desired([initiative_uuid])
 
             result = manager.update_target(target_id, {
                 "name": "New", "backend": "local", "root": root_b,
@@ -717,9 +715,9 @@ class RelayManagerTests(unittest.TestCase):
 
             self.assertEqual(result.status, "ok")
             self.assertIsNot(new_connection, old_connection)
-            self.assertEqual(manager.target_for_topic(board_uuid), target_id)
-            self.assertIn(board_uuid, new_connection._state["shared"])
-            self.assertIn(board_uuid, new_connection._state["desired"])
+            self.assertEqual(manager.target_for_topic(initiative_uuid), target_id)
+            self.assertIn(initiative_uuid, new_connection._state["shared"])
+            self.assertIn(initiative_uuid, new_connection._state["desired"])
             self.assertIsNone(old_connection.storage)
 
     def test_same_location_collapses_to_one_connection(self):
@@ -789,9 +787,9 @@ class RelayManagerTests(unittest.TestCase):
     def test_board_assignments_scope_each_connection_and_unassign_stops_publishing(self):
         with tempfile.TemporaryDirectory() as root_a, tempfile.TemporaryDirectory() as root_b, tempfile.TemporaryDirectory() as state_dir:
             session = Session("addr-a")
-            kanban = InitiativeLogic(session, {})
-            board_a = kanban.create_board("A board").value
-            board_b = kanban.create_board("B board").value
+            initiative_logic = InitiativeLogic(session, {})
+            board_a = initiative_logic.create_initiative("An initiative").value
+            board_b = initiative_logic.create_initiative("B initiative").value
             manager = RelayManager(session, {"relay_state_directory": state_dir})
             target_a = manager.create_target({"name": "A", "backend": "local", "root": root_a}).value
             target_b = manager.create_target({"name": "B", "backend": "local", "root": root_b}).value
@@ -817,24 +815,24 @@ class RelayManagerTests(unittest.TestCase):
     def test_accepting_board_on_new_target_cleans_previous_target_intent(self):
         with tempfile.TemporaryDirectory() as root_a, tempfile.TemporaryDirectory() as root_b, tempfile.TemporaryDirectory() as state_dir:
             session = Session("addr-a")
-            board_uuid = InitiativeLogic(session, {}).create_board("Board").value
+            initiative_uuid = InitiativeLogic(session, {}).create_initiative("Board").value
             manager = RelayManager(session, {"relay_state_directory": state_dir})
             target_a = manager.create_target({
                 "name": "Old", "backend": "local", "root": root_a,
             }).value
             old_connection = manager.connection_for_target(target_a)
-            manager.assign_topic_target(board_uuid, target_a)
-            old_connection.mark_topics_desired([board_uuid])
+            manager.assign_topic_target(initiative_uuid, target_a)
+            old_connection.mark_topics_desired([initiative_uuid])
 
             result = manager.accept_descriptor({
                 "type": "relay", "descriptor_version": 1, "root": root_b,
                 "identity": "B", "poll_interval_seconds": 3,
-            }, [board_uuid, "profile-b"], "profile-b")
+            }, [initiative_uuid, "profile-b"], "profile-b")
 
             self.assertEqual(result.status, "ok")
-            self.assertNotEqual(manager.target_for_topic(board_uuid), target_a)
-            self.assertNotIn(board_uuid, old_connection._state["shared"])
-            self.assertNotIn(board_uuid, old_connection._state["desired"])
+            self.assertNotEqual(manager.target_for_topic(initiative_uuid), target_a)
+            self.assertNotIn(initiative_uuid, old_connection._state["shared"])
+            self.assertNotIn(initiative_uuid, old_connection._state["desired"])
 
     def test_session_protocol_lock_is_shared_by_every_relay_connection(self):
         with tempfile.TemporaryDirectory() as root_a, tempfile.TemporaryDirectory() as root_b, tempfile.TemporaryDirectory() as state_dir:
@@ -855,7 +853,7 @@ class RelayManagerTests(unittest.TestCase):
             with patch.object(SftpRelayStorage, "verify_access", return_value=None):
                 target_id = manager.create_target({
                     "name": "Company", "backend": "sftp", "host": "sftp.example",
-                    "username": "kanban", "password": "secret", "root": "/boards",
+                    "username": "initiative", "password": "secret", "root": "/initiatives",
                 }).value
 
         self.assertEqual(session.component_metadata("relay")["relay_targets"][target_id]["password"], "secret")
@@ -1030,7 +1028,7 @@ class RelayLogicTests(unittest.TestCase):
                 "relay_identity": "A",
                 "relay_state_file": str(state_path),
             })
-            logic._state["desired"] = ["topic-1"]
+            logic._state["published"] = {"topic-1": "hash-1"}
             real_replace = os.replace
             attempts = 0
 
@@ -1046,9 +1044,10 @@ class RelayLogicTests(unittest.TestCase):
                 logic._save_state()
 
             self.assertEqual(attempts, 3)
-            self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))["desired"], [
-                "topic-1",
-            ])
+            self.assertEqual(
+                json.loads(state_path.read_text(encoding="utf-8"))["published"],
+                {"topic-1": "hash-1"},
+            )
             self.assertEqual(list(Path(state_dir).glob("*.tmp")), [])
 
     def _relay_config(self, relay_root: str, identity: str, state_dir: str) -> dict:
@@ -1078,9 +1077,9 @@ class RelayLogicTests(unittest.TestCase):
     def test_scoped_poll_ignores_unrelated_topic_on_same_storage_root(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            wanted = kanban_a.create_board("Wanted").value
-            unrelated = kanban_a.create_board("Unrelated").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            wanted = initiative_logic_a.create_initiative("Wanted").value
+            unrelated = initiative_logic_a.create_initiative("Unrelated").value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.set_scoped_topics({wanted, unrelated})
             relay_a.publish_due_topics()
@@ -1149,8 +1148,8 @@ class RelayLogicTests(unittest.TestCase):
                 "id": "avatar-1", "role": "avatar", "blob_id": blob_id,
                 "name": "avatar.gif", "size": len(data), "mime": "image/gif",
             })
-            kanban_a = InitiativeLogic(session_a, {})
-            wanted = kanban_a.create_board("Wanted").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            wanted = initiative_logic_a.create_initiative("Wanted").value
             relay_a = RelayLogic(
                 session_a, self._relay_config(relay_root, "A", state_dir),
                 blob_store=store_a,
@@ -1180,7 +1179,7 @@ class RelayLogicTests(unittest.TestCase):
                 tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
             session_a.set_identity("Alice")
-            wanted = InitiativeLogic(session_a, {}).create_board("Wanted").value
+            wanted = InitiativeLogic(session_a, {}).create_initiative("Wanted").value
             relay_a = RelayLogic(
                 session_a, self._relay_config(relay_root, "A", state_dir),
             )
@@ -1213,12 +1212,12 @@ class RelayLogicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session = Session("addr-a")
             relay = RelayLogic(session, self._relay_config(relay_root, "A", state_dir))
-            relay.set_scoped_topics({"board-current"})
-            session.note_indirect_peer_topic("relay:B", "board-other")
+            relay.set_scoped_topics({"initiative-current"})
+            session.note_indirect_peer_topic("relay:B", "initiative-other")
 
             self.assertFalse(relay.has_active_relationship())
 
-            session.note_indirect_peer_topic("relay:B", "board-current")
+            session.note_indirect_peer_topic("relay:B", "initiative-current")
             self.assertTrue(relay.has_active_relationship())
 
     def test_peer_liveness_unknown_before_write_presence_ever_ran(self):
@@ -1334,24 +1333,24 @@ class RelayLogicTests(unittest.TestCase):
     def test_publish_then_apply_runs_through_existing_reconciliation(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            board_uuid = kanban_a.create_board("Shared Board").value
-            board = kanban_a.ensure_board()
-            self.assertEqual(board.uuid, board_uuid)
-            todo = kanban_a.columns(board)[0]
-            card = kanban_a.create_card(todo.uuid, "Test Card").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            initiative_uuid = initiative_logic_a.create_initiative("Shared Board").value
+            initiative = initiative_logic_a.ensure_initiative()
+            self.assertEqual(initiative.uuid, initiative_uuid)
+            todo = initiative_logic_a.columns(initiative)[0]
+            card = initiative_logic_a.create_card(todo.uuid, "Test Card").value
 
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             published = relay_a.publish_due_topics()
-            # Own identity is published alongside owned boards (so a peer
+            # Own identity is published alongside owned initiatives (so a peer
             # can pick up later display-name/picture edits over relay too).
-            self.assertIn(board.uuid, published)
+            self.assertIn(initiative.uuid, published)
 
             session_b = Session("addr-b")
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
             applied = relay_b.poll_and_apply()
 
-            self.assertIn((board.uuid, "A"), applied)
+            self.assertIn((initiative.uuid, "A"), applied)
             cached = session_b.get_cached_peer_subtree("relay:A", card.uuid)
             self.assertIsNotNone(cached)
             self.assertEqual(cached.data["name"], "Test Card")
@@ -1359,7 +1358,7 @@ class RelayLogicTests(unittest.TestCase):
             # push (test_session.py's own analyze_peer_transitions tests use
             # this exact method) - proves the relay path isn't a special
             # case at the divergence-detection layer.
-            events = session_b.analyze_peer_transitions("relay:A", board.uuid)
+            events = session_b.analyze_peer_transitions("relay:A", initiative.uuid)
             self.assertTrue(
                 any(e["node_uuid"] == card.uuid and e["type"] != "in_agreement" for e in events)
             )
@@ -1367,11 +1366,11 @@ class RelayLogicTests(unittest.TestCase):
     def test_republishing_unchanged_state_is_a_no_op(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            kanban_a.create_board("Board")
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            initiative_logic_a.create_initiative("Board")
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             first = relay_a.publish_due_topics()
-            self.assertEqual(len(first), 2)  # board + own identity
+            self.assertEqual(len(first), 2)  # initiative + own identity
 
             second = relay_a.publish_due_topics()
 
@@ -1380,30 +1379,30 @@ class RelayLogicTests(unittest.TestCase):
     def test_publication_sequence_persists_and_advances_after_restart(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            board_uuid = kanban_a.create_board("Board").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            initiative_uuid = initiative_logic_a.create_initiative("Board").value
             config = self._relay_config(relay_root, "A", state_dir)
             relay_a = RelayLogic(session_a, config)
 
             relay_a.publish_due_topics()
 
-            first_head = relay_a.storage.read_head(board_uuid, "A")
+            first_head = relay_a.storage.read_head(initiative_uuid, "A")
             self.assertEqual(first_head["publication_seq"], 1)
             self.assertTrue(first_head["ack_requested"])
             self.assertEqual(first_head["ack_publication_seq"], 1)
             state = json.loads(
                 Path(relay_a._state_path).read_text(encoding="utf-8"),
             )
-            self.assertEqual(state["publication_seq"][board_uuid], 1)
+            self.assertEqual(state["publication_seq"][initiative_uuid], 1)
 
             restarted = RelayLogic(session_a, config)
-            board = kanban_a.ensure_board()
-            kanban_a.create_card(
-                kanban_a.columns(board)[0].uuid, "After restart",
+            initiative = initiative_logic_a.ensure_initiative()
+            initiative_logic_a.create_card(
+                initiative_logic_a.columns(initiative)[0].uuid, "After restart",
             )
             restarted.publish_due_topics()
 
-            second_head = restarted.storage.read_head(board_uuid, "A")
+            second_head = restarted.storage.read_head(initiative_uuid, "A")
             self.assertEqual(second_head["publication_seq"], 2)
             self.assertTrue(second_head["ack_requested"])
             self.assertEqual(second_head["ack_publication_seq"], 2)
@@ -1411,15 +1410,15 @@ class RelayLogicTests(unittest.TestCase):
     def test_publication_acknowledgement_is_sequenced_without_ack_loop(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            board_uuid = kanban_a.create_board("Shared").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            initiative_uuid = initiative_logic_a.create_initiative("Shared").value
             relay_a = RelayLogic(
                 session_a, self._relay_config(relay_root, "A", state_dir),
             )
-            relay_a.mark_topics_shared([board_uuid])
+            relay_a.mark_topics_shared([initiative_uuid])
             relay_a.publish_due_topics()
             self.assertEqual(
-                relay_a.storage.read_head(board_uuid, "A")["publication_seq"],
+                relay_a.storage.read_head(initiative_uuid, "A")["publication_seq"],
                 1,
             )
 
@@ -1428,21 +1427,21 @@ class RelayLogicTests(unittest.TestCase):
             relay_b = RelayLogic(
                 session_b, self._relay_config(relay_root, "B", state_dir),
             )
-            relay_b.mark_topics_desired([board_uuid])
+            relay_b.mark_topics_desired([initiative_uuid])
             relay_b.poll_and_apply()
             relay_b.publish_due_topics()
 
-            head_b = relay_b.storage.read_head(board_uuid, "B")
+            head_b = relay_b.storage.read_head(initiative_uuid, "B")
             self.assertEqual(head_b["observed_publications"]["A"], 1)
             self.assertTrue(head_b["ack_requested"])
 
             relay_a.poll_and_apply()
             self.assertEqual(
-                relay_a._state["peer_observed_publications"][board_uuid]["B"],
+                relay_a._state["peer_observed_publications"][initiative_uuid]["B"],
                 1,
             )
-            self.assertIn(board_uuid, relay_a.publish_due_topics())
-            head_a = relay_a.storage.read_head(board_uuid, "A")
+            self.assertIn(initiative_uuid, relay_a.publish_due_topics())
+            head_a = relay_a.storage.read_head(initiative_uuid, "A")
             self.assertEqual(head_a["publication_seq"], 2)
             self.assertFalse(head_a["ack_requested"])
             self.assertEqual(head_a["ack_publication_seq"], 1)
@@ -1460,16 +1459,16 @@ class RelayLogicTests(unittest.TestCase):
             relay_c = RelayLogic(
                 session_c, self._relay_config(relay_root, "C", state_dir),
             )
-            relay_c.mark_topics_desired([board_uuid])
+            relay_c.mark_topics_desired([initiative_uuid])
             relay_c.poll_and_apply()
             relay_c.publish_due_topics()
-            head_c = relay_c.storage.read_head(board_uuid, "C")
+            head_c = relay_c.storage.read_head(initiative_uuid, "C")
             self.assertEqual(head_c["observed_publications"]["A"], 1)
 
     def test_relay_acknowledgement_confirms_divergence_without_timer(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(
+            initiative_logic_a = InitiativeLogic(
                 session_a, {},
                 types.SimpleNamespace(
                     peer_liveness_for_address=lambda _addr, _topic: {
@@ -1477,36 +1476,36 @@ class RelayLogicTests(unittest.TestCase):
                     },
                 ),
             )
-            board_uuid = kanban_a.create_board("Shared").value
-            board_a = kanban_a.ensure_board()
-            card = kanban_a.create_card(
-                kanban_a.columns(board_a)[0].uuid, "Before", "", [],
+            initiative_uuid = initiative_logic_a.create_initiative("Shared").value
+            board_a = initiative_logic_a.ensure_initiative()
+            card = initiative_logic_a.create_card(
+                initiative_logic_a.columns(board_a)[0].uuid, "Before", "", [],
             ).value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
-            relay_a.mark_topics_shared([board_uuid])
+            relay_a.mark_topics_shared([initiative_uuid])
             relay_a.publish_due_topics()
 
             session_b = Session("addr-b")
-            kanban_b = InitiativeLogic(session_b, {})
+            initiative_logic_b = InitiativeLogic(session_b, {})
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
-            relay_b.mark_topics_desired([board_uuid])
+            relay_b.mark_topics_desired([initiative_uuid])
             relay_b.poll_and_apply()
-            kanban_b.set_auto_adopt_mode("never")
+            initiative_logic_b.set_auto_adopt_mode("never")
             relay_b.publish_due_topics()
             relay_a.poll_and_apply()
 
-            kanban_a.update_card(card.uuid, "After", "", [], None)
+            initiative_logic_a.update_card(card.uuid, "After", "", [], None)
             relay_a.publish_due_topics()
-            waiting = kanban_a.transition_by_node(kanban_a.transition_events(board_uuid))
+            waiting = initiative_logic_a.transition_by_node(initiative_logic_a.transition_events(initiative_uuid))
             self.assertEqual(waiting[card.uuid]["stage"], "in_flight")
 
             relay_b.poll_and_apply()
-            # B's board did not change, but its acknowledgement did, so its
+            # B's initiative did not change, but its acknowledgement did, so its
             # head must be republished immediately with the same snapshot.
-            self.assertIn(board_uuid, relay_b.publish_due_topics())
-            self.assertIn((board_uuid, "B"), relay_a.poll_and_apply())
+            self.assertIn(initiative_uuid, relay_b.publish_due_topics())
+            self.assertIn((initiative_uuid, "B"), relay_a.poll_and_apply())
 
-            confirmed = kanban_a.transition_by_node(kanban_a.transition_events(board_uuid))
+            confirmed = initiative_logic_a.transition_by_node(initiative_logic_a.transition_events(initiative_uuid))
             # The acknowledgement confirms B has seen my revision, so my
             # change is now waiting on B rather than still travelling. It is
             # my edit either way - never a two-sided conflict.
@@ -1516,7 +1515,7 @@ class RelayLogicTests(unittest.TestCase):
     def test_peer_observation_waits_for_matching_changed_snapshot(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(
+            initiative_logic_a = InitiativeLogic(
                 session_a, {},
                 types.SimpleNamespace(
                     peer_liveness_for_address=lambda _addr, _topic: {
@@ -1524,15 +1523,15 @@ class RelayLogicTests(unittest.TestCase):
                     },
                 ),
             )
-            board_uuid = kanban_a.create_board("Shared").value
-            card = kanban_a.create_card(
-                kanban_a.columns(kanban_a.ensure_board())[0].uuid,
+            initiative_uuid = initiative_logic_a.create_initiative("Shared").value
+            card = initiative_logic_a.create_card(
+                initiative_logic_a.columns(initiative_logic_a.ensure_initiative())[0].uuid,
                 "Before", "", [],
             ).value
             relay_a = RelayLogic(
                 session_a, self._relay_config(relay_root, "A", state_dir),
             )
-            relay_a.mark_topics_shared([board_uuid])
+            relay_a.mark_topics_shared([initiative_uuid])
             relay_a.publish_due_topics()
 
             session_b = Session("addr-b")
@@ -1540,26 +1539,26 @@ class RelayLogicTests(unittest.TestCase):
             relay_b = RelayLogic(
                 session_b, self._relay_config(relay_root, "B", state_dir),
             )
-            relay_b.mark_topics_desired([board_uuid])
+            relay_b.mark_topics_desired([initiative_uuid])
             relay_b.poll_and_apply()
             relay_b.publish_due_topics()
             relay_a.poll_and_apply()
 
-            kanban_a.update_card(card.uuid, "After", "", [], None)
+            initiative_logic_a.update_card(card.uuid, "After", "", [], None)
             relay_a.publish_due_topics()
             relay_b.poll_and_apply()
             session_b.set_topic_adoption_default(
-                board_uuid, adopt="auto", additions="auto",
+                initiative_uuid, adopt="auto", additions="auto",
             )
-            session_b.reconcile_peer_changes("relay:A", board_uuid)
+            session_b.reconcile_peer_changes("relay:A", initiative_uuid)
             # B carries work of its own as well, so what it publishes is
             # content this client does not already hold. Without that, taking
-            # A's change leaves B's board identical to A's, and a head naming
+            # A's change leaves B's initiative identical to A's, and a head naming
             # a hash we already hold is answered from our own tree - there is
             # no snapshot read left to fail, and nothing for this test to say.
-            board_on_b = session_b.protocol.index[board_uuid]
+            board_on_b = session_b.protocol.index[initiative_uuid]
             session_b.modify(
-                board_uuid, {**board_on_b.data, "name": "Shared, renamed by B"}, {},
+                initiative_uuid, {**board_on_b.data, "name": "Shared, renamed by B"}, {},
             )
             relay_b.publish_due_topics()
 
@@ -1574,8 +1573,8 @@ class RelayLogicTests(unittest.TestCase):
             self.assertFalse(
                 session_a.peer_observed_node("relay:B", current_card),
             )
-            waiting = kanban_a.transition_by_node(
-                kanban_a.transition_events(board_uuid),
+            waiting = initiative_logic_a.transition_by_node(
+                initiative_logic_a.transition_events(initiative_uuid),
             )
             self.assertEqual(waiting[card.uuid]["stage"], "in_flight")
 
@@ -1584,8 +1583,8 @@ class RelayLogicTests(unittest.TestCase):
             self.assertTrue(
                 session_a.peer_observed_node("relay:B", current_card),
             )
-            agreed = kanban_a.transition_by_node(
-                kanban_a.transition_events(board_uuid),
+            agreed = initiative_logic_a.transition_by_node(
+                initiative_logic_a.transition_events(initiative_uuid),
             )
             self.assertEqual(agreed[card.uuid]["type"], "in_agreement")
 
@@ -1595,28 +1594,28 @@ class RelayLogicTests(unittest.TestCase):
         channels = types.SimpleNamespace(
             peer_liveness_for_address=lambda _addr, _topic: dict(liveness),
         )
-        kanban = InitiativeLogic(session, {}, channels)
-        board_uuid = kanban.create_board("Shared").value
-        card = kanban.create_card(
-            kanban.columns(kanban.ensure_board())[0].uuid,
+        initiative_logic = InitiativeLogic(session, {}, channels)
+        initiative_uuid = initiative_logic.create_initiative("Shared").value
+        card = initiative_logic.create_card(
+            initiative_logic.columns(initiative_logic.ensure_initiative())[0].uuid,
             "Before", "", [],
         ).value
         peer_board = ProtocolNode.from_dict(
-            session.protocol.index[board_uuid].to_dict(),
+            session.protocol.index[initiative_uuid].to_dict(),
         )
         session.apply_peer_subtree("relay:B", peer_board, None)
-        session.note_indirect_peer_topic("relay:B", board_uuid)
-        session.bind_peer_topic_channel("relay:B", board_uuid, "mailbox")
+        session.note_indirect_peer_topic("relay:B", initiative_uuid)
+        session.bind_peer_topic_channel("relay:B", initiative_uuid, "mailbox")
 
-        kanban.update_card(card.uuid, "After", "", [], None)
-        alive = kanban.transition_by_node(
-            kanban.transition_events(board_uuid),
+        initiative_logic.update_card(card.uuid, "After", "", [], None)
+        alive = initiative_logic.transition_by_node(
+            initiative_logic.transition_events(initiative_uuid),
         )
         self.assertEqual(alive[card.uuid]["stage"], "in_flight")
 
         liveness["state"] = "stale"
-        stale = kanban.transition_by_node(
-            kanban.transition_events(board_uuid),
+        stale = initiative_logic.transition_by_node(
+            initiative_logic.transition_events(initiative_uuid),
         )
         self.assertNotIn(card.uuid, stale)
 
@@ -1625,14 +1624,14 @@ class RelayLogicTests(unittest.TestCase):
             "relay:B",
             {card.uuid: session.node_revision(current_card)},
         )
-        confirmed = kanban.transition_by_node(
-            kanban.transition_events(board_uuid),
+        confirmed = initiative_logic.transition_by_node(
+            initiative_logic.transition_events(initiative_uuid),
         )
         self.assertEqual(confirmed[card.uuid]["stage"], "awaiting_peer")
 
         liveness["state"] = "alive"
-        online_again = kanban.transition_by_node(
-            kanban.transition_events(board_uuid),
+        online_again = initiative_logic.transition_by_node(
+            initiative_logic.transition_events(initiative_uuid),
         )
         self.assertEqual(online_again[card.uuid]["stage"], "awaiting_peer")
 
@@ -1664,40 +1663,40 @@ class RelayLogicTests(unittest.TestCase):
             first = RelayLogic(session, config)
             self.assertTrue(first.adopt_storage_from_descriptor(descriptor))
             first.adopt_poll_interval_from_descriptor(descriptor)
-            first.mark_topics_desired(["board-1"])
+            first.mark_topics_desired(["initiative-1"])
 
             restarted = RelayLogic(session, config)
 
             self.assertIsNotNone(restarted.storage)
             self.assertEqual(str(restarted.storage.root), relay_root)
             self.assertEqual(restarted.poll_interval_seconds, 8)
-            self.assertEqual(restarted._state["desired"], ["board-1"])
+            self.assertEqual(restarted._state["desired"], ["initiative-1"])
 
     def test_delete_topic_clears_storage_and_local_bookkeeping(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            board_uuid = kanban_a.create_board("Board").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            initiative_uuid = initiative_logic_a.create_initiative("Board").value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
-            self.assertIn(board_uuid, relay_a.status_payload()["topics"])
+            self.assertIn(initiative_uuid, relay_a.status_payload()["topics"])
 
-            result = relay_a.delete_topic(board_uuid)
+            result = relay_a.delete_topic(initiative_uuid)
 
             self.assertEqual(result.status, "ok")
-            # status_payload always includes locally-owned boards regardless
+            # status_payload always includes locally-owned initiatives regardless
             # of relay state (Part 3b's own diagnostic-visibility fix) - the
             # bookkeeping fields resetting to "never published" is the
             # actual thing delete_topic is responsible for clearing.
-            topic_status = relay_a.status_payload()["topics"][board_uuid]
+            topic_status = relay_a.status_payload()["topics"][initiative_uuid]
             self.assertIsNone(topic_status["published_hash"])
             self.assertEqual(topic_status["applied"], {})
             # Own identity topic remains published independently of the
-            # deleted board.
-            self.assertNotIn(board_uuid, relay_a.storage.list_topics())
-            # kanban_logic's own board is untouched - deletion is storage
+            # deleted initiative.
+            self.assertNotIn(initiative_uuid, relay_a.storage.list_topics())
+            # InitiativeLogic's own initiative is untouched - deletion is storage
             # cleanup only, never an app-level decision about local content.
-            self.assertIn(board_uuid, [b.uuid for b in kanban_a.boards()])
+            self.assertIn(initiative_uuid, [b.uuid for b in initiative_logic_a.initiatives()])
 
     def test_delete_topic_without_storage_configured_is_an_error(self):
         session_a = Session("addr-a")
@@ -1710,13 +1709,13 @@ class RelayLogicTests(unittest.TestCase):
     def test_repolling_without_a_new_publish_is_a_no_op(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            InitiativeLogic(session_a, {}).create_board("Board")
+            InitiativeLogic(session_a, {}).create_initiative("Board")
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
             session_b = Session("addr-b")
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
             first = relay_b.poll_and_apply()
-            self.assertEqual(len(first), 2)  # board + A's identity
+            self.assertEqual(len(first), 2)  # initiative + A's identity
 
             second = relay_b.poll_and_apply()
 
@@ -1725,7 +1724,7 @@ class RelayLogicTests(unittest.TestCase):
     def test_bookkeeping_never_appears_as_prsp_data(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            InitiativeLogic(session_a, {}).create_board("Board")
+            InitiativeLogic(session_a, {}).create_initiative("Board")
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
             session_b = Session("addr-b")
@@ -1747,9 +1746,9 @@ class RelayLogicTests(unittest.TestCase):
     def test_all_boards_sync_automatically_no_allow_list(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            first_uuid = kanban_a.create_board("Board One").value
-            second_uuid = kanban_a.create_board("Board Two").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            first_uuid = initiative_logic_a.create_initiative("Board One").value
+            second_uuid = initiative_logic_a.create_initiative("Board Two").value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
 
             identity_uuid = session_a.identity.uuid
@@ -1766,7 +1765,7 @@ class RelayLogicTests(unittest.TestCase):
         # identity topic, so a later display-name/picture edit had no way
         # to reach an already-connected peer. relay_topic_uuids() now
         # includes our own identity node, so ordinary publish/poll keeps it
-        # current, same as any board.
+        # current, same as any initiative.
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
             session_a.set_identity("Ann", picture="")
@@ -1792,7 +1791,7 @@ class RelayLogicTests(unittest.TestCase):
 
     def test_relay_inactive_without_relay_root_configured(self):
         session_a = Session("addr-a")
-        InitiativeLogic(session_a, {}).create_board("Board")
+        InitiativeLogic(session_a, {}).create_initiative("Board")
         relay_a = RelayLogic(session_a, {})
 
         self.assertIsNone(relay_a.storage)
@@ -1852,7 +1851,7 @@ class RelayLogicTests(unittest.TestCase):
             "relay_backend": "sftp", "relay_identity": "A",
             "relay_sftp_host": "example.test", "relay_sftp_username": "u",
         }
-        with patch.dict(os.environ, {"SKANBAN_SFTP_PASSWORD": "from-env"}):
+        with patch.dict(os.environ, {"SINITIATIVE_SFTP_PASSWORD": "from-env"}):
             relay_a = RelayLogic(session_a, config)
 
         self.assertIsNone(relay_a.storage.password)
@@ -1976,26 +1975,26 @@ class RelayLogicTests(unittest.TestCase):
     def test_accepter_with_no_config_grafts_via_adopted_storage(self):
         # End-to-end: an inviter publishes to a local root; a fresh accepter
         # with NO storage of its own adopts the inviter's descriptor and
-        # grafts the board - neither side shared a config file, only a token.
+        # grafts the initiative - neither side shared a config file, only a token.
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            board_uuid = kanban_a.create_board("Shared Board").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            initiative_uuid = initiative_logic_a.create_initiative("Shared Board").value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
             descriptor = relay_a.channel_descriptor()
 
             session_b = Session("addr-b")
-            kanban_b = InitiativeLogic(session_b, {})
+            initiative_logic_b = InitiativeLogic(session_b, {})
             relay_b = RelayLogic(session_b, {"relay_state_file": str(Path(state_dir) / "b.json")})
             self.assertIsNone(relay_b.storage)
 
             self.assertTrue(relay_b.adopt_storage_from_descriptor(descriptor))
-            relay_b.mark_topics_desired([board_uuid])
+            relay_b.mark_topics_desired([initiative_uuid])
             applied = relay_b.poll_and_apply()
 
-            self.assertIn((board_uuid, "A"), applied)
-            self.assertIn(board_uuid, [b.uuid for b in kanban_b.boards()])
+            self.assertIn((initiative_uuid, "A"), applied)
+            self.assertIn(initiative_uuid, [b.uuid for b in initiative_logic_b.initiatives()])
 
     def test_board_payload_attaches_relay_liveness_for_relay_peers(self):
         # Review U-7: relay peers have no http reachability signal, so the
@@ -2006,45 +2005,45 @@ class RelayLogicTests(unittest.TestCase):
             manager = RelayManager(session, config)
             channels = ChannelManager(session)
             channels.register(MailboxChannel(manager))
-            kanban = InitiativeLogic(session, config, channels)
+            initiative_logic = InitiativeLogic(session, config, channels)
             relay = manager.primary
             # A relay peer with a cached perspective + a stubbed liveness.
-            board = kanban.ensure_board()
-            bob = ProtocolNode.from_dict(board.to_dict())
+            initiative = initiative_logic.ensure_initiative()
+            bob = ProtocolNode.from_dict(initiative.to_dict())
             session.apply_peer_subtree("relay:B", bob, None)
-            session.note_indirect_peer_topic("relay:B", board.uuid)
-            session.bind_peer_topic_channel("relay:B", board.uuid, "mailbox")
+            session.note_indirect_peer_topic("relay:B", initiative.uuid)
+            session.bind_peer_topic_channel("relay:B", initiative.uuid, "mailbox")
             relay._own_presence_mtime = 100.0
             relay._peer_presence_cache["B"] = (
                 {"poll_interval_seconds": 3}, 99.0,
             )
 
-            payload = kanban.board_payload()
+            payload = initiative_logic.board_payload()
 
             peer = payload["network"]["peers"]["relay:B"]
             self.assertIn("channel_liveness", peer)
             self.assertEqual(peer["channel_liveness"]["state"], "alive")
 
     def test_unmark_topics_shared_disarms_relay(self):
-        # Review R-3: `shared` had no shrink path - unsharing a board never
+        # Review R-3: `shared` had no shrink path - unsharing an initiative never
         # stopped relay publishing it, and has_active_relationship() stayed
         # armed forever once anything had ever been shared.
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            board_uuid = kanban_a.create_board("Shared Board").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            initiative_uuid = initiative_logic_a.create_initiative("Shared Board").value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
-            relay_a.mark_topics_shared([board_uuid])
+            relay_a.mark_topics_shared([initiative_uuid])
             self.assertTrue(relay_a.has_active_relationship())
 
-            relay_a.unmark_topics_shared([board_uuid])
+            relay_a.unmark_topics_shared([initiative_uuid])
 
             self.assertEqual(relay_a._state["shared"], [])
             self.assertFalse(relay_a.has_active_relationship())
 
     def test_stopping_the_channel_unmarks_relay_shared(self):
         # Even with no peers yet (token issued, never accepted), "stop using"
-        # must unassign the board from its target and stop relay publishing
+        # must unassign the initiative from its target and stop relay publishing
         # it. This used to be reached through InitiativeLogic.unshare_board, which
         # no interface ever called; the channel action is the live path.
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
@@ -2054,74 +2053,74 @@ class RelayLogicTests(unittest.TestCase):
             channels = ChannelManager(session_a)
             channels.register(MailboxChannel(manager))
             collaboration = CollaborationService(session_a, channels)
-            kanban_a = InitiativeLogic(
+            initiative_logic_a = InitiativeLogic(
                 session_a, config, collaboration.application_view,
             )
-            board_uuid = kanban_a.create_board("Shared Board").value
+            initiative_uuid = initiative_logic_a.create_initiative("Shared Board").value
             target_id = manager.list_targets()[0]["id"]
-            manager.assign_topic_target(board_uuid, target_id)
+            manager.assign_topic_target(initiative_uuid, target_id)
             connection = manager.connection_for_target(target_id)
-            self.assertIn(board_uuid, connection._state["shared"])
+            self.assertIn(initiative_uuid, connection._state["shared"])
 
             result = collaboration.set_topic_channel(
-                board_uuid, f"mailbox:{target_id}", False,
+                initiative_uuid, f"mailbox:{target_id}", False,
             )
 
             self.assertTrue(result.ok, result.reason)
             self.assertEqual(connection._state["shared"], [])
-            self.assertIsNone(manager.target_for_topic(board_uuid))
+            self.assertIsNone(manager.target_for_topic(initiative_uuid))
 
     def test_delete_topic_clears_shared_too(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            board_uuid = kanban_a.create_board("Shared Board").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            initiative_uuid = initiative_logic_a.create_initiative("Shared Board").value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
-            relay_a.mark_topics_shared([board_uuid])
+            relay_a.mark_topics_shared([initiative_uuid])
             relay_a.publish_due_topics()
 
-            relay_a.delete_topic(board_uuid)
+            relay_a.delete_topic(initiative_uuid)
 
             self.assertEqual(relay_a._state["shared"], [])
-            self.assertNotIn(board_uuid, relay_a._state["published"])
+            self.assertNotIn(initiative_uuid, relay_a._state["published"])
 
     def test_mark_topics_shared_activates_shared_board_for_auto_adopt(self):
         # Regression, caught live: over relay-only there's no /p2p/join to
-        # mark the issuer's board an active discussion, so auto-adopt never
+        # mark the issuer's initiative an active discussion, so auto-adopt never
         # ran and incoming changes were stuck (a diff with no Adopt button).
-        # Sharing a board must activate it.
+        # Sharing an initiative must activate it.
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            board_uuid = kanban_a.create_board("Shared Board").value
-            self.assertNotIn(board_uuid, session_a.active_topic_uuids)
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            initiative_uuid = initiative_logic_a.create_initiative("Shared Board").value
+            self.assertNotIn(initiative_uuid, session_a.active_topic_uuids)
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
 
-            relay_a.mark_topics_shared([board_uuid])
+            relay_a.mark_topics_shared([initiative_uuid])
 
-            self.assertIn(board_uuid, session_a.active_topic_uuids)
+            self.assertIn(initiative_uuid, session_a.active_topic_uuids)
 
     def test_shared_boards_reactivated_on_construction(self):
-        # A board shared in a prior run must come back active when a fresh
+        # An initiative shared in a prior run must come back active when a fresh
         # RelayLogic is constructed on the same state file (a restart), or
         # the issuer silently loses auto-adopt for it. active_topic_uuids
-        # is persisted, but a board shared before this fix existed would not
+        # is persisted, but an initiative shared before this fix existed would not
         # have been recorded active - __init__ re-derives it from `shared`.
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            board_uuid = kanban_a.create_board("Shared Board").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            initiative_uuid = initiative_logic_a.create_initiative("Shared Board").value
             config = self._relay_config(relay_root, "A", state_dir)
-            RelayLogic(session_a, config).mark_topics_shared([board_uuid])
+            RelayLogic(session_a, config).mark_topics_shared([initiative_uuid])
 
-            # Simulate the state where activation was lost (board still in
+            # Simulate the state where activation was lost (initiative still in
             # the index, `shared` still persisted, but not marked active).
-            session_a.leave_topic(board_uuid)
-            self.assertNotIn(board_uuid, session_a.active_topic_uuids)
+            session_a.leave_topic(initiative_uuid)
+            self.assertNotIn(initiative_uuid, session_a.active_topic_uuids)
 
             RelayLogic(session_a, config)  # __init__ re-activates from `shared`
 
-            self.assertIn(board_uuid, session_a.active_topic_uuids)
+            self.assertIn(initiative_uuid, session_a.active_topic_uuids)
 
     def test_applied_bookkeeping_not_persisted_across_restart(self):
         # Regression, caught live: `applied` tracks what's been pulled into
@@ -2131,35 +2130,35 @@ class RelayLogicTests(unittest.TestCase):
         # silently vanishes. A restart must re-fetch and re-cache.
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            board_uuid = kanban_a.create_board("Shared Board").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            initiative_uuid = initiative_logic_a.create_initiative("Shared Board").value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
 
             session_b = Session("addr-b")
             config_b = self._relay_config(relay_root, "B", state_dir)
             relay_b = RelayLogic(session_b, config_b)
-            relay_b.mark_topics_desired([board_uuid])
-            # A publishes its board + its own identity, so both are applied.
-            self.assertIn((board_uuid, "A"), relay_b.poll_and_apply())
+            relay_b.mark_topics_desired([initiative_uuid])
+            # A publishes its initiative + its own identity, so both are applied.
+            self.assertIn((initiative_uuid, "A"), relay_b.poll_and_apply())
             self.assertIsNotNone(session_b.peer_perspectives.get("relay:A"))
 
             # Restart B: fresh session (empty peer_perspectives) + fresh
             # RelayLogic on the same persisted state file. A published
             # nothing new.
             session_b2 = Session("addr-b")
-            kanban_b2 = InitiativeLogic(session_b2, {})
+            initiative_logic_b2 = InitiativeLogic(session_b2, {})
             relay_b2 = RelayLogic(session_b2, config_b)
             self.assertEqual(relay_b2._state["applied"], {})  # not restored
 
             applied = relay_b2.poll_and_apply()
 
             # Re-fetched despite the unchanged hash, repopulating the cache.
-            self.assertIn((board_uuid, "A"), applied)
+            self.assertIn((initiative_uuid, "A"), applied)
             self.assertIsNotNone(session_b2.peer_perspectives.get("relay:A"))
 
     def test_users_includes_relay_only_peer_via_peer_perspectives(self):
-        # kanban_logic.users() used to only look at session.members, which
+        # InitiativeLogic.users() used to only look at session.members, which
         # a relay-only peer ("relay:A") never joins - note_indirect_peer_topic
         # deliberately keeps relay peers out of the live-connection
         # machinery (add_peer), so they'd never show up here at all without
@@ -2168,20 +2167,20 @@ class RelayLogicTests(unittest.TestCase):
         # /api/connect flow) actually lives.
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
+            initiative_logic_a = InitiativeLogic(session_a, {})
             session_a.set_identity("Ann", "")
-            board_uuid = kanban_a.create_board("Shared Board").value
+            initiative_uuid = initiative_logic_a.create_initiative("Shared Board").value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
 
             session_b = Session("addr-b")
-            kanban_b = InitiativeLogic(session_b, {})
+            initiative_logic_b = InitiativeLogic(session_b, {})
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
-            relay_b.mark_topics_desired([board_uuid])
-            session_b.apply_peer_identity_snapshot("relay:A", kanban_a.user_profile().to_dict())
+            relay_b.mark_topics_desired([initiative_uuid])
+            session_b.apply_peer_identity_snapshot("relay:A", initiative_logic_a.user_profile().to_dict())
             relay_b.poll_and_apply()
 
-            users = {user["address"]: user for user in kanban_b.users()}
+            users = {user["address"]: user for user in initiative_logic_b.users()}
 
             self.assertIn("relay:A", users)
             self.assertEqual(users["relay:A"]["name"], "Ann")
@@ -2191,41 +2190,41 @@ class RelayLogicTests(unittest.TestCase):
         # share id "" - with two unresolved peers, the second vanished from
         # the list entirely.
         session = Session("addr-a")
-        kanban = InitiativeLogic(session, {})
+        initiative_logic = InitiativeLogic(session, {})
         # Two peers whose content is cached but whose identity isn't - a
-        # board subtree carries no identity_key, so both resolve to id "".
-        board_b = ProtocolNode({"type": "kanban_board", "name": "B board"})
+        # initiative subtree carries no identity_key, so both resolve to id "".
+        board_b = ProtocolNode({"type": "initiative", "name": "B initiative"})
         board_b.refresh_hashes()
         session.apply_peer_subtree("relay:B", board_b, None)
-        board_c = ProtocolNode({"type": "kanban_board", "name": "C board"})
+        board_c = ProtocolNode({"type": "initiative", "name": "C initiative"})
         board_c.refresh_hashes()
         session.apply_peer_subtree("relay:C", board_c, None)
 
-        users = {user["address"] for user in kanban.users()}
+        users = {user["address"] for user in initiative_logic.users()}
 
         self.assertIn("relay:B", users)
         self.assertIn("relay:C", users)
 
     def test_users_never_misattributes_an_ungrafted_peer_board_as_their_profile(self):
-        # Regression: kanban_logic._peer_profile_uuid used to fall back to
-        # "the first topic tracked for this peer that isn't a board I
+        # Regression: InitiativeLogic._peer_profile_uuid used to fall back to
+        # "the first topic tracked for this peer that isn't an initiative I
         # recognize locally" whenever their real identity wasn't cached yet
         # - safe back when a peer's only ever-fetched topics were exactly
-        # one board plus one profile (join_discussion's own accept-time
+        # one initiative plus one profile (join_discussion's own accept-time
         # guarantee), but relay now tracks every topic a peer publishes via
         # peer_topic_sets regardless of whether this side grafted it. A
-        # second board this side never desired has no entry in this side's
+        # second initiative this side never desired has no entry in this side's
         # own protocol.index either, so it was wrongly treated as "not a
-        # board, must be the profile" - handing back a peer's own board as
+        # initiative, must be the profile" - handing back a peer's own initiative as
         # if it were their identity (with a blank name/picture, since a
-        # board node has no display_name field).
+        # initiative node has no display_name field).
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            desired_board = kanban_a.create_board("Board One").value
-            other_board = kanban_a.create_board("Board Two").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            desired_board = initiative_logic_a.create_initiative("Board One").value
+            other_board = initiative_logic_a.create_initiative("Board Two").value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
-            # Publish only the boards, not identity yet - simulates the
+            # Publish only the initiatives, not identity yet - simulates the
             # window before the peer's own identity has ever been polled.
             relay_a.storage.write_snapshot(
                 desired_board, "A", session_a.node_state_hash(desired_board),
@@ -2237,12 +2236,12 @@ class RelayLogicTests(unittest.TestCase):
             )
 
             session_b = Session("addr-b")
-            kanban_b = InitiativeLogic(session_b, {})
+            initiative_logic_b = InitiativeLogic(session_b, {})
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
             relay_b.mark_topics_desired([desired_board])  # other_board never desired
             relay_b.poll_and_apply()
 
-            users = {user["address"]: user for user in kanban_b.users()}
+            users = {user["address"]: user for user in initiative_logic_b.users()}
 
             self.assertIn("relay:A", users)
             self.assertNotEqual(users["relay:A"]["id"], other_board)
@@ -2262,14 +2261,19 @@ class RelayLogicTests(unittest.TestCase):
             config = self._relay_config(relay_root, "A", state_dir)
             relay_a = RelayLogic(session_a, config)
 
-            result = relay_a.mark_topics_shared(["board-1", "board-2"])
+            result = relay_a.mark_topics_shared(["initiative-1", "initiative-2"])
 
             self.assertEqual(result.status, "ok")
-            self.assertEqual(relay_a._state["shared"], ["board-1", "board-2"])
+            self.assertEqual(relay_a._state["shared"], ["initiative-1", "initiative-2"])
 
-            # Survives a reload on the same state file.
-            reloaded = RelayLogic(Session("addr-a"), config)
-            self.assertEqual(reloaded._state["shared"], ["board-1", "board-2"])
+            # Survives a restart of the same session - and only of that
+            # session. Consent is the session's, keyed by target, not a fact
+            # about the file beside it (DESIGN_RELAY_CONSENT.md).
+            reloaded = RelayLogic(session_a, config)
+            self.assertEqual(reloaded._state["shared"], ["initiative-1", "initiative-2"])
+
+            stranger = RelayLogic(Session("addr-a"), config)
+            self.assertEqual(stranger._state["shared"], [])
 
     def test_mark_topics_shared_rejects_empty_list(self):
         relay_a = RelayLogic(Session("addr-a"), {})
@@ -2283,15 +2287,15 @@ class RelayLogicTests(unittest.TestCase):
             relay = RelayLogic(session, config)
             self.assertFalse(relay.has_active_relationship())  # fresh: idle
 
-            relay.mark_topics_shared(["board-1"])  # issued a token
+            relay.mark_topics_shared(["initiative-1"])  # issued a token
             self.assertTrue(relay.has_active_relationship())
 
             relay2 = RelayLogic(Session("addr-b"), self._relay_config(relay_root, "B", state_dir))
-            relay2.mark_topics_desired(["board-1"])  # accepted a token
+            relay2.mark_topics_desired(["initiative-1"])  # accepted a token
             self.assertTrue(relay2.has_active_relationship())
 
             session3 = Session("addr-c")
-            session3.note_indirect_peer_topic("relay:D", "board-1")  # an indirect peer exists
+            session3.note_indirect_peer_topic("relay:D", "initiative-1")  # an indirect peer exists
             relay3 = RelayLogic(session3, self._relay_config(relay_root, "C", state_dir))
             self.assertTrue(relay3.has_active_relationship())
 
@@ -2300,31 +2304,31 @@ class RelayLogicTests(unittest.TestCase):
         # even if some intent leaked into state.
         relay = RelayLogic(Session("addr-a"), {})
         self.assertIsNone(relay.storage)
-        relay._state["shared"] = ["board-1"]
+        relay._state["shared"] = ["initiative-1"]
         self.assertFalse(relay.has_active_relationship())
 
     def test_accept_connect_token_grafts_a_never_before_seen_board(self):
         # The scenario the token-accept path exists for: A and B have never
         # joined directly (no add_peer/handle_join at all), only relayed
         # through the shared folder plus a token exchanged out-of-band -
-        # proving a board can be shared via relay alone.
+        # proving an initiative can be shared via relay alone.
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            board_uuid = kanban_a.create_board("Shared Board").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            initiative_uuid = initiative_logic_a.create_initiative("Shared Board").value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
 
             session_b = Session("addr-b")
-            kanban_b = InitiativeLogic(session_b, {})
+            initiative_logic_b = InitiativeLogic(session_b, {})
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
-            accept_result = relay_b.mark_topics_desired([board_uuid])
+            accept_result = relay_b.mark_topics_desired([initiative_uuid])
             self.assertEqual(accept_result.status, "ok")
             applied = relay_b.poll_and_apply()
 
-            self.assertIn((board_uuid, "A"), applied)
-            self.assertIn(board_uuid, [b.uuid for b in kanban_b.boards()])
-            self.assertEqual(kanban_b.auto_adopt_mode(session_b.protocol.index[board_uuid]), "always")
+            self.assertIn((initiative_uuid, "A"), applied)
+            self.assertIn(initiative_uuid, [b.uuid for b in initiative_logic_b.initiatives()])
+            self.assertEqual(initiative_logic_b.auto_adopt_mode(session_b.protocol.index[initiative_uuid]), "always")
 
     def test_accept_token_after_hash_already_cached_still_grafts(self):
         # Regression: if a poll already saw+cached this exact hash before
@@ -2333,28 +2337,28 @@ class RelayLogicTests(unittest.TestCase):
         # do" - the graft is still pending even though the content isn't new.
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            board_uuid = kanban_a.create_board("Shared Board").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            initiative_uuid = initiative_logic_a.create_initiative("Shared Board").value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
 
             session_b = Session("addr-b")
-            kanban_b = InitiativeLogic(session_b, {})
+            initiative_logic_b = InitiativeLogic(session_b, {})
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
             relay_b.poll_and_apply()  # caches it before any token exists
-            self.assertNotIn(board_uuid, [b.uuid for b in kanban_b.boards()])
+            self.assertNotIn(initiative_uuid, [b.uuid for b in initiative_logic_b.initiatives()])
 
-            relay_b.mark_topics_desired([board_uuid])
+            relay_b.mark_topics_desired([initiative_uuid])
             applied = relay_b.poll_and_apply()
 
-            self.assertEqual(applied, [(board_uuid, "A")])
-            self.assertIn(board_uuid, [b.uuid for b in kanban_b.boards()])
+            self.assertEqual(applied, [(initiative_uuid, "A")])
+            self.assertIn(initiative_uuid, [b.uuid for b in initiative_logic_b.initiatives()])
 
     def test_poll_without_a_matching_token_only_caches_never_grafts(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            board_uuid = kanban_a.create_board("Private Board").value
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            initiative_uuid = initiative_logic_a.create_initiative("Private Board").value
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
 
@@ -2362,40 +2366,40 @@ class RelayLogicTests(unittest.TestCase):
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
             relay_b.poll_and_apply()
 
-            kanban_b = InitiativeLogic(session_b, {})
-            self.assertNotIn(board_uuid, [b.uuid for b in kanban_b.boards()])
-            self.assertIsNotNone(session_b.get_cached_peer_subtree("relay:A", board_uuid))
+            initiative_logic_b = InitiativeLogic(session_b, {})
+            self.assertNotIn(initiative_uuid, [b.uuid for b in initiative_logic_b.initiatives()])
+            self.assertIsNotNone(session_b.get_cached_peer_subtree("relay:A", initiative_uuid))
 
     def test_accepted_board_keeps_syncing_on_later_polls(self):
         with tempfile.TemporaryDirectory() as relay_root, tempfile.TemporaryDirectory() as state_dir:
             session_a = Session("addr-a")
-            kanban_a = InitiativeLogic(session_a, {})
-            board_uuid = kanban_a.create_board("Shared Board").value
-            board = kanban_a.ensure_board()
-            todo = kanban_a.columns(board)[0]
+            initiative_logic_a = InitiativeLogic(session_a, {})
+            initiative_uuid = initiative_logic_a.create_initiative("Shared Board").value
+            initiative = initiative_logic_a.ensure_initiative()
+            todo = initiative_logic_a.columns(initiative)[0]
             relay_a = RelayLogic(session_a, self._relay_config(relay_root, "A", state_dir))
             relay_a.publish_due_topics()
 
             session_b = Session("addr-b")
-            kanban_b = InitiativeLogic(session_b, {})
+            initiative_logic_b = InitiativeLogic(session_b, {})
             relay_b = RelayLogic(session_b, self._relay_config(relay_root, "B", state_dir))
-            relay_b.mark_topics_desired([board_uuid])
+            relay_b.mark_topics_desired([initiative_uuid])
             relay_b.poll_and_apply()
 
-            card = kanban_a.create_card(todo.uuid, "Later Card").value
+            card = initiative_logic_a.create_card(todo.uuid, "Later Card").value
             relay_a.publish_due_topics()
             applied = relay_b.poll_and_apply()
 
-            self.assertEqual(applied, [(board_uuid, "A")])
-            # Accepted boards default to "never" (manual review), matching
+            self.assertEqual(applied, [(initiative_uuid, "A")])
+            # Accepted initiatives default to "never" (manual review), matching
             # the live-join accept path - opt in explicitly to prove the
             # later card is visible to auto-adopt once the user does so.
             # Opting in reconsiders what the old mode held, so the card is
             # taken there and then; the pass that follows finds nothing left.
             self.assertIsNone(session_b.protocol.index.get(card.uuid))
-            kanban_b.set_auto_adopt_mode("always")
+            initiative_logic_b.set_auto_adopt_mode("always")
             self.assertIsNotNone(session_b.protocol.index.get(card.uuid))
-            self.assertFalse(kanban_b.on_peer_update().value)
+            self.assertFalse(initiative_logic_b.on_peer_update().value)
 
 
     def test_default_state_file_differs_per_identity_not_just_per_config(self):

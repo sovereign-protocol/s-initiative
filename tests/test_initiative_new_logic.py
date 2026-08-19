@@ -10,7 +10,7 @@ from tests.relay_clients import (
 )
 
 
-class KanbanNewLogicTests(unittest.TestCase):
+class InitiativeNewLogicTests(unittest.TestCase):
     def test_board_snapshot_never_consults_transport_under_session(self):
         class NoTransport:
             def network_info(self, _topic_uuid=None):
@@ -21,13 +21,13 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         session = Session("local")
         logic = InitiativeLogic(session, collaboration=NoTransport())
-        board = logic.ensure_board()
+        initiative = logic.ensure_initiative()
 
         with session.lock:
             snapshot = logic.board_snapshot()
 
         payload = logic.merge_board_observation(snapshot, {"peers": {}})
-        self.assertEqual(snapshot["topic_uuid"], board.uuid)
+        self.assertEqual(snapshot["topic_uuid"], initiative.uuid)
         self.assertEqual(payload["network"], {"peers": {}})
 
     def test_board_payload_does_not_create_a_missing_board(self):
@@ -38,30 +38,29 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         payload = logic.board_payload()
 
-        self.assertIsNone(payload["board"])
-        self.assertEqual(payload["boards"], [])
+        self.assertIsNone(payload["initiative"])
         self.assertEqual(session.export_protocol_root(), before)
         self.assertEqual(session.app_metadata, metadata_before)
 
     def test_default_board_has_columns(self):
         runtime = self.runtime(8301)
-        board = runtime.logic.ensure_board()
+        initiative = runtime.logic.ensure_initiative()
 
-        self.assertEqual(board.data["type"], "kanban_board")
+        self.assertEqual(initiative.data["type"], "initiative")
         self.assertEqual(
-            runtime.session.protocol.index[board.parent_uuid].data,
-            {"type": "kanban_app", "name": "S-Initiative"},
+            runtime.session.protocol.index[initiative.parent_uuid].data,
+            {"type": "initiative_app", "name": "S-Initiative"},
         )
         self.assertEqual(
-            [column.data["name"] for column in runtime.logic.columns(board)],
+            [column.data["name"] for column in runtime.logic.columns(initiative)],
             ["To Do", "Doing", "Done"],
         )
 
     def test_card_crud_and_move(self):
         runtime = self.runtime(8302)
         logic: InitiativeLogic = runtime.logic
-        board = logic.ensure_board()
-        todo, doing = logic.columns(board)[:2]
+        initiative = logic.ensure_initiative()
+        todo, doing = logic.columns(initiative)[:2]
 
         card = logic.create_card(todo.uuid, "Task", "Desc", ["A"]).value
         logic.update_card(card.uuid, "Task 2", "Desc 2", ["B"])
@@ -76,17 +75,17 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_saved_snapshot_survives_source_and_restores_clean_content(self):
         session = Session("local")
         logic = InitiativeLogic(session)
-        board_uuid = logic.create_board("Launch").value
-        board = session.protocol.index[board_uuid]
-        todo = logic.columns(board)[0]
+        initiative_uuid = logic.create_initiative("Launch").value
+        initiative = session.protocol.index[initiative_uuid]
+        todo = logic.columns(initiative)[0]
         card = logic.create_card(
             todo.uuid, "Prepare", "Plan the launch", ["person-1"], "person-1",
         ).value
         logic.create_card_comment(card.uuid, "Activity history")
-        logic.create_agenda_item("Runtime agenda", board_uuid=board_uuid)
+        logic.create_agenda_item("Runtime agenda", initiative_uuid=initiative_uuid)
 
-        saved = logic.export_snapshot(board_uuid, "Launch baseline", "Reusable launch")
-        logic.delete_board(board_uuid)
+        saved = logic.export_snapshot(initiative_uuid, "Launch baseline", "Reusable launch")
+        logic.delete_initiative(initiative_uuid)
         snapshot_file = json.loads(json.dumps(saved.value))
         restored = logic.create_from_snapshot(snapshot_file, "Next launch")
 
@@ -100,17 +99,17 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertIsNone(copied_card.data["owner"])
         self.assertEqual(copied_card.live_children(), [])
         self.assertEqual(logic.agenda_items(copy), [])
-        self.assertNotEqual(copy.uuid, board_uuid)
+        self.assertNotEqual(copy.uuid, initiative_uuid)
         self.assertEqual(
-            [item.data["type"] for item in logic._kanban_container().live_children()],
-            ["kanban_board"],
+            [item.data["type"] for item in logic._initiative_container().live_children()],
+            ["initiative"],
         )
 
     def test_move_card_does_not_touch_sibling_hashes(self):
         runtime = self.runtime(8363)
         logic: InitiativeLogic = runtime.logic
-        board = logic.ensure_board()
-        todo, doing = logic.columns(board)[:2]
+        initiative = logic.ensure_initiative()
+        todo, doing = logic.columns(initiative)[:2]
 
         first = logic.create_card(todo.uuid, "First", "", []).value
         second = logic.create_card(todo.uuid, "Second", "", []).value
@@ -133,8 +132,8 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_move_card_lands_between_neighbors_with_fractional_order(self):
         runtime = self.runtime(8364)
         logic: InitiativeLogic = runtime.logic
-        board = logic.ensure_board()
-        todo, doing = logic.columns(board)[:2]
+        initiative = logic.ensure_initiative()
+        todo, doing = logic.columns(initiative)[:2]
 
         first = logic.create_card(todo.uuid, "First", "", []).value
         second = logic.create_card(todo.uuid, "Second", "", []).value
@@ -155,8 +154,8 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_move_card_renumbers_when_order_gap_is_exhausted(self):
         runtime = self.runtime(8365)
         logic: InitiativeLogic = runtime.logic
-        board = logic.ensure_board()
-        todo, doing = logic.columns(board)[:2]
+        initiative = logic.ensure_initiative()
+        todo, doing = logic.columns(initiative)[:2]
 
         first = logic.create_card(todo.uuid, "First", "", []).value
         second = logic.create_card(todo.uuid, "Second", "", []).value
@@ -180,18 +179,18 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_two_clients_auto_adopt_collaborate(self):
         left = self.runtime(8303)
         right = self.runtime(8304)
-        board = left.logic.ensure_board()
-        right.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
+        right.logic.ensure_initiative()
 
         invite = connect(left, right)
         self.assertEqual(invite["status"], "ok")
-        self.assertNotIn(board.uuid, right.session.protocol.index)
-        share = connect(left, right, board.uuid)
+        self.assertNotIn(initiative.uuid, right.session.protocol.index)
+        share = connect(left, right, initiative.uuid)
         self.assertEqual(share["status"], "ok")
-        self.assertEqual(right.logic.ensure_board().uuid, board.uuid)
+        self.assertEqual(right.logic.ensure_initiative().uuid, initiative.uuid)
         right.logic.set_auto_adopt_mode("always")
 
-        column = left.logic.columns(board)[0]
+        column = left.logic.columns(initiative)[0]
         card = left.logic.create_card(column.uuid, "Shared", "", []).value
         sync(left, right)
         right.logic.board_payload()
@@ -202,9 +201,9 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_agenda_priority_is_projected_without_adoption(self):
         left = self.runtime(8393)
         right = self.runtime(8394)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("never")
 
         item = left.logic.create_agenda_item("Discuss priority", "high").value
@@ -223,9 +222,9 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_agenda_priority_revert_to_none_follows_its_originator(self):
         left = self.runtime(8397)
         right = self.runtime(8398)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("never")
         item = left.logic.create_agenda_item("Radar").value
         sync(left, right)
@@ -244,9 +243,9 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_non_originator_cannot_change_agenda_priority(self):
         left = self.runtime(8395)
         right = self.runtime(8396)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         item = left.logic.create_agenda_item("Owned by left", "low").value
         sync(left, right)
         right.logic.board_payload()
@@ -260,9 +259,9 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_only_originator_can_reorder_agenda_and_order_is_projected(self):
         left = self.runtime(8399)
         right = self.runtime(8400)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         left.logic.set_auto_adopt_mode("never")
         first = left.logic.create_agenda_item("First").value
         second = left.logic.create_agenda_item("Second").value
@@ -284,9 +283,9 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_observer_cannot_reorder_an_originators_item(self):
         left = self.runtime(8406)
         right = self.runtime(8407)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         first = left.logic.create_agenda_item("First").value
         sync(left, right)
         right.logic.board_payload()
@@ -299,9 +298,9 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_each_originator_moves_only_their_own_item(self):
         left = self.runtime(8408)
         right = self.runtime(8409)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         first = left.logic.create_agenda_item("First").value
         sync(left, right)
         right.logic.board_payload()
@@ -319,18 +318,18 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_agenda_changes_are_not_displayed_as_board_divergences(self):
         left = self.runtime(8402)
         right = self.runtime(8403)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         item = left.logic.create_agenda_item("Discuss later").value
-        payload = left.session.get_subtree(board.uuid)
+        payload = left.session.get_subtree(initiative.uuid)
         right.session.apply_peer_subtree(
             left.peer_addr,
             ProtocolNode.from_dict(payload["subtree"]),
             payload["parent_uuid"],
         )
 
-        events = right.logic.transition_events(board.uuid)
+        events = right.logic.transition_events(initiative.uuid)
 
         self.assertNotIn(item.uuid, {
             event["node_uuid"] for event in events
@@ -339,11 +338,11 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_two_clients_auto_adopt_card_move(self):
         left = self.runtime(8313)
         right = self.runtime(8314)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("always")
-        first, second = left.logic.columns(board)[:2]
+        first, second = left.logic.columns(initiative)[:2]
         card = left.logic.create_card(first.uuid, "Move me", "", []).value
         sync(left, right)
         right.logic.board_payload()
@@ -357,12 +356,12 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_accepts_column_names_reverted_to_original_values(self):
         left = self.runtime(8411)
         right = self.runtime(8412)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         left.logic.set_auto_adopt_mode("always")
         right.logic.set_auto_adopt_mode("always")
-        left_columns = left.logic.columns(board)
+        left_columns = left.logic.columns(initiative)
 
         left.logic.rename_column(left_columns[0].uuid, "To Dos")
         left.logic.rename_column(left_columns[1].uuid, "Doings")
@@ -371,7 +370,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         sync(left, right)
         left.logic.board_payload()
 
-        right_board = right.session.protocol.index[board.uuid]
+        right_board = right.session.protocol.index[initiative.uuid]
         right_columns = right.logic.columns(right_board)
         right.logic.rename_column(right_columns[0].uuid, "To Do")
         right.logic.rename_column(right_columns[1].uuid, "Doing")
@@ -384,7 +383,7 @@ class KanbanNewLogicTests(unittest.TestCase):
             [
                 column.data["name"]
                 for column in left.logic.columns(
-                    left.session.protocol.index[board.uuid],
+                    left.session.protocol.index[initiative.uuid],
                 )
             ],
             ["To Do", "Doing", "Done"],
@@ -393,7 +392,7 @@ class KanbanNewLogicTests(unittest.TestCase):
             [
                 column.data["name"]
                 for column in right.logic.columns(
-                    right.session.protocol.index[board.uuid],
+                    right.session.protocol.index[initiative.uuid],
                 )
             ],
             ["To Do", "Doing", "Done"],
@@ -402,18 +401,18 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertFalse(any(
             event["type"] == "divergence"
             and event["node_uuid"] in column_uuids
-            for event in left.logic.transition_events(board.uuid)
+            for event in left.logic.transition_events(initiative.uuid)
         ))
 
     def test_auto_adopt_does_not_rollback_opposing_local_move(self):
         left = self.runtime(8325)
         right = self.runtime(8326)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         left.logic.set_auto_adopt_mode("always")
         right.logic.set_auto_adopt_mode("always")
-        first, second = left.logic.columns(board)[:2]
+        first, second = left.logic.columns(initiative)[:2]
         card = left.logic.create_card(second.uuid, "Opposing move", "", []).value
         sync(left, right)
         right.logic.board_payload()
@@ -433,12 +432,12 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_accepts_newer_move_back_after_agreement(self):
         left = self.runtime(8327)
         right = self.runtime(8328)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         left.logic.set_auto_adopt_mode("always")
         right.logic.set_auto_adopt_mode("always")
-        first, second = left.logic.columns(board)[:2]
+        first, second = left.logic.columns(initiative)[:2]
         card = left.logic.create_card(second.uuid, "Move back", "", []).value
         sync(left, right)
         right.logic.board_payload()
@@ -449,7 +448,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         time.sleep(0.002)
         right.logic.move_card(card.uuid, second.uuid, 0)
-        payload = right.session.get_subtree(board.uuid)
+        payload = right.session.get_subtree(initiative.uuid)
         left.session.apply_peer_subtree(
             right.peer_addr,
             ProtocolNode.from_dict(payload["subtree"]),
@@ -462,11 +461,11 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_accepts_second_move_by_same_origin_after_agreement(self):
         left = self.runtime(8401)
         right = self.runtime(8402)
-        board = left.logic.ensure_board()
-        connect(left, right, board.uuid)
+        initiative = left.logic.ensure_initiative()
+        connect(left, right, initiative.uuid)
         left.logic.set_auto_adopt_mode("always")
         right.logic.set_auto_adopt_mode("always")
-        todo, doing, done = left.logic.columns(board)[:3]
+        todo, doing, done = left.logic.columns(initiative)[:3]
 
         # Right authors the card and remains its origin through two moves.
         card = right.logic.create_card(done.uuid, "Move twice", "", []).value
@@ -490,7 +489,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         incoming = next(
             event
             for event in left.session.analyze_peer_transitions(
-                right.peer_addr, board.uuid,
+                right.peer_addr, initiative.uuid,
             )
             if event["node_uuid"] == card.uuid
         )
@@ -509,11 +508,11 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_not_owner_skips_only_cards_i_own(self):
         left = self.runtime(8369)
         right = self.runtime(8370)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("always")
-        column = left.logic.columns(board)[0]
+        column = left.logic.columns(initiative)[0]
         right_id = right.logic.user_profile().uuid
         left_id = left.logic.user_profile().uuid
         owned_by_me = left.logic.create_card(
@@ -542,11 +541,11 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_not_member_skips_any_card_im_on(self):
         left = self.runtime(8371)
         right = self.runtime(8372)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("always")
-        column = left.logic.columns(board)[0]
+        column = left.logic.columns(initiative)[0]
         right_id = right.logic.user_profile().uuid
         im_a_member = left.logic.create_card(
             column.uuid, "I'm a member", "", [right_id],
@@ -581,11 +580,11 @@ class KanbanNewLogicTests(unittest.TestCase):
         """
         left = self.runtime(8545)
         right = self.runtime(8546)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("always")
-        column = left.logic.columns(board)[0]
+        column = left.logic.columns(initiative)[0]
         right_id = right.logic.user_profile().uuid
         left_id = left.logic.user_profile().uuid
         # A card I'm on but don't own: held by "not_member", taken by
@@ -616,11 +615,11 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_switching_to_always_adopts_without_waiting_for_the_peer(self):
         left = self.runtime(8547)
         right = self.runtime(8548)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("always")
-        column = left.logic.columns(board)[0]
+        column = left.logic.columns(initiative)[0]
         card = left.logic.create_card(column.uuid, "Card", "", []).value
         sync(left, right)
         right.logic.board_payload()
@@ -643,11 +642,11 @@ class KanbanNewLogicTests(unittest.TestCase):
         """Reconsidering asks the new mode; it does not wave changes through."""
         left = self.runtime(8549)
         right = self.runtime(8550)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("always")
-        column = left.logic.columns(board)[0]
+        column = left.logic.columns(initiative)[0]
         right_id = right.logic.user_profile().uuid
         card = left.logic.create_card(
             column.uuid, "Mine", "", [right_id],
@@ -669,9 +668,9 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_not_member_auto_adopts_new_empty_column_and_its_order(self):
         left = self.runtime(8375)
         right = self.runtime(8376)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("not_member")
 
         column = left.logic.create_column("Peer column").value
@@ -694,9 +693,9 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_not_member_adopts_new_column_then_filters_its_cards(self):
         left = self.runtime(8377)
         right = self.runtime(8378)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("not_member")
         right_id = right.logic.user_profile().uuid
 
@@ -717,17 +716,17 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_not_owner_declines_column_deletion_holding_my_card(self):
         # Deleting a container removes its whole subtree at the protocol level
-        # (no orphans). So under not_owner, Kanban must decline a column
+        # (no orphans). So under not_owner, S-Initiative must decline a column
         # deletion while it still holds a card I own - otherwise a later prune
         # of the deleted column would take my card with it. The column stays
         # as a divergence to resolve by hand; both it and my card survive.
         left = self.runtime(8373)
         right = self.runtime(8374)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("always")
-        column = left.logic.columns(board)[0]
+        column = left.logic.columns(initiative)[0]
         right_id = right.logic.user_profile().uuid
         my_card = left.logic.create_card(
             column.uuid, "Right's card", "", [right_id], owner=right_id,
@@ -754,12 +753,12 @@ class KanbanNewLogicTests(unittest.TestCase):
         left = self.runtime(8356)
         middle = self.runtime(8357)
         right = self.runtime(8358)
-        board = left.logic.ensure_board()
-        connect(left, middle, board.uuid)
-        connect(middle, right, board.uuid)
+        initiative = left.logic.ensure_initiative()
+        connect(left, middle, initiative.uuid)
+        connect(middle, right, initiative.uuid)
         middle.logic.set_auto_adopt_mode("always")
         right.logic.set_auto_adopt_mode("always")
-        first, second = left.logic.columns(board)[:2]
+        first, second = left.logic.columns(initiative)[:2]
 
         def tick():
             sync(left, middle, right)
@@ -785,10 +784,10 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_move_keeps_exported_hashes_valid(self):
         left = self.runtime(8315)
         right = self.runtime(8316)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
-        first, second = left.logic.columns(board)[:2]
+        connect(left, right, initiative.uuid)
+        first, second = left.logic.columns(initiative)[:2]
 
         card = left.logic.create_card(first.uuid, "Hash safe", "", []).value
         sync(left, right)
@@ -810,12 +809,12 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_off_keeps_difference_until_adopt(self):
         left = self.runtime(8305)
         right = self.runtime(8306)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("never")
 
-        column = left.logic.columns(board)[0]
+        column = left.logic.columns(initiative)[0]
         card = left.logic.create_card(column.uuid, "Needs adopt", "", []).value
         sync(left, right)
         right.logic.board_payload()
@@ -832,12 +831,12 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_roll_back_restores_my_previous_card_revision(self):
         runtime = self.runtime(8309)
-        board = runtime.logic.ensure_board()
-        column = runtime.logic.columns(board)[0]
+        initiative = runtime.logic.ensure_initiative()
+        column = runtime.logic.columns(initiative)[0]
         card = runtime.logic.create_card(column.uuid, "Original", "", []).value
         runtime.session.apply_peer_subtree(
             "http://peer",
-            ProtocolNode.from_dict(runtime.session.protocol.index[board.uuid].to_dict()),
+            ProtocolNode.from_dict(runtime.session.protocol.index[initiative.uuid].to_dict()),
             runtime.session.protocol.root.uuid,
         )
         previous = runtime.session.get_cached_peer_subtree("http://peer", card.uuid)
@@ -858,10 +857,10 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_adopting_column_fields_preserves_changed_cards(self):
         left = self.runtime(8373)
         right = self.runtime(8374)
-        board = left.logic.ensure_board()
-        column = left.logic.columns(board)[0]
+        initiative = left.logic.ensure_initiative()
+        column = left.logic.columns(initiative)[0]
         card = left.logic.create_card(column.uuid, "Original card", "", []).value
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("never")
 
         left.logic.rename_column(column.uuid, "Renamed column")
@@ -884,24 +883,24 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_adopting_board_fields_preserves_columns_and_cards(self):
         left = self.runtime(8375)
         right = self.runtime(8376)
-        board = left.logic.ensure_board()
-        column = left.logic.columns(board)[0]
+        initiative = left.logic.ensure_initiative()
+        column = left.logic.columns(initiative)[0]
         card = left.logic.create_card(column.uuid, "Original card", "", []).value
-        connect(left, right, board.uuid)
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("never")
 
-        left.logic.rename_board(board.uuid, "Renamed board")
+        left.logic.rename_initiative(initiative.uuid, "Renamed initiative")
         left.logic.rename_column(column.uuid, "Peer column")
         left.logic.update_card(card.uuid, "Peer card", "", [])
         sync(left, right)
         right.logic.board_payload()
 
-        adopted = right.logic.accept_peer_node(left.peer_addr, board.uuid)
+        adopted = right.logic.accept_peer_node(left.peer_addr, initiative.uuid)
 
         self.assertEqual(adopted.status, "ok")
         self.assertEqual(
-            right.session.protocol.index[board.uuid].data["name"],
-            "Renamed board",
+            right.session.protocol.index[initiative.uuid].data["name"],
+            "Renamed initiative",
         )
         self.assertNotEqual(
             right.session.protocol.index[column.uuid].data["name"],
@@ -915,22 +914,22 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_new_shared_board_defaults_to_auto_adopt_always(self):
         left = self.runtime(8361)
         right = self.runtime(8362)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
 
-        share = connect(left, right, board.uuid)
+        share = connect(left, right, initiative.uuid)
 
         self.assertEqual(share["status"], "ok")
-        self.assertEqual(right.logic.ensure_board().uuid, board.uuid)
+        self.assertEqual(right.logic.ensure_initiative().uuid, initiative.uuid)
         self.assertEqual(right.logic.auto_adopt_mode(), "always")
 
     def test_reconnecting_existing_board_retains_auto_adopt_setting(self):
         left = self.runtime(8367)
         right = self.runtime(8368)
-        board = left.logic.ensure_board()
-        connect(left, right, board.uuid)
+        initiative = left.logic.ensure_initiative()
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("not_member")
 
-        reconnect = connect(left, right, board.uuid)
+        reconnect = connect(left, right, initiative.uuid)
 
         self.assertEqual(reconnect["status"], "ok")
         self.assertEqual(right.logic.auto_adopt_mode(), "not_member")
@@ -938,10 +937,10 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_adopt_peer_absence_deletes_local_card(self):
         left = self.runtime(8344)
         right = self.runtime(8345)
-        board = left.logic.ensure_board()
-        connect(left, right, board.uuid)
+        initiative = left.logic.ensure_initiative()
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("never")
-        right_board = right.logic.ensure_board()
+        right_board = right.logic.ensure_initiative()
         column = right.logic.columns(right_board)[0]
         card = right.logic.create_card(column.uuid, "Only local", "", []).value
 
@@ -962,10 +961,10 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_moved_card_transition_collapses_missing_pair(self):
         left = self.runtime(8346)
         right = self.runtime(8347)
-        board = left.logic.ensure_board()
-        connect(left, right, board.uuid)
+        initiative = left.logic.ensure_initiative()
+        connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("always")
-        first, second = left.logic.columns(board)[:2]
+        first, second = left.logic.columns(initiative)[:2]
         card = left.logic.create_card(first.uuid, "Move me", "", []).value
         sync(left, right)
         right.logic.board_payload()
@@ -991,24 +990,24 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_transition_event_prevents_stale_peer_rollback(self):
         left = self.runtime(8307)
         right = self.runtime(8308)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
-        column = left.logic.columns(board)[0]
+        connect(left, right, initiative.uuid)
+        column = left.logic.columns(initiative)[0]
 
         card = left.logic.create_card(column.uuid, "Local", "", []).value
         payload = left.logic.board_payload()
 
         self.assertIn(card.uuid, left.session.protocol.index)
         # The new card stays in flight until the peer observes it; the
-        # board is not re-revisioned by a descendant creation, so it stays
+        # initiative is not re-revisioned by a descendant creation, so it stays
         # in_agreement (see the node_hash/subtree_hash split).
         self.assertEqual(
             payload["transition_by_node"][card.uuid]["stage"],
             "in_flight",
         )
         self.assertEqual(
-            payload["transition_by_node"][board.uuid]["type"],
+            payload["transition_by_node"][initiative.uuid]["type"],
             "in_agreement",
         )
 
@@ -1093,10 +1092,10 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.profile.set_profile("Bob")
         alice = left.logic.user_profile().uuid
         bob = right.logic.user_profile().uuid
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
-        first, second = left.logic.columns(board)[:2]
+        connect(left, right, initiative.uuid)
+        first, second = left.logic.columns(initiative)[:2]
         card = left.logic.create_card(
             first.uuid, "Radar", "Initial", [alice], alice,
         ).value
@@ -1144,13 +1143,13 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_rename_board_updates_board_list(self):
         runtime = self.runtime(8315)
-        board = runtime.logic.ensure_board()
+        initiative = runtime.logic.ensure_initiative()
 
-        result = runtime.logic.rename_board(board.uuid, "Planning")
+        result = runtime.logic.rename_initiative(initiative.uuid, "Planning")
 
         self.assertEqual(result.status, "ok")
-        self.assertEqual(runtime.logic.ensure_board().data["name"], "Planning")
-        self.assertEqual(runtime.logic.boards()[0].data["name"], "Planning")
+        self.assertEqual(runtime.logic.ensure_initiative().data["name"], "Planning")
+        self.assertEqual(runtime.logic.initiatives()[0].data["name"], "Planning")
 
     def test_user_profile_is_single_shared_topic(self):
         runtime = self.runtime(8316)
@@ -1191,8 +1190,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         right = self.runtime(8334)
         left.profile.set_profile("Alice", "")
 
-        board = left.logic.ensure_board()
-        invite = connect(left, right, board.uuid)
+        initiative = left.logic.ensure_initiative()
+        invite = connect(left, right, initiative.uuid)
 
         self.assertEqual(invite["status"], "ok")
         left_profile = left.logic.user_profile()
@@ -1226,28 +1225,28 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_connect_shares_board_and_profile_topics(self):
         left = self.runtime(8322)
         right = self.runtime(8323)
-        left.logic.ensure_board()
+        left.logic.ensure_initiative()
         left.profile.set_profile("Alice", "")
 
-        board = left.logic.ensure_board()
-        result = connect(left, right, board.uuid)
+        initiative = left.logic.ensure_initiative()
+        result = connect(left, right, initiative.uuid)
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["channels_used"], ["mailbox"])
-        # A share carries the board *and* the sharer's profile, so each side
-        # ends up tracking the other's identity topic as well as the board.
+        # A share carries the initiative *and* the sharer's profile, so each side
+        # ends up tracking the other's identity topic as well as the initiative.
         left_identity = left.logic.user_profile().uuid
         right_identity = right.logic.user_profile().uuid
         self.assertEqual(
             left.session.protocol.index[left_identity].data["type"],
             "shared_user_profile",
         )
-        self.assertIn(board.uuid, right.session.protocol.index)
-        self.assertIn(board.uuid, left.session.peer_topic_sets[right.peer_addr])
+        self.assertIn(initiative.uuid, right.session.protocol.index)
+        self.assertIn(initiative.uuid, left.session.peer_topic_sets[right.peer_addr])
         # Each side ends up holding the other's profile. The invitee is given
         # the inviter's identity topic outright; the inviter reads the
         # invitee's from the heartbeat it writes beside its publications,
-        # which is what makes the invitee appear on the board at all.
+        # which is what makes the invitee appear on the initiative at all.
         self.assertIsNotNone(right.session.get_cached_peer_subtree(
             left.peer_addr, left_identity,
         ))
@@ -1258,15 +1257,15 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_connect_adds_selected_board_topic(self):
         left = self.runtime(8326)
         right = self.runtime(8327)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
 
-        share = connect(left, right, board.uuid)
+        share = connect(left, right, initiative.uuid)
 
         self.assertEqual(share["status"], "ok")
-        self.assertIn(board.uuid, right.session.protocol.index)
-        self.assertIn(board.uuid, left.session.peer_topic_sets[right.peer_addr])
-        self.assertIn(board.uuid, right.session.peer_topic_sets[left.peer_addr])
+        self.assertIn(initiative.uuid, right.session.protocol.index)
+        self.assertIn(initiative.uuid, left.session.peer_topic_sets[right.peer_addr])
+        self.assertIn(initiative.uuid, right.session.peer_topic_sets[left.peer_addr])
         for topic_uuid in right.session.peer_topic_sets[left.peer_addr]:
             if topic_uuid != left.logic.user_profile().uuid:
                 self.assertIn(topic_uuid, left.session.protocol.index)
@@ -1283,24 +1282,24 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_share_board_connects_identity_when_needed(self):
         left = self.runtime(8335)
         right = self.runtime(8336)
-        board = left.logic.create_board("Glow").value
+        initiative = left.logic.create_initiative("Glow").value
 
-        share = connect(left, right, board)
+        share = connect(left, right, initiative)
 
         self.assertEqual(share["status"], "ok")
-        self.assertIn(board, right.session.protocol.index)
-        self.assertIn(board, left.session.peer_topic_sets[right.peer_addr])
-        self.assertIn(board, right.session.peer_topic_sets[left.peer_addr])
+        self.assertIn(initiative, right.session.protocol.index)
+        self.assertIn(initiative, left.session.peer_topic_sets[right.peer_addr])
+        self.assertIn(initiative, right.session.peer_topic_sets[left.peer_addr])
 
     def test_a_board_shared_onward_does_not_carry_the_sharer_s_other_boards(self):
-        # The middle client passes on a board it was given. What travels is
-        # that board: its own private one stays private, and so does every
+        # The middle client passes on an initiative it was given. What travels is
+        # that initiative: its own private one stays private, and so does every
         # topic nobody assigned to the channel.
         first = self.runtime(8328)
         middle = self.runtime(8329)
         third = self.runtime(8330)
-        shared_board = first.logic.ensure_board()
-        middle_private_board = middle.logic.create_board("Middle private").value
+        shared_board = first.logic.ensure_initiative()
+        middle_private_board = middle.logic.create_initiative("Middle private").value
         connect(first, middle)
         connect(first, middle, shared_board.uuid)
         connect(middle, third)
@@ -1320,16 +1319,16 @@ class KanbanNewLogicTests(unittest.TestCase):
         )
 
     def test_a_board_shared_onward_carries_only_that_board_from_its_owner(self):
-        # third is given one board by middle. It ends up seeing first, who
-        # also writes that board - people on a shared topic are visible on
-        # it, and have to be, or the board shows anonymous authors. What it
+        # third is given one initiative by middle. It ends up seeing first, who
+        # also writes that initiative - people on a shared topic are visible on
+        # it, and have to be, or the initiative shows anonymous authors. What it
         # does not get is anything else first has.
         first = self.runtime(8345)
         middle = self.runtime(8346)
         third = self.runtime(8347)
         first.profile.set_profile("Alice", "https://example.test/a.png")
-        shared_board = first.logic.ensure_board()
-        first_private_board = first.logic.create_board("First private").value
+        shared_board = first.logic.ensure_initiative()
+        first_private_board = first.logic.create_initiative("First private").value
         connect(first, middle)
         connect(first, middle, shared_board.uuid)
         connect(middle, third)
@@ -1350,7 +1349,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         first.profile.set_profile("Alice", "")
         middle.profile.set_profile("Bob", "")
         third.profile.set_profile("Cynthia", "")
-        shared_board = first.logic.ensure_board()
+        shared_board = first.logic.ensure_initiative()
 
         connect(first, middle, shared_board.uuid)
         share = connect(first, third, shared_board.uuid)
@@ -1364,7 +1363,7 @@ class KanbanNewLogicTests(unittest.TestCase):
             ),
         )
 
-    def test_kanban_caches_topic_for_an_inactive_application(self):
+    def test_initiative_caches_topic_for_an_inactive_application(self):
         left = self.runtime(8324)
         right = self.runtime(8325)
         # A topic S-Initiative knows nothing about, published by a client that
@@ -1391,8 +1390,8 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_first_participant_is_owner(self):
         runtime = self.runtime(8317)
         runtime.profile.set_profile("Alice", "")
-        board = runtime.logic.ensure_board()
-        column = runtime.logic.columns(board)[0]
+        initiative = runtime.logic.ensure_initiative()
+        column = runtime.logic.columns(initiative)[0]
 
         card = runtime.logic.create_card(
             column.uuid,
@@ -1406,8 +1405,8 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_card_participants_are_ordered(self):
         runtime = self.runtime(8318)
-        board = runtime.logic.ensure_board()
-        column = runtime.logic.columns(board)[0]
+        initiative = runtime.logic.ensure_initiative()
+        column = runtime.logic.columns(initiative)[0]
 
         card = runtime.logic.create_card(
             column.uuid,
@@ -1429,8 +1428,8 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_update_card_rejects_stale_expected_content_hash(self):
         # Review U-3 lost-update guard.
         runtime = self.runtime(8319)
-        board = runtime.logic.ensure_board()
-        column = runtime.logic.columns(board)[0]
+        initiative = runtime.logic.ensure_initiative()
+        column = runtime.logic.columns(initiative)[0]
         card = runtime.logic.create_card(column.uuid, "Task", "", []).value
         stale_hash = card.content_hash
 
@@ -1463,8 +1462,8 @@ class KanbanNewLogicTests(unittest.TestCase):
         # leaving its own fields untouched. Guarding on the subtree hash made
         # the user's own comment reject their own save.
         runtime = self.runtime(8320)
-        board = runtime.logic.ensure_board()
-        column = runtime.logic.columns(board)[0]
+        initiative = runtime.logic.ensure_initiative()
+        column = runtime.logic.columns(initiative)[0]
         card = runtime.logic.create_card(column.uuid, "Task", "", []).value
         opened_with = card.content_hash
 
@@ -1485,8 +1484,8 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_card_owner_must_be_a_participant(self):
         runtime = self.runtime(8366)
-        board = runtime.logic.ensure_board()
-        column = runtime.logic.columns(board)[0]
+        initiative = runtime.logic.ensure_initiative()
+        column = runtime.logic.columns(initiative)[0]
 
         card = runtime.logic.create_card(
             column.uuid, "Task", "", ["alice", "bob"], owner="carol",
@@ -1496,8 +1495,8 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_card_owner_kept_when_valid(self):
         runtime = self.runtime(8367)
-        board = runtime.logic.ensure_board()
-        column = runtime.logic.columns(board)[0]
+        initiative = runtime.logic.ensure_initiative()
+        column = runtime.logic.columns(initiative)[0]
 
         card = runtime.logic.create_card(
             column.uuid, "Task", "", ["alice", "bob"], owner="alice",
@@ -1507,8 +1506,8 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_card_owner_clears_when_removed_from_participants(self):
         runtime = self.runtime(8368)
-        board = runtime.logic.ensure_board()
-        column = runtime.logic.columns(board)[0]
+        initiative = runtime.logic.ensure_initiative()
+        column = runtime.logic.columns(initiative)[0]
         card = runtime.logic.create_card(
             column.uuid, "Task", "", ["alice", "bob"], owner="alice",
         ).value
@@ -1524,9 +1523,9 @@ class KanbanNewLogicTests(unittest.TestCase):
         right = self.runtime(8355)
         for runtime in (left, middle, right):
             runtime.profile.set_profile(runtime.address, "")
-        board = left.logic.ensure_board()
-        connect(left, middle, board.uuid)
-        connect(left, right, board.uuid)
+        initiative = left.logic.ensure_initiative()
+        connect(left, middle, initiative.uuid)
+        connect(left, right, initiative.uuid)
 
         def tick():
             sync(left, middle, right)
@@ -1535,7 +1534,7 @@ class KanbanNewLogicTests(unittest.TestCase):
 
         def card_ids(runtime):
             out = []
-            board_node = runtime.logic.ensure_board()
+            board_node = runtime.logic.ensure_initiative()
             for column in runtime.logic.columns(board_node):
                 out.extend(card.uuid for card in runtime.logic.cards(column))
             return out
@@ -1545,7 +1544,7 @@ class KanbanNewLogicTests(unittest.TestCase):
             (middle, "B card"),
             (right, "C card"),
         ):
-            column = runtime.logic.columns(runtime.logic.ensure_board())[0]
+            column = runtime.logic.columns(runtime.logic.ensure_initiative())[0]
             runtime.logic.create_card(column.uuid, name, "", [])
             tick()
 
@@ -1569,18 +1568,18 @@ class KanbanNewLogicTests(unittest.TestCase):
     def test_auto_adopt_updates_board_not_currently_selected(self):
         left = self.runtime(8319)
         right = self.runtime(8320)
-        board1 = left.logic.ensure_board()
-        board2 = left.logic.create_board("Board 2").value
-        left.logic.select_board(board1.uuid)
-        right.logic.ensure_board()
+        board1 = left.logic.ensure_initiative()
+        board2 = left.logic.create_initiative("Board 2").value
+        left.logic.select_initiative(board1.uuid)
+        right.logic.ensure_initiative()
         connect(left, right)
         connect(left, right, board1.uuid)
         connect(left, right, board2)
-        right.logic.select_board(board2)
+        right.logic.select_initiative(board2)
         right.logic.set_auto_adopt_mode("never")
-        right.logic.select_board(board1.uuid)
+        right.logic.select_initiative(board1.uuid)
         right.logic.set_auto_adopt_mode("always")
-        right.logic.select_board(board2)
+        right.logic.select_initiative(board2)
 
         column = left.logic.columns(board1)[0]
         card = left.logic.create_card(column.uuid, "Board 1 card", "", []).value
@@ -1588,50 +1587,50 @@ class KanbanNewLogicTests(unittest.TestCase):
         right.logic.board_payload()
 
         self.assertIn(card.uuid, right.session.protocol.index)
-        self.assertEqual(right.logic.ensure_board().uuid, board2)
+        self.assertEqual(right.logic.ensure_initiative().uuid, board2)
 
     def test_selected_board_is_not_overridden_by_active_topic(self):
         runtime = self.runtime(8321)
-        shared = runtime.logic.ensure_board()
-        local = runtime.logic.create_board("Local Board").value
+        shared = runtime.logic.ensure_initiative()
+        local = runtime.logic.create_initiative("Local Board").value
         runtime.session.start_discussion(shared.uuid)
 
-        result = runtime.logic.select_board(local)
+        result = runtime.logic.select_initiative(local)
         payload = runtime.logic.board_payload()
 
         self.assertEqual(result.status, "ok")
-        self.assertEqual(payload["board"]["uuid"], local)
+        self.assertEqual(payload["initiative"]["uuid"], local)
 
     def test_board_selection_is_local_app_metadata(self):
         runtime = self.runtime(8359)
-        board = runtime.logic.ensure_board()
+        initiative = runtime.logic.ensure_initiative()
         root_before = runtime.session.protocol.root.state_hash
 
-        result = runtime.logic.select_board(board.uuid)
+        result = runtime.logic.select_initiative(initiative.uuid)
 
         self.assertEqual(result.status, "ok")
         self.assertEqual(runtime.session.protocol.root.state_hash, root_before)
         self.assertEqual(
-            runtime.session.app_metadata["apps"]["initiative"]["selected_board_uuid"],
-            board.uuid,
+            runtime.session.app_metadata["apps"]["initiative"]["selected_initiative_uuid"],
+            initiative.uuid,
         )
 
     def test_auto_adopt_is_local_app_metadata(self):
         runtime = self.runtime(8360)
-        board = runtime.logic.ensure_board()
+        initiative = runtime.logic.ensure_initiative()
         root_before = runtime.session.protocol.root.state_hash
 
         result = runtime.logic.set_auto_adopt_mode("never")
 
         self.assertEqual(result.status, "ok")
-        self.assertEqual(runtime.logic.auto_adopt_mode(board), "never")
+        self.assertEqual(runtime.logic.auto_adopt_mode(initiative), "never")
         self.assertEqual(runtime.session.protocol.root.state_hash, root_before)
 
     def test_create_agenda_item_defaults_to_no_priority(self):
-        # logic.ensure_board() returns a read-only snapshot (Session.protocol
+        # logic.ensure_initiative() returns a read-only snapshot (Session.protocol
         # is a ReadOnlyProtocolView) - it goes stale the moment a mutation
         # happens, so agenda_items() is called with no argument throughout,
-        # letting it re-resolve the board fresh each time.
+        # letting it re-resolve the initiative fresh each time.
         runtime = self.runtime(8378)
         logic: InitiativeLogic = runtime.logic
 
@@ -1812,31 +1811,31 @@ class KanbanNewLogicTests(unittest.TestCase):
         self.assertEqual(out["node-1"]["events"][0]["priority"], (6, 4))
 
     def test_the_last_board_can_be_deleted(self):
-        # Refusing this left a host with no way to clear boards it no longer
-        # wants; nothing downstream needs a board to exist.
+        # Refusing this left a host with no way to clear initiatives it no longer
+        # wants; nothing downstream needs an initiative to exist.
         runtime = self.runtime(8386)
         logic: InitiativeLogic = runtime.logic
-        board = logic.ensure_board()
+        initiative = logic.ensure_initiative()
 
-        result = logic.delete_board(board.uuid)
+        result = logic.delete_initiative(initiative.uuid)
 
         self.assertEqual(result.status, "ok")
-        self.assertEqual(logic.boards(), [])
+        self.assertEqual(logic.initiatives(), [])
 
     def test_deleting_the_last_board_forgets_the_selection(self):
-        # A remembered uuid would otherwise hand back the deleted board,
+        # A remembered uuid would otherwise hand back the deleted initiative,
         # which survives in the index until its peers confirm the deletion.
         runtime = self.runtime(8387)
         logic: InitiativeLogic = runtime.logic
-        deleted = logic.ensure_board()
+        deleted = logic.ensure_initiative()
 
-        logic.delete_board(deleted.uuid)
-        replacement = logic.ensure_board()
+        logic.delete_initiative(deleted.uuid)
+        replacement = logic.ensure_initiative()
 
         self.assertNotEqual(replacement.uuid, deleted.uuid)
         self.assertFalse(replacement.deleted)
         self.assertEqual(
-            [node.uuid for node in logic.boards()], [replacement.uuid],
+            [node.uuid for node in logic.initiatives()], [replacement.uuid],
         )
 
     def setUp(self):
@@ -1845,15 +1844,15 @@ class KanbanNewLogicTests(unittest.TestCase):
 
     def test_the_same_move_made_twice_at_once_is_not_a_conflict(self):
         # Two clients drag the same card to the same column at the same
-        # moment. They agree on everything the board shows and differ only
+        # moment. They agree on everything the initiative shows and differ only
         # in the wall clock each stamped the move with - which nobody can
-        # decide, because either answer draws an identical board.
+        # decide, because either answer draws an identical initiative.
         left = self.runtime(8541)
         right = self.runtime(8542)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
-        todo, doing, done = left.logic.columns(board)
+        connect(left, right, initiative.uuid)
+        todo, doing, done = left.logic.columns(initiative)
         card = left.logic.create_card(doing.uuid, "BB", "", []).value
         sync(left, right)
         left.logic.set_auto_adopt_mode("never")
@@ -1871,7 +1870,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         )
         for side in (left, right):
             unsettled = [
-                event for event in side.logic.transition_events(board.uuid)
+                event for event in side.logic.transition_events(initiative.uuid)
                 if event.get("node_uuid") == card.uuid
                 and event["type"] != "in_agreement"
             ]
@@ -1883,10 +1882,10 @@ class KanbanNewLogicTests(unittest.TestCase):
         # something a person can see, and that stays theirs to settle.
         left = self.runtime(8543)
         right = self.runtime(8544)
-        board = left.logic.ensure_board()
+        initiative = left.logic.ensure_initiative()
         connect(left, right)
-        connect(left, right, board.uuid)
-        todo, doing, done = left.logic.columns(board)
+        connect(left, right, initiative.uuid)
+        todo, doing, done = left.logic.columns(initiative)
         card = left.logic.create_card(doing.uuid, "BB", "", []).value
         sync(left, right)
         left.logic.set_auto_adopt_mode("never")
@@ -1900,7 +1899,7 @@ class KanbanNewLogicTests(unittest.TestCase):
         peer = left.session.get_cached_peer_subtree(right.peer_addr, card.uuid)
         self.assertNotEqual(local.parent_uuid, peer.parent_uuid)
         unsettled = [
-            event for event in left.logic.transition_events(board.uuid)
+            event for event in left.logic.transition_events(initiative.uuid)
             if event.get("node_uuid") == card.uuid
             and event["type"] != "in_agreement"
         ]
