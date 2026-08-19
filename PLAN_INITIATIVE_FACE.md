@@ -1,4 +1,4 @@
-# Implementation plan — the initiative face
+# Implementation plan — the mandate face
 
 `DESIGN_INITIATIVE.md` says what an initiative is. `DESIGN_INITIATIVE_UI.md`
 says how it is shown. Neither says in what order to build it, and the order
@@ -18,7 +18,7 @@ the topic root is `initiative`, `kanban_board` is gone, the `board_uuid` /
 `initiative_need`, `initiative_section`, `initiative_clause`,
 `initiative_intent`, `initiative_milestone`, `initiative_reality` and
 `initiative_investment` appear in no source file in any of the four
-repositories. The only field of the initiative face that exists is `objective`,
+repositories. The only field of the mandate face that exists is `objective`,
 and it is not on this application's page at all — it is editable only from Board
 of Boards, through the Cockpit's forwarding route.
 
@@ -130,11 +130,11 @@ types at all.
 
 **Page** — `initiative.html`:
 
-- A `<section id="initiative">` beside `<section id="board">` in `<main>`, and
+- A `<section id="mandate">` beside `<section id="board">` in `<main>`, and
   the two-item switch above both, at the content area's top left. Not the shell
   bar: §3 gives two independent reasons and `setAppActions` is gone.
 - `loadBoard()` fetches once and renders the visible face. The board face keeps
-  `reconcileDOM`; the initiative face full-renders.
+  `reconcileDOM`; the mandate face full-renders.
 - An `ephemeral` object in JS for which face is showing, which disclosure is
   open, and any half-typed composer — keyed by node uuid, reapplied on render.
   Not in the DOM. The 1500ms poll closes anything the DOM is trusted to
@@ -163,9 +163,9 @@ types at all.
 
 **Tests:** the dates round-trip; a claim with an empty value clears; the page
 reads no payload key the logic does not write; a source scan asserting the
-initiative face does not call `reconcileDOM` and the board face still does.
+mandate face does not call `reconcileDOM` and the board face still does.
 
-**Done when:** you can switch to the initiative face, see the objective and the
+**Done when:** you can switch to the mandate face, see the objective and the
 four dates, and edit the objective and the two planned dates without the poll
 eating a keystroke.
 
@@ -174,7 +174,7 @@ round-tripping, one end planned without disturbing the other, a cleared date
 leaving the field absent rather than empty, a non-ISO date refused, a claim
 taken back, the claim command refusing a planned field, both routes reaching
 their commands, a two-client disagreement on `actual_start` described as
-`Started` rather than merged, and — from the page's side — that the initiative
+`Started` rather than merged, and — from the page's side — that the mandate
 face rebuilds while the board face patches, that it will not rebuild under the
 caret, that it skips on payload JSON and never on `revision`, that the switch
 is inside `<main>`, and that no storage remembers the face.
@@ -410,7 +410,7 @@ dispatches, and neither renderer reaches into the other's DOM.
 **The full-render/patch trap this codebase has already met.** The reason the new
 face full-renders is that `reconcileDOM` needs a create/update pair per node type
 and seven new types is seven new ways for a pair to fall out of step. If a patch
-function is ever added to the initiative face, it arrives with its twin or it
+function is ever added to the mandate face, it arrives with its twin or it
 does not arrive.
 
 **Payload growth.** `board_payload` is fetched every 1500ms and already carries

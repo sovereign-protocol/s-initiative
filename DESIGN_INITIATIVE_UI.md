@@ -1,7 +1,7 @@
 # Interface — S-Initiative
 
 Status: **proposed, except §3, §8, §9 and the head of §5, which are done.**
-The switch exists, the initiative face exists and holds its head region, and
+The switch exists, the mandate face exists and holds its head region, and
 the two faces render by the two regimes §8 sets out. The seven node types in
 §4, §5 and §6 are still a specification; `PLAN_INITIATIVE_FACE.md` is the
 order they arrive in.
@@ -20,19 +20,34 @@ once and `s-team/DESIGN_UI.md` records what it cost.
 
 ## 1. Two faces
 
-**The board** is the next few days. **The initiative** is the thing itself.
+**The board** is the next few days. **The mandate** is what was agreed.
 
 This is `DESIGN_INITIATIVE.md` §1 taken literally — "A Kanban board is how the
 next few days of it are organised. It is not the initiative" — and it is the
 only sentence needed to justify a second surface. The application has had one
 face because the board *was* the topic. It is not any more.
 
-**The names are those two.** Not "Definition", which is abstract and undersells
-the page: Assessed Impact and Resources are not definitions of anything, they
-are what happened and what it costs. Not "Charter" or "Brief", which are words
-a reader has to be taught. The initiative and the board are the two objects the
-domain already has, and naming a face after the thing it shows needs no
-explanation — which is the same rule U8 states about act glyphs.
+**The second face is not called "Initiative", and that is a correction.** This
+document first named it after the thing it shows, on the rule that doing so
+needs no explanation. It does not work here: the topic *is* the initiative, the
+shell bar already says so above both faces, and a switch reading
+"Board | Initiative" gives one word to a part and to the whole. That is the
+stutter §9 takes trouble to avoid between a face and its topic, arriving in the
+one place a reader actually looks.
+
+**Mandate**, because the face is where you agree (§2) and a mandate is what was
+agreed: the objective, whose needs it answers, the impact intended, what it
+costs, and how it will be gone about. Assessed Impact sits under it without
+strain — reporting against a mandate is part of holding one, which is more than
+"Definition" could carry, and that was the objection to *that* name. Not
+"Charter" or "Brief", which are still words a reader has to be taught; a
+sovereign organisation's vocabulary already has this one.
+
+**The face's own identifiers say `mandate`, and everything else still says
+`initiative`.** `#mandate`, `renderMandate` and `ephemeral.face` are the face;
+`state.initiative` is what the face is showing. That is §9's rule applied to
+the second face, and it happens to resolve the ambiguity the first name left in
+the page.
 
 **Opening lands on the board, every time.** Not the last face used, and not
 conditioned on how full the initiative is. A remembered face means one link
@@ -47,18 +62,18 @@ is answered by the strip in §4 rather than by an exception on day one.
 
 Not by node type. **By the act.**
 
-The initiative face is where you agree. The board face is where you act. Sorted
+The mandate face is where you agree. The board face is where you act. Sorted
 that way, most of `DESIGN_INITIATIVE.md` §3 lands where you would expect and
 three fields do not:
 
 | Field                                                                                                  | Face                                                       | Why                                                          |
 | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- | ------------------------------------------------------------ |
-| `objective`, `initiative_need`, `initiative_section`, `initiative_clause`, `initiative_intent`     | the initiative                                             | agreeing                                                     |
-| `initiative_milestone.title`, `.order`, `.planned_at`                                                  | the initiative                                             | planning                                                     |
-| `planned_start`, `planned_end`                                                                         | the initiative                                             | planning                                                     |
+| `objective`, `initiative_need`, `initiative_section`, `initiative_clause`, `initiative_intent`     | the mandate                                                | agreeing                                                     |
+| `initiative_milestone.title`, `.order`, `.planned_at`                                                  | the mandate                                                | planning                                                     |
+| `planned_start`, `planned_end`                                                                         | the mandate                                                | planning                                                     |
 | **`actual_start`, `actual_end`, `reached_at`**                                                         | **the board**                                              | a claim made on the day it is true                           |
-| `initiative_reality`                                                                                   | both — written on the board, read on the initiative        | observing what just happened, reading what was observed      |
-| `initiative_investment`                                                                                | the initiative                                             | committing what you have                                     |
+| `initiative_reality`                                                                                   | both — written on the board, read on the mandate           | observing what just happened, reading what was observed      |
+| `initiative_investment`                                                                                | the mandate                                                | committing what you have                                     |
 | `topic_link`                                                                                           | neither — Core's, in the bar (U6, U7)                      |                                                              |
 
 The three dates in bold are content by class, and §3 is right about why: two
@@ -114,7 +129,7 @@ faces touch, and it exists because a reference page nobody visits goes stale
 and takes the whole expected-versus-assessed apparatus down with it.
 
 **The milestone is the carrier** because it is the one object that is both a
-plan and a fact. Everything else on the initiative face is one or the other.
+plan and a fact. Everything else on the mandate face is one or the other.
 
 ### What it shows
 
@@ -167,7 +182,7 @@ make the strip an authority over a list it does not own.
 
 The strip asks for an observation, once: a reached milestone that carries an
 intended impact and no `initiative_reality` shows **`Record what happened`**,
-opening the same composer the initiative face uses. It asks and it does not
+opening the same composer the mandate face uses. It asks and it does not
 insist — a prompt that cannot be dismissed is a validation rule about somebody
 else's perception, and §3 is explicit that no observation is *the* record.
 
@@ -193,7 +208,7 @@ question and Board of Boards is where portfolio questions are asked.
 
 ---
 
-## 5. The initiative face
+## 5. The mandate face
 
 One document, seven regions, in this order:
 
@@ -316,19 +331,19 @@ The strip in §4 is the one addition.
 
 ## 8. Rendering
 
-**[DONE]** **The initiative face re-renders fully, guarded, and does not use
+**[DONE]** **The mandate face re-renders fully, guarded, and does not use
 `reconcileDOM`.**
 
 This is a decision against the pattern the board face uses, and the reason is
 already recorded twice. `reconcileDOM(parent, dataItems, keyFn, createFn,
 updateFn)` needs a create/update pair per node type; the board has two and the
-initiative face would add seven. S-Team considered copying the helper for five
+mandate face would add seven. S-Team considered copying the helper for five
 new pairs and refused, naming the failure exactly: "a pair falling out of step
 is a silent bug class this codebase has already met." It has — a full-render
 function updated without its patch twin draws the old thing until something
 forces a rebuild.
 
-So the initiative face takes S-Team's arrangement wholesale:
+So the mandate face takes S-Team's arrangement wholesale:
 
 - Full re-render of the region on every payload.
 - `render()` returns early when `document.activeElement` is inside the document
@@ -353,7 +368,7 @@ condition for it not being drift.
 **The payload keys are a contract with the page and are not the node types.**
 S-Team renamed both together once, in lockstep with its tests, and nothing
 failed while the page read `undefined` and drew an empty document beside a team
-that was there the whole time. Whatever the initiative face reads, the suite
+that was there the whole time. Whatever the mandate face reads, the suite
 asserts from the page's side.
 
 ---

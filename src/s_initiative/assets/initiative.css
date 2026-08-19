@@ -899,7 +899,7 @@ menu button {
 /* The board is display:flex, so [hidden] has to be said louder than the
    rule that lays it out. */
 .board[hidden],
-.initiative-face[hidden] {
+.mandate-face[hidden] {
   display: none;
 }
 
@@ -930,7 +930,7 @@ menu button {
   color: var(--text);
 }
 
-.initiative-face {
+.mandate-face {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -939,14 +939,14 @@ menu button {
 
 /* Always open, directly under the page's own rule: the objective is the
    answer to "what is this" and is the first thing said. */
-.initiative-head {
+.mandate-head {
   border-bottom: 1px solid var(--border);
   margin: 0 auto;
   max-width: 760px;
   padding-bottom: 16px;
 }
 
-.initiative-objective {
+.mandate-objective {
   font-size: 1.15rem;
   line-height: 1.5;
   margin: 0 0 12px;
@@ -954,7 +954,7 @@ menu button {
 
 /* Planned, and claimed where claimed - one line, so the two faces do not
    describe the same four fields in two vocabularies. */
-.initiative-dates {
+.mandate-dates {
   align-items: center;
   color: var(--muted);
   display: flex;
@@ -963,17 +963,17 @@ menu button {
   margin: 0;
 }
 
-.initiative-date {
+.mandate-date {
   align-items: baseline;
   display: inline-flex;
   gap: 6px;
 }
 
-.initiative-date-label {
+.mandate-date-label {
   font-size: 0.85rem;
 }
 
-.initiative-date-input {
+.mandate-date-input {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -982,16 +982,16 @@ menu button {
   padding: 3px 6px;
 }
 
-.initiative-date-input:focus {
+.mandate-date-input:focus {
   border-color: var(--teal);
   outline: none;
 }
 
-.initiative-date-arrow {
+.mandate-date-arrow {
   color: var(--muted);
 }
 
 /* A claim, said and not offered for correction. */
-.initiative-claims {
+.mandate-claims {
   color: var(--text);
 }

@@ -2,15 +2,25 @@
 
 ## Unreleased
 
-- **There is a second face, and the initiative has dates.** The application
-  had one surface because the board *was* the topic; it is not any more.
-  A switch in the content area — not the shell bar, per U7 — moves between
-  the board and the initiative, and the initiative face opens with the head
+- **There is a second face, the Mandate, and the initiative has dates.** The
+  application had one surface because the board *was* the topic; it is not any
+  more. A switch in the content area — not the shell bar, per U7 — moves
+  between the board and the mandate, and the mandate face opens with the head
   region `DESIGN_INITIATIVE_UI.md` §5 describes: the objective, editable
   here for the first time in this application, and the four dates on one
   line. Opening still lands on the board, every time, and the face is not
   remembered across a reload: a remembered face means one link opens two
   different pages for two people.
+
+  **Mandate, and not Initiative.** The design first named the face after the
+  thing it shows. That fails here: the topic *is* the initiative and the shell
+  bar says so above both faces, so "Board | Initiative" would give one word to
+  a part and to the whole — the stutter §9 takes trouble to avoid between a
+  face and its topic, arriving where a reader actually looks. A mandate is what
+  was agreed, which is what the face holds, and reporting against one is part
+  of holding it, so Assessed Impact sits under the name without strain. The
+  face's own identifiers say `mandate` — `#mandate`, `renderMandate` — while
+  `state.initiative` stays what the face is showing.
 
 - **`planned_start`, `planned_end`, `actual_start` and `actual_end`.** Four
   optional ISO dates on the initiative, and content rather than records —
@@ -23,7 +33,7 @@
   act as tidying a field. The claim's control arrives with the milestone
   strip; the command exists now so the face can say what was claimed.
 
-- **The initiative face rebuilds itself whole and does not use
+- **The mandate face rebuilds itself whole and does not use
   `reconcileDOM`.** §8's decision, and the reason is one this codebase has
   already paid for: the helper needs a create/update pair per node type,
   this face will have seven, and a pair falling out of step draws the old
@@ -103,8 +113,8 @@
   it. See `DESIGN_INITIATIVE_UI.md` §9.
 
 - **How the new fields are shown is written down.** `DESIGN_INITIATIVE_UI.md`
-  specifies two faces — the board for the next few days, the initiative for
-  the thing itself — the rule that puts a field on the face where its *act*
+  specifies two faces — the board for the next few days, the mandate for what
+  was agreed — the rule that puts a field on the face where its *act*
   happens rather than beside its own siblings, and the milestone strip that is
   the one place they touch. Proposed; only §9 is built.
 

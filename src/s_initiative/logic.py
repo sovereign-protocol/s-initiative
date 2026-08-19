@@ -14,7 +14,7 @@ Contract:
       actual_end. All five are content: edited, and a disagreement about
       one is a divergence. A date not yet said is absent from the data
       rather than stored empty. The planned pair is edited on the
-      initiative face; the claimed pair is claimed from the board's
+      mandate face; the claimed pair is claimed from the board's
       milestone strip, on the day it is true.
     Agenda item data: {type: "agenda_item", text, priority, author}
       - a direct child of the initiative, same as columns. priority is one of
@@ -527,7 +527,7 @@ class InitiativeLogic:
     # than nodes because an initiative has dates before it has a roadmap.
     #
     # Two commands and not one, because they are two acts. Planning happens
-    # on the initiative face; claiming happens on the day it is true, from
+    # on the mandate face; claiming happens on the day it is true, from
     # the board's milestone strip. A field absent from the data has not been
     # said - not the same as one said to be empty - so clearing writes the
     # key away rather than storing "".
