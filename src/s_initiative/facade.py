@@ -67,6 +67,19 @@ class InitiativeFacade:
     def set_initiative_objective(self, initiative_uuid: str, objective: str):
         return self._logic.set_initiative_objective(initiative_uuid, objective)
 
+    def set_initiative_dates(
+        self, initiative_uuid: str,
+        planned_start: str | None = None, planned_end: str | None = None,
+    ):
+        return self._logic.set_initiative_dates(
+            initiative_uuid, planned_start, planned_end,
+        )
+
+    def claim_initiative_date(
+        self, initiative_uuid: str, field: str, value: str = "",
+    ):
+        return self._logic.claim_initiative_date(initiative_uuid, field, value)
+
     def move_card(self, card_uuid: str, column_uuid: str, index: int):
         return self._logic.move_card(card_uuid, column_uuid, index)
 

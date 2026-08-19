@@ -90,7 +90,7 @@ than by error. Two checklists, one per node class.
 
 Each one ends somewhere you can stop.
 
-### Phase 0 — Land the groundwork
+### Phase 0 — Land the groundwork  *(committed, not landed)*
 
 Commit and merge `fix/node-classes-groundwork` in all four repositories. Nothing
 else here starts first.
@@ -102,9 +102,28 @@ one.
 **Done when:** the branch is on `main` in four repositories and four suites are
 green.
 
+**Where it got to.** All five working trees are committed on
+`fix/node-classes-groundwork`, each after its suite passed — s-core 511,
+s-initiative 265, s-team 213, s-flow 33, s-cockpit 75. Nothing is merged and
+nothing is pushed, because the merge turned out to be the wrong operation:
+`origin/main` is not behind the branch, it is a **rebased copy** of the
+branch's own history under different SHAs. Shared commit subjects run
+142/96/74/14/55 across the five repos, with 0–1 unique to main — the release
+commits — and 11/16/11/3/12 genuinely new on the branch. So a merge tries to
+reconcile the duplicated history against itself, which is where the conflicts
+in `logic.py`, the page and `CHANGELOG.md` in every repo came from.
+
+**When it is landed, rebase; do not merge, and do not squash.** A rebase onto
+`origin/main` replays only the 53 new commits — probed in `s-initiative`, where
+git correctly dropped the first as "patch contents already upstream" and then
+wanted the second resolved by hand. Anything that takes the branch's tree
+wholesale, a squash-merge included, reverts the release commits sitting on
+main: the branch predates `Release Sovereign Core 0.1.9` and
+`Release S-Initiative 0.1.0a5` and would undo their version bumps.
+
 ---
 
-### Phase 1 — The second face, with nothing in it but the head
+### Phase 1 — The second face, with nothing in it but the head  *(done)*
 
 The switch (§3), the head region (§5), and the render regime (§8). No new node
 types at all.
@@ -149,6 +168,23 @@ initiative face does not call `reconcileDOM` and the board face still does.
 **Done when:** you can switch to the initiative face, see the objective and the
 four dates, and edit the objective and the two planned dates without the poll
 eating a keystroke.
+
+**Done.** 283 tests pass, up from 265. The 18 new ones cover the dates
+round-tripping, one end planned without disturbing the other, a cleared date
+leaving the field absent rather than empty, a non-ISO date refused, a claim
+taken back, the claim command refusing a planned field, both routes reaching
+their commands, a two-client disagreement on `actual_start` described as
+`Started` rather than merged, and — from the page's side — that the initiative
+face rebuilds while the board face patches, that it will not rebuild under the
+caret, that it skips on payload JSON and never on `revision`, that the switch
+is inside `<main>`, and that no storage remembers the face.
+
+Two things worth knowing for the phases after this. `_Runtime.notify_change`
+in `tests/test_ownership_guards.py` had never taken Core's `change_kind`
+argument, because every test in that file had only ever exercised a refusal;
+the first success path through a controller found it. And `.board` is
+`display: flex`, so `[hidden]` needs a rule of its own to outrank the layout —
+the same will be true of any face added later.
 
 ---
 

@@ -11,6 +11,119 @@ from tests.relay_clients import (
 
 
 class InitiativeNewLogicTests(unittest.TestCase):
+    # The four dates -----------------------------------------------------
+
+    def test_planned_dates_round_trip_and_are_absent_until_said(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+
+        # A date nobody has said is absent from the data, not stored empty:
+        # "no plan yet" and "planned for nothing" are different facts.
+        self.assertNotIn("planned_start", initiative.data)
+        self.assertNotIn("planned_end", initiative.data)
+
+        logic.set_initiative_dates(initiative.uuid, "2026-03-12", "2026-06-30")
+
+        held = session.get_node(initiative.uuid)
+        self.assertEqual(held.data["planned_start"], "2026-03-12")
+        self.assertEqual(held.data["planned_end"], "2026-06-30")
+
+    def test_planning_one_end_leaves_the_other_alone(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+        logic.set_initiative_dates(initiative.uuid, "2026-03-12", "2026-06-30")
+
+        logic.set_initiative_dates(initiative.uuid, planned_end="2026-07-31")
+
+        held = session.get_node(initiative.uuid)
+        self.assertEqual(held.data["planned_start"], "2026-03-12")
+        self.assertEqual(held.data["planned_end"], "2026-07-31")
+
+    def test_clearing_a_planned_date_removes_the_field(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+        logic.set_initiative_dates(initiative.uuid, "2026-03-12", "2026-06-30")
+
+        logic.set_initiative_dates(initiative.uuid, planned_start="")
+
+        held = session.get_node(initiative.uuid)
+        self.assertNotIn("planned_start", held.data)
+        self.assertEqual(held.data["planned_end"], "2026-06-30")
+
+    def test_a_date_that_is_not_an_iso_date_is_refused(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+
+        result = logic.set_initiative_dates(initiative.uuid, "12 March 2026")
+
+        self.assertEqual(result.status, "error")
+        self.assertNotIn("planned_start", session.get_node(initiative.uuid).data)
+
+    def test_a_claim_is_written_and_can_be_taken_back(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+
+        logic.claim_initiative_date(initiative.uuid, "actual_start", "2026-03-14")
+        self.assertEqual(
+            session.get_node(initiative.uuid).data["actual_start"], "2026-03-14",
+        )
+
+        # Clearing one is undoing a claim, not tidying up a field, so what
+        # is left behind is the absence of a claim rather than an empty one.
+        logic.claim_initiative_date(initiative.uuid, "actual_start", "")
+        self.assertNotIn("actual_start", session.get_node(initiative.uuid).data)
+
+    def test_only_the_two_claimable_dates_may_be_claimed(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+
+        # Planning is the other face's act and has its own command; the
+        # claim route must not be a second way in to a planned date.
+        result = logic.claim_initiative_date(
+            initiative.uuid, "planned_start", "2026-03-12",
+        )
+
+        self.assertEqual(result.status, "error")
+        self.assertNotIn("planned_start", session.get_node(initiative.uuid).data)
+
+    def test_the_dates_are_carried_to_the_page(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+        logic.set_initiative_dates(initiative.uuid, "2026-03-12", "2026-06-30")
+        logic.claim_initiative_date(initiative.uuid, "actual_start", "2026-03-14")
+
+        payload = logic.board_payload()
+
+        self.assertEqual(payload["initiative"]["data"]["planned_start"], "2026-03-12")
+        self.assertEqual(payload["initiative"]["data"]["actual_start"], "2026-03-14")
+
+    def test_a_date_disagreement_is_described_rather_than_merged(self):
+        # Content, so two people who disagree about when it started have a
+        # divergence worth seeing rather than two private truths.
+        left = self.runtime(9301)
+        right = self.runtime(9302)
+        initiative = left.logic.ensure_initiative()
+        connect(left, right)
+        connect(left, right, initiative.uuid)
+        sync(left, right)
+        right.logic.board_payload()
+        right.logic.set_auto_adopt_mode("never")
+
+        left.logic.claim_initiative_date(initiative.uuid, "actual_start", "2026-03-14")
+        sync(left, right)
+
+        changes = right.logic.describe_peer_changes(left.peer_addr, initiative.uuid)
+        by_field = {change.get("field"): change for change in changes}
+        self.assertIn("actual_start", by_field)
+        self.assertEqual(by_field["actual_start"]["label"], "Started")
+
     def test_board_snapshot_never_consults_transport_under_session(self):
         class NoTransport:
             def network_info(self, _topic_uuid=None):

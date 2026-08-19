@@ -12,7 +12,7 @@ class _Runtime:
     def deliver_effects(self, effects):
         return []
 
-    def notify_change(self):
+    def notify_change(self, change_kind="application"):
         pass
 
 
@@ -46,6 +46,41 @@ class InitiativeOwnershipControllerTests(unittest.TestCase):
     def _post(self, path: str, payload: dict):
         endpoint = next(route.endpoint for route in self.routes if route.path == path)
         return asyncio.run(endpoint(_post_request(path, payload)))
+
+    def test_the_date_routes_are_wired_to_their_commands(self):
+        # A route path is not covered by the logic tests, and a typo in one
+        # leaves a command nothing can reach.
+        initiative = self.logic.ensure_initiative()
+
+        planned = self._post("/api/initiative/initiatives/set_dates", {
+            "initiative_uuid": initiative.uuid,
+            "planned_start": "2026-03-12",
+        })
+        claimed = self._post("/api/initiative/initiatives/claim_date", {
+            "initiative_uuid": initiative.uuid,
+            "field": "actual_start",
+            "value": "2026-03-14",
+        })
+
+        self.assertEqual(planned.status_code, 200)
+        self.assertEqual(claimed.status_code, 200)
+        held = self.session.get_node(initiative.uuid)
+        self.assertEqual(held.data["planned_start"], "2026-03-12")
+        self.assertEqual(held.data["actual_start"], "2026-03-14")
+
+    def test_the_claim_route_refuses_to_be_a_second_way_into_a_plan(self):
+        initiative = self.logic.ensure_initiative()
+
+        response = self._post("/api/initiative/initiatives/claim_date", {
+            "initiative_uuid": initiative.uuid,
+            "field": "planned_start",
+            "value": "2026-03-12",
+        })
+
+        self.assertEqual(response.status_code, 409)
+        self.assertNotIn(
+            "planned_start", self.session.get_node(initiative.uuid).data,
+        )
 
     def test_delete_column_rejects_a_kanban_typed_node_outside_a_board(self):
         foreign = self.session.create_child(

@@ -201,6 +201,79 @@ class AssetTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    # The two faces ------------------------------------------------------
+
+    def _function_body(self, name: str) -> str:
+        after = self.initiative.split(f"function {name}(", 1)[1]
+        return after.split("\n      function ", 1)[0]
+
+    def test_the_initiative_face_rebuilds_and_the_board_face_patches(self):
+        # DESIGN_INITIATIVE_UI.md 8. reconcileDOM needs a create/update pair
+        # per node type; the initiative face will have seven, and a pair
+        # falling out of step draws the old thing until something forces a
+        # rebuild - a silent bug class this codebase has already met. The
+        # board keeps the helper because drag-and-drop needs stable element
+        # identity across renders.
+        self.assertNotIn("reconcileDOM", self._function_body("renderInitiative"))
+        self.assertIn("replaceChildren", self._function_body("renderInitiative"))
+        self.assertIn("reconcileDOM", self._function_body("renderBoard"))
+
+    def test_the_initiative_face_does_not_rebuild_under_the_caret(self):
+        # The 1500ms poll empties the box mid-word otherwise.
+        body = self._function_body("renderInitiative")
+        self.assertIn("document.activeElement", body)
+        self.assertIn("isContentEditable", body)
+
+    def test_the_initiative_face_skips_an_unchanged_payload_but_not_on_revision(self):
+        body = self._function_body("renderInitiative")
+        self.assertIn("renderedInitiativeJson", body)
+        # Peer liveness is merged into the snapshot after it is read, so a
+        # transport change may not advance `revision` and the face would
+        # freeze. The JSON string is the honest comparison.
+        self.assertNotIn("revision", body)
+
+    def test_the_face_switch_is_in_the_content_area_and_not_the_bar(self):
+        # U7: the bar's navigation row is destinations among topics, and a
+        # row where some items change topic and some change view teaches
+        # nothing about either. `setAppActions` is gone besides.
+        self.assertNotIn("setAppActions", self.initiative)
+        main = self.initiative.split("<main>", 1)[1].split("</main>", 1)[0]
+        self.assertIn('id="faceSwitch"', main)
+        self.assertIn('id="board"', main)
+        self.assertIn('id="initiative"', main)
+
+    def test_opening_lands_on_the_board_and_the_face_is_never_remembered(self):
+        # A remembered face means one link opens two different pages for two
+        # people, and the board is where the work is.
+        self.assertIn('face: "board"', self.initiative)
+        self.assertNotIn("localStorage", self.initiative)
+        self.assertNotIn("sessionStorage", self.initiative)
+        # And no second route parameter: `?topic=` is the only one Core
+        # composes routes from.
+        self.assertNotIn("?face=", self.initiative)
+        self.assertNotIn('params.get("face")', self.initiative)
+
+    def test_the_faces_are_hidden_by_a_rule_that_outranks_their_layout(self):
+        # .board is display:flex, so [hidden] has to be said louder.
+        self.assertIn(".board[hidden]", self.css)
+        self.assertIn(".initiative-face[hidden]", self.css)
+
+    def test_the_objective_is_edited_on_the_face_with_the_shared_editor(self):
+        head = self._function_body("initiativeHead")
+        self.assertIn("SovereignUI.editableText", head)
+        self.assertIn("/api/initiative/initiatives/set_objective", head)
+
+    def test_a_claimed_date_is_said_and_never_offered_for_correction(self):
+        # Claiming happens on the day it is true, from the board. Clearing
+        # one is undoing a claim rather than tidying a field, so the
+        # initiative face must not draw it as another box to correct.
+        dates = self._function_body("initiativeDates")
+        self.assertIn("actual_start", dates)
+        self.assertNotIn("claim_date", dates)
+        planned = self._function_body("plannedDate")
+        self.assertIn("/api/initiative/initiatives/set_dates", planned)
+        self.assertNotIn("actual_", planned)
+
     def test_topic_header_delegates_navigation_and_creation_to_the_shell(self):
         self.assertNotIn("onCreateTopic", self.initiative)
         self.assertIn("SovereignShell.setTopicName", self.initiative)

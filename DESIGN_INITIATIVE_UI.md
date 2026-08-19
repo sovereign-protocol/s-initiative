@@ -1,7 +1,10 @@
 # Interface — S-Initiative
 
-Status: **proposed, except §9, which is done.** The board face described in §7
-is what the application is today; everything else is a specification.
+Status: **proposed, except §3, §8, §9 and the head of §5, which are done.**
+The switch exists, the initiative face exists and holds its head region, and
+the two faces render by the two regimes §8 sets out. The seven node types in
+§4, §5 and §6 are still a specification; `PLAN_INITIATIVE_FACE.md` is the
+order they arrive in.
 
 `DESIGN_INITIATIVE.md` says what an initiative is. This says how it is shown,
 and it exists because that document defined twenty-odd fields across nine node
@@ -50,7 +53,7 @@ three fields do not:
 
 | Field                                                                                                  | Face                                                       | Why                                                          |
 | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- | ------------------------------------------------------------ |
-| `objective`, `initiative_need`, `initiative_section`, `initiative_clause`, `initiative_expectation`     | the initiative                                             | agreeing                                                     |
+| `objective`, `initiative_need`, `initiative_section`, `initiative_clause`, `initiative_intent`     | the initiative                                             | agreeing                                                     |
 | `initiative_milestone.title`, `.order`, `.planned_at`                                                  | the initiative                                             | planning                                                     |
 | `planned_start`, `planned_end`                                                                         | the initiative                                             | planning                                                     |
 | **`actual_start`, `actual_end`, `reached_at`**                                                         | **the board**                                              | a claim made on the day it is true                           |
@@ -74,8 +77,8 @@ from being a filing cabinet.
 
 ## 3. The switch
 
-**In the content area, at its top left, above the board.** Two items, the
-current one marked.
+**[DONE]** **In the content area, at its top left, above the board.** Two
+items, the current one marked.
 
 **Not in the shell bar.** U7 gives two independent reasons and either is
 enough. The navigation row beneath the topic name is destinations *among
@@ -122,7 +125,7 @@ Two zones, and between them the four claims an initiative ever makes:
 │ 12 Mar → 30 Jun                                    [Started ✓]     │
 │                                                                    │
 │ Next: Pilot with three teams          planned 30 Apr               │
-│ Expected: two teams renew unprompted · support load flat           │
+│ Intended: two teams renew unprompted · support load flat          │
 │                                                    [Mark reached]  │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -138,7 +141,7 @@ says it was claimed. This is the same treatment `reached_at` gets, for the same
 reason: §3 says clearing one is undoing a claim rather than tidying up, so the
 strip must never make it look like a correction to a field.
 
-**"Expected" is read-only on the strip**, one line, its clauses joined. It is
+**"Intended" is read-only on the strip**, one line, its clauses joined. It is
 there so that marking a milestone reached happens in front of what the milestone
 was supposed to change, which is the entire argument for the seam. Editing it
 means going to the other face, and that is correct — changing what you expect,
@@ -163,7 +166,7 @@ make the strip an authority over a list it does not own.
 ### After reaching one
 
 The strip asks for an observation, once: a reached milestone that carries an
-expectation and no `initiative_reality` shows **`Record what happened`**,
+intended impact and no `initiative_reality` shows **`Record what happened`**,
 opening the same composer the initiative face uses. It asks and it does not
 insist — a prompt that cannot be dismissed is a validation rule about somebody
 else's perception, and §3 is explicit that no observation is *the* record.
@@ -197,14 +200,14 @@ One document, seven regions, in this order:
 |      | Region                    | Holds                                                                     | Class            |
 | ---- | ------------------------- | ------------------------------------------------------------------------- | ---------------- |
 | head | **Objective and dates**   | `objective`, the four dates                                               | content          |
-| 1    | **Milestones**            | `initiative_milestone`, each with its expectation and its realities       | content + record |
+| 1    | **Milestones**            | `initiative_milestone`, each with its intended impact and its realities  | content + record |
 | 2    | **Needs**                 | `initiative_need`                                                         | content          |
-| 3    | **Expected Impact**       | the initiative's `initiative_expectation`                                 | content          |
+| 3    | **Intended Impact**       | the initiative's `initiative_intent`                                 | content          |
 | 4    | **Resources**             | who holds the topic, each with their `initiative_investment`              | record           |
 | 5    | **Approach**              | `initiative_section` → `initiative_clause`                                | content          |
 | 6    | **Assessed Impact**       | the initiative's `initiative_reality`                                     | record           |
 
-**The head is not a disclosure.** One paragraph and four dates, always open,
+**[DONE] The head is not a disclosure.** One paragraph and four dates, always open,
 directly under the page's own rule. It is the answer to "what is this", it is
 everybody's (§3), and a caret in front of it would suggest there is a version of
 this page on which the objective is not the first thing said. The dates read as
@@ -257,10 +260,10 @@ actor in this system at all. Where `beneficiary_actor_uuid` resolves to an actor
 this client holds, the live name is drawn and the label becomes what it was
 called here — shown, not hidden, since the two disagreeing is information.
 
-### Expected Impact, and why the region can never hold two
+### Intended Impact, and why the region can never hold two
 
-Exactly one `initiative_expectation` per parent (§3), so the region has no "add
-expectation" control at all — only add-clause. There is nowhere in the interface
+Exactly one `initiative_intent` per parent (§3), so the region has no "add
+intent" control at all — only add-clause. There is nowhere in the interface
 for a second one to come from, which is the surface half of the type rule and
 the only honest way to state it. Two side by side would let the initiative hold
 a contradiction without anybody having to notice.
@@ -313,7 +316,7 @@ The strip in §4 is the one addition.
 
 ## 8. Rendering
 
-**The initiative face re-renders fully, guarded, and does not use
+**[DONE]** **The initiative face re-renders fully, guarded, and does not use
 `reconcileDOM`.**
 
 This is a decision against the pattern the board face uses, and the reason is
@@ -468,7 +471,7 @@ always for.
 
 **No third face for the records.** Realities and investments are neither
 definition nor day-by-day, and a "History" face would collect them. It would
-also separate an observation from the expectation it answers, which is the one
+also separate an observation from the intent it answers, which is the one
 thing that makes it readable. They sit under what they answer, drawn as records.
 
 **No rollup, no dashboard, no chart.** No burndown, no percentage reached, no
@@ -485,7 +488,7 @@ would have to be understood by every surface that builds a link to an
 initiative.
 
 **Nothing is required to move on.** No milestone must be reached before the next
-is, no expectation must be written before a milestone, no reality before an
+is, no intended impact must be written before a milestone, no reality before an
 initiative ends. The strip asks; nothing blocks.
 
 **No per-member view of any of it.** One objective and it is everybody's (§3),

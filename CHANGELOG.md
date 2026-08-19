@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- **There is a second face, and the initiative has dates.** The application
+  had one surface because the board *was* the topic; it is not any more.
+  A switch in the content area — not the shell bar, per U7 — moves between
+  the board and the initiative, and the initiative face opens with the head
+  region `DESIGN_INITIATIVE_UI.md` §5 describes: the objective, editable
+  here for the first time in this application, and the four dates on one
+  line. Opening still lands on the board, every time, and the face is not
+  remembered across a reload: a remembered face means one link opens two
+  different pages for two people.
+
+- **`planned_start`, `planned_end`, `actual_start` and `actual_end`.** Four
+  optional ISO dates on the initiative, and content rather than records —
+  two people who disagree about when it started have a divergence worth
+  seeing rather than two private truths, so all four are in the divergence
+  labels. Two commands and not one, because they are two acts:
+  `/initiatives/set_dates` plans, and `/initiatives/claim_date` claims. A
+  date nobody has said is absent from the data rather than stored empty,
+  and clearing a claim removes it, because undoing a claim is not the same
+  act as tidying a field. The claim's control arrives with the milestone
+  strip; the command exists now so the face can say what was claimed.
+
+- **The initiative face rebuilds itself whole and does not use
+  `reconcileDOM`.** §8's decision, and the reason is one this codebase has
+  already paid for: the helper needs a create/update pair per node type,
+  this face will have seven, and a pair falling out of step draws the old
+  thing until something forces a rebuild. So the face re-renders on every
+  payload, skips the render when the payload JSON is unchanged — not when
+  `revision` is unchanged, because peer liveness is merged into the
+  snapshot after it is read — and returns early rather than emptying a box
+  somebody is typing in. The board face keeps `reconcileDOM`, because
+  drag-and-drop needs stable element identity across renders. Both halves
+  are asserted from the page's side.
+
 - **Every identifier that means the *application* now says "initiative" too.**
   The app id was already `initiative`; the names around it were not.
   `_kanban_container()` and `_kanban_containers()` (they return the

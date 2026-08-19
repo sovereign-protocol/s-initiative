@@ -20,7 +20,14 @@
 
 
     <main>
+      <!-- Two faces: the board is the next few days, the initiative is the
+           thing itself. The switch is in the content area and not in the
+           shell bar (U7) - the bar's navigation row is destinations among
+           topics, and a row where some items change topic and some change
+           view teaches nothing about either. -->
+      <nav id="faceSwitch" class="face-switch"></nav>
       <section id="board" class="board"></section>
+      <section id="initiative" class="initiative-face" hidden></section>
     </main>
 
     <dialog id="cardModal">
@@ -91,6 +98,26 @@
       let modalPerspectiveOptions = [];
       let modalLocalDraft = null;
       let modalReadOnlyPerspective = false;
+
+      // Which face is showing, and anything the initiative face is
+      // remembering about itself. In JS and never in the DOM: that face
+      // re-renders wholesale on every payload, so a surface trusted to hold
+      // its own open/closed state loses it every 1500ms, and DOM patching is
+      // not the fix for that.
+      //
+      // The face is not remembered across a reload. Opening lands on the
+      // board, every time - a remembered face means one link opens two
+      // different pages for two people.
+      const ephemeral = {
+        face: "board",
+        disclosures: {},
+        drafts: {},
+      };
+      // What the initiative face last drew, so an unchanged payload does not
+      // rebuild it. Deliberately not the node's `revision`: peer liveness is
+      // merged into the snapshot after it is read, so a transport change may
+      // not advance it and the face would freeze.
+      let renderedInitiativeJson = null;
 
       const AUTO_ADOPT_MODES = ["always", "not_owner", "not_member", "never"];
       // Only the two modes Core does not know about. The wording for
@@ -406,11 +433,166 @@
 
           renderLinks();
 
-          // Neues Rendering via Diffing
-          renderBoard();
+          renderFaceSwitch();
+          // One fetch, and only the face you are looking at is drawn. The
+          // two render differently on purpose (DESIGN_INITIATIVE_UI.md 8):
+          // the board patches because drag-and-drop needs stable element
+          // identity across renders, the initiative face rebuilds because a
+          // create/update pair per node type is a silent bug class this
+          // codebase has already met. This is the one place they meet.
+          if (ephemeral.face === "initiative") renderInitiative();
+          else renderBoard();
         } catch (error) {
           showToast(error.message, true);
         }
+      }
+
+      function showFace(face) {
+        ephemeral.face = face;
+        el("board").hidden = face !== "board";
+        el("initiative").hidden = face !== "initiative";
+        // The face was hidden while the payload moved on, so the skip check
+        // below has nothing useful to compare against.
+        renderedInitiativeJson = null;
+        renderFaceSwitch();
+        if (face === "initiative") renderInitiative();
+        else renderBoard();
+      }
+
+      // Two items, the current one marked. Named after the two objects the
+      // domain already has, so naming a face after the thing it shows needs
+      // no explanation (U8).
+      const FACES = [
+        ["board", "Board"],
+        ["initiative", "Initiative"],
+      ];
+
+      function renderFaceSwitch() {
+        const nav = el("faceSwitch");
+        nav.replaceChildren();
+        for (const [face, label] of FACES) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "face-switch-item";
+          button.textContent = label;
+          const current = ephemeral.face === face;
+          button.setAttribute("aria-current", current ? "page" : "false");
+          button.onclick = () => showFace(face);
+          nav.append(button);
+        }
+      }
+
+      // The initiative face rebuilds itself whole, and does not use
+      // reconcileDOM. DESIGN_INITIATIVE_UI.md 8 gives the reason: the helper
+      // needs a create/update pair per node type, this face will have seven,
+      // and a pair falling out of step draws the old thing until something
+      // forces a rebuild.
+      function renderInitiative() {
+        const article = el("initiative");
+        // Never rebuild it while it is being typed into, or the 1500ms poll
+        // empties the box mid-word.
+        if (
+          article.contains(document.activeElement) &&
+          (document.activeElement.isContentEditable ||
+            document.activeElement.matches("input, textarea, select"))
+        ) return;
+        const initiative = state.initiative;
+        if (!initiative) {
+          article.replaceChildren();
+          renderedInitiativeJson = null;
+          return;
+        }
+        const encoded = JSON.stringify(initiative.data ?? null);
+        if (encoded === renderedInitiativeJson) return;
+        renderedInitiativeJson = encoded;
+        article.replaceChildren(initiativeHead(initiative));
+      }
+
+      // The head is not a disclosure. One paragraph and four dates, always
+      // open: it is the answer to "what is this", and a caret in front of it
+      // would suggest there is a version of this page on which the objective
+      // is not the first thing said.
+      function initiativeHead(initiative) {
+        const head = document.createElement("header");
+        head.className = "initiative-head";
+        const objective = SovereignUI.editableText({
+          tag: "p",
+          className: "initiative-objective",
+          value: initiative.data.objective || "",
+          placeholder: "What is this initiative meant to change?",
+          onCommit: (value) => api("/api/initiative/initiatives/set_objective", {
+            initiative_uuid: initiative.uuid,
+            objective: value,
+          }),
+          onChanged: async () => {
+            showToast("Objective saved");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        });
+        head.append(objective, initiativeDates(initiative));
+        return head;
+      }
+
+      function initiativeDates(initiative) {
+        const row = document.createElement("p");
+        row.className = "initiative-dates";
+        const data = initiative.data || {};
+        const arrow = document.createElement("span");
+        arrow.className = "initiative-date-arrow";
+        arrow.textContent = "→";
+        row.append(
+          plannedDate(initiative, "planned_start", "Planned start"),
+          arrow,
+          plannedDate(initiative, "planned_end", "Planned end"),
+        );
+        // A claim is said here and never edited here. Claiming happens on
+        // the day it is true, from the board, and clearing one is undoing a
+        // claim rather than tidying a field - so the face must not draw it
+        // as another box to correct.
+        const claimed = [["actual_start", "Started"], ["actual_end", "Ended"]]
+          .filter(([field]) => data[field])
+          .map(([field, label]) => `${label} ${formatInitiativeDate(data[field])}`);
+        if (claimed.length) {
+          const said = document.createElement("span");
+          said.className = "initiative-claims";
+          said.textContent = claimed.join(" · ");
+          row.append(said);
+        }
+        return row;
+      }
+
+      // Core's SovereignUI has no date primitive and one caller is not
+      // enough to guess the second one's needs, so this stays local until
+      // there is a second (PLAN_INITIATIVE_FACE.md 3).
+      function plannedDate(initiative, field, label) {
+        const wrap = document.createElement("label");
+        wrap.className = "initiative-date";
+        const caption = document.createElement("span");
+        caption.className = "initiative-date-label";
+        caption.textContent = label;
+        const input = document.createElement("input");
+        input.type = "date";
+        input.className = "initiative-date-input";
+        input.value = initiative.data?.[field] || "";
+        input.onchange = () => run(
+          () => api("/api/initiative/initiatives/set_dates", {
+            initiative_uuid: initiative.uuid,
+            [field]: input.value,
+          }),
+          input.value ? "Date planned" : "Date cleared",
+        );
+        wrap.append(caption, input);
+        return wrap;
+      }
+
+      function formatInitiativeDate(iso) {
+        if (!iso) return "";
+        const day = new Date(`${iso}T00:00:00`);
+        if (Number.isNaN(day.getTime())) return iso;
+        return day.toLocaleDateString(undefined, {
+          day: "numeric", month: "short", year: "numeric",
+        });
       }
 
       function renderBoard() {

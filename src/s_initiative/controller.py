@@ -48,6 +48,22 @@ def build_routes(logic, runtime) -> list[Route]:
             data["initiative_uuid"], data.get("objective", ""),
         ))
 
+    async def api_set_initiative_dates(request: Request):
+        data = await request.json()
+        # Absent means "leave it alone" and empty means "clear it", so the
+        # two ends can be planned one at a time.
+        return await _json_result(runtime, logic.set_initiative_dates(
+            data["initiative_uuid"],
+            data.get("planned_start"), data.get("planned_end"),
+        ))
+
+    async def api_claim_initiative_date(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.claim_initiative_date(
+            data["initiative_uuid"], data.get("field", ""),
+            data.get("value", ""),
+        ))
+
     async def api_copy_initiative(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.copy_initiative(data["initiative_uuid"]))
@@ -220,6 +236,10 @@ def build_routes(logic, runtime) -> list[Route]:
               methods=["POST"]),
         Route("/api/initiative/initiatives/set_objective",
               api_set_initiative_objective, methods=["POST"]),
+        Route("/api/initiative/initiatives/set_dates",
+              api_set_initiative_dates, methods=["POST"]),
+        Route("/api/initiative/initiatives/claim_date",
+              api_claim_initiative_date, methods=["POST"]),
         Route("/api/initiative/initiatives/copy", api_copy_initiative,
               methods=["POST"]),
         Route("/api/initiative/initiatives/delete", api_delete_initiative,

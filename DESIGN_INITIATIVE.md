@@ -1,7 +1,8 @@
 # Initiative — what the thing is
 
-Status: proposed, except for the links in §3 and the `initiative` root itself,
-which are built. Nothing else here has code against it yet.
+Status: proposed, except for the links in §3, the `initiative` root itself
+and its four dates, which are built. The seven node types below have no code
+against them yet; `PLAN_INITIATIVE_FACE.md` is the order they arrive in.
 
 Where these are shown is `DESIGN_INITIATIVE_UI.md`: two faces, the board and
 the initiative, and the milestone strip that is the one place they touch.
@@ -28,9 +29,9 @@ initiative_app "S-Initiative"          local folder, never shared
     ├── topic_link                     the team it belongs to, the flows it runs
     ├── initiative_need
     ├── initiative_section → initiative_clause          the Approach
-    ├── initiative_expectation → initiative_clause      Expected Impact
+    ├── initiative_intent → initiative_clause           Intended Impact
     ├── initiative_milestone
-    │     ├── initiative_expectation → initiative_clause
+    │     ├── initiative_intent → initiative_clause
     │     └── initiative_reality
     ├── initiative_reality
     └── initiative_investment
@@ -179,7 +180,7 @@ for it. The seed gives the same structure to anybody who wants it without
 closing the vocabulary. If the portfolio view is later worth the cost, the way
 to pay it is a declared kind on the section, not four types.
 
-### `initiative_expectation` — Expected Impact
+### `initiative_intent` — Intended Impact
 
 Exactly one per parent, holding `initiative_clause` children. Under the
 initiative it is what the whole thing is for. Under a milestone it is what that
@@ -189,7 +190,7 @@ point is supposed to have changed by the time it is reached.
 | ------- | ------------ |
 | *(none beyond `type`)* | the text lives in its clauses |
 
-**Why one and not many.** A second expectation is not a second opinion, it is a
+**Why one and not many.** A second intent is not a second opinion, it is a
 disagreement about what we are doing — and a disagreement about content is
 exactly what the divergence machinery is for. Two of them side by side would
 let the initiative hold both without anybody having to notice.
@@ -206,7 +207,7 @@ A point on the timeline. 0-n, ordered.
 | `reached_at` | optional — ISO date; clearing it is undoing a claim, not tidying up |
 
 A milestone is the same shape as the initiative's own bookends, repeated: a
-planned date, a reached date, an expectation, and the observations of how it
+planned date, a reached date, an intended impact, and the observations of how it
 actually went. That is why "a roadmap with milestones", "expected impact at
 certain milestones" and "actual impact at certain milestones" are one type here
 and not three.
@@ -224,7 +225,7 @@ each milestone. Appended, never edited by anybody but its author, never merged.
 
 **Many, and none of them wins.** Diverging perspectives on what an initiative
 achieved are not a conflict to resolve; the blueprint files this under
-Subjective Reality, and calls them fuel for organisational learning. Expected
+Subjective Reality, and calls them fuel for organisational learning. Intended
 impact is one and contested. Assessed impact is many and kept.
 
 This is the same pair as S-Team's `team_trustee_action` and
@@ -297,7 +298,7 @@ both; everything else is observed.
 | `initiative_need`        | yes | yes | **decidable**  | —          |
 | `initiative_section`     | yes | yes | **decidable**  | —          |
 | `initiative_clause`      | yes | yes | **decidable**  | —          |
-| `initiative_expectation` | yes | yes | **decidable**  | —          |
+| `initiative_intent`      | yes | yes | **decidable**  | —          |
 | `initiative_milestone`   | yes | yes | **decidable**  | —          |
 | `initiative_reality`     | no (the observer) | — | observed | persisted |
 | `initiative_investment`  | no (the owner)    | — | observed | persisted |
@@ -330,12 +331,31 @@ evaporated as people drifted off would have no history at all.
 | `Initiative: 1 Team`                        | `topic_link` with `application_id` `team`, at most one — **built** |
 | *(nothing)*                                 | `topic_link` to a flow — the blueprint has no way to say an initiative runs one |
 | `0-n Investments`                           | `initiative_investment`, availability only               |
-| `1 Expected Impact [C-Text]`                | `initiative_expectation` on the initiative               |
+| `1 Expected Impact [C-Text]`                | `initiative_intent` on the initiative — renamed, see below |
 | `0-n Assessed Impact [C-Text]`              | `initiative_reality`, one per observation, per author    |
 | `0-n Boards [Kanban]`                       | exactly one, held as the columns of the initiative — §7  |
 | `Resource: 1 Owner, 1 Availability, 1 Value`| collapsed into `initiative_investment` while availability is the only kind |
 | *(nothing)*                                 | `initiative_need` — the blueprint puts Needs on the Individual, and never says which initiative addresses them |
 | *(nothing)*                                 | the Approach, the milestones, and the four dates          |
+
+**The one rename, and why.** The blueprint says *Expected Impact* in both
+places it appears — on the Initiative and on the Bet. It keeps the name on the
+Bet, where it is right: a bet is signals, then a decision, then what the
+decider expects to follow from it, and a forecast attached to a decision
+genuinely is an expectation. S-Team's built `team_trustee_action` carries it
+under exactly that reading.
+
+On an initiative it is not a forecast. It is what everybody holding the topic
+means to bring about, and calling it *expected* put it beside the `objective`
+as a prediction of the same thing — two fields answering "what is this meant
+to change", one of them apparently guessing at the other. **Intended Impact**
+names the act instead, and the pair *intended / assessed* then reads as intent
+against observation, which is what §2 says these two kinds of node are.
+
+**The objective is not folded into it.** One sentence and a set of clauses are
+different grains of the same question. Board of Boards draws the sentence, and
+recovering one from a clause list would need a "the first clause is the title"
+rule — implicit structure of exactly the kind this document refuses elsewhere.
 
 ---
 

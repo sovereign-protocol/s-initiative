@@ -9,7 +9,13 @@ Contract:
     - Card data: {type: "kanban_card", name, description, participants, owner, order}
       owner is a profile uuid that must also be present in participants, or None.
     Initiative data additionally carries: objective (short free-text tagline,
-      default ""), used by the Board of Boards summary view.
+      default ""), used by the Board of Boards summary view, and four
+      optional ISO dates - planned_start, planned_end, actual_start,
+      actual_end. All five are content: edited, and a disagreement about
+      one is a divergence. A date not yet said is absent from the data
+      rather than stored empty. The planned pair is edited on the
+      initiative face; the claimed pair is claimed from the board's
+      milestone strip, on the day it is true.
     Agenda item data: {type: "agenda_item", text, priority, author}
       - a direct child of the initiative, same as columns. priority is one of
       "high"/"medium"/"low", or None if not set (optional - a card doesn't
@@ -20,6 +26,10 @@ Contract:
   API:
     GET  /api/initiative/board
     POST /api/initiative/initiatives/set_objective {initiative_uuid, objective}
+    POST /api/initiative/initiatives/set_dates    {initiative_uuid, planned_start, planned_end}
+      # either date omitted is left alone; empty clears it
+    POST /api/initiative/initiatives/claim_date   {initiative_uuid, field, value}
+      # field is actual_start or actual_end; empty value takes the claim back
     POST /api/initiative/agenda/create        {text, priority}  # priority optional
     POST /api/initiative/agenda/delete        {item_uuid}
     POST /api/initiative/agenda/set_priority  {item_uuid, priority}  # priority optional, clears if omitted
@@ -509,6 +519,74 @@ class InitiativeLogic:
         data = dict(initiative.data)
         data["objective"] = objective or ""
         return self.session.modify(initiative.uuid, data, initiative.weights)
+
+    # The four dates are content and not records: a planned date is a plan
+    # and is edited, and a reached date is a claim the team makes together,
+    # so two people who disagree about when it started have a divergence
+    # worth seeing rather than two private truths. They are fields rather
+    # than nodes because an initiative has dates before it has a roadmap.
+    #
+    # Two commands and not one, because they are two acts. Planning happens
+    # on the initiative face; claiming happens on the day it is true, from
+    # the board's milestone strip. A field absent from the data has not been
+    # said - not the same as one said to be empty - so clearing writes the
+    # key away rather than storing "".
+    PLANNED_DATE_FIELDS = ("planned_start", "planned_end")
+    CLAIMED_DATE_FIELDS = ("actual_start", "actual_end")
+
+    def set_initiative_dates(
+        self, initiative_uuid: str,
+        planned_start: str | None = None, planned_end: str | None = None,
+    ) -> SessionResult:
+        """Plan when the initiative runs. The other face's act."""
+        return self._write_initiative_dates(
+            initiative_uuid,
+            dict(zip(self.PLANNED_DATE_FIELDS, (planned_start, planned_end))),
+        )
+
+    def claim_initiative_date(
+        self, initiative_uuid: str, field: str, value: str = "",
+    ) -> SessionResult:
+        """Claim that the initiative started or ended, or take the claim back.
+
+        Clearing one is undoing a claim rather than tidying up a field, and
+        the strip says so; the command itself treats them alike, because
+        what makes it an undoing is that somebody had claimed it.
+        """
+        if field not in self.CLAIMED_DATE_FIELDS:
+            return SessionResult("error", reason="not a claimable date")
+        return self._write_initiative_dates(initiative_uuid, {field: value})
+
+    def _write_initiative_dates(
+        self, initiative_uuid: str, fields: dict[str, str | None],
+    ) -> SessionResult:
+        initiative = self._node(initiative_uuid, "initiative")
+        if not initiative:
+            return SessionResult("error", reason="initiative not found")
+        data = dict(initiative.data)
+        for field, value in fields.items():
+            # None is "leave this one alone", so that planning one end of an
+            # initiative does not erase the other.
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                data.pop(field, None)
+                continue
+            if not self._is_iso_date(text):
+                return SessionResult(
+                    "error", reason=f"{field} must be an ISO date (YYYY-MM-DD)",
+                )
+            data[field] = text
+        return self.session.modify(initiative.uuid, data, initiative.weights)
+
+    @staticmethod
+    def _is_iso_date(value: str) -> bool:
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            return False
+        return True
 
     # An initiative belongs to a team and may run flows. Both are other
     # applications' topics, and both are referenced with Core's topic link:
@@ -1466,6 +1544,12 @@ class InitiativeLogic:
             "objective": "Objective",
             "text": "Text",
             "priority": "Priority",
+            # Content, so a disagreement about them is worth seeing. The
+            # claimed pair reads as a claim rather than a correction.
+            "planned_start": "Planned start",
+            "planned_end": "Planned end",
+            "actual_start": "Started",
+            "actual_end": "Ended",
         }
         for field, label in scalar_labels.items():
             local_value = local.data.get(field)

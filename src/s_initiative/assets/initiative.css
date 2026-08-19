@@ -893,3 +893,105 @@ menu button {
 }
 .attachment-delete:hover { color: var(--text); background: none; }
 .attachment-empty { color: var(--muted); font-size: 13px; margin: 0; }
+
+/* The two faces ------------------------------------------------------- */
+
+/* The board is display:flex, so [hidden] has to be said louder than the
+   rule that lays it out. */
+.board[hidden],
+.initiative-face[hidden] {
+  display: none;
+}
+
+/* In the content area, at its top left, above both faces. Not the shell
+   bar: that row is destinations among topics (U7). */
+.face-switch {
+  display: flex;
+  gap: 4px;
+  padding: 10px 12px 0;
+}
+
+.face-switch-item {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  padding: 4px 8px 6px;
+}
+
+.face-switch-item:hover {
+  color: var(--text);
+}
+
+.face-switch-item[aria-current="page"] {
+  border-bottom-color: var(--teal);
+  color: var(--text);
+}
+
+.initiative-face {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+/* Always open, directly under the page's own rule: the objective is the
+   answer to "what is this" and is the first thing said. */
+.initiative-head {
+  border-bottom: 1px solid var(--border);
+  margin: 0 auto;
+  max-width: 760px;
+  padding-bottom: 16px;
+}
+
+.initiative-objective {
+  font-size: 1.15rem;
+  line-height: 1.5;
+  margin: 0 0 12px;
+}
+
+/* Planned, and claimed where claimed - one line, so the two faces do not
+   describe the same four fields in two vocabularies. */
+.initiative-dates {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0;
+}
+
+.initiative-date {
+  align-items: baseline;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.initiative-date-label {
+  font-size: 0.85rem;
+}
+
+.initiative-date-input {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  padding: 3px 6px;
+}
+
+.initiative-date-input:focus {
+  border-color: var(--teal);
+  outline: none;
+}
+
+.initiative-date-arrow {
+  color: var(--muted);
+}
+
+/* A claim, said and not offered for correction. */
+.initiative-claims {
+  color: var(--text);
+}
