@@ -117,6 +117,128 @@ class InitiativeOwnershipControllerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertFalse(self.session.protocol.index[foreign.uuid].deleted)
 
+    def test_the_approach_routes_are_wired_to_their_commands(self):
+        section = self.logic.sections()[0]
+
+        renamed = self._post("/api/initiative/sections/rename", {
+            "section_uuid": section.uuid, "title": "How we will win",
+        })
+        added = self._post("/api/initiative/clauses/create", {
+            "parent_uuid": section.uuid, "text": "Win the first three teams",
+        })
+        clause = self.logic.clauses(self.session.get_node(section.uuid))[0]
+        updated = self._post("/api/initiative/clauses/update", {
+            "clause_uuid": clause.uuid, "text": "Win three teams",
+        })
+        moved = self._post("/api/initiative/sections/move", {
+            "section_uuid": section.uuid, "index": 1,
+        })
+        created = self._post("/api/initiative/sections/create", {
+            "title": "Open questions",
+        })
+        removed = self._post("/api/initiative/clauses/delete", {
+            "clause_uuid": clause.uuid,
+        })
+
+        for response in (renamed, added, updated, moved, created, removed):
+            self.assertEqual(response.status_code, 200)
+        titles = [s.data["title"] for s in self.logic.sections()]
+        self.assertIn("How we will win", titles)
+        self.assertIn("Open questions", titles)
+
+    def test_create_clause_rejects_a_parent_outside_an_initiative(self):
+        foreign = self.session.create_child(
+            self.session.root_uuid(),
+            {"type": "initiative_section", "title": "foreign", "order": 0}, {},
+        ).value
+
+        response = self._post("/api/initiative/clauses/create", {
+            "parent_uuid": foreign.uuid, "text": "Nope",
+        })
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            [child for child in self.session.protocol.index[foreign.uuid].children],
+            [],
+        )
+
+    def test_the_impact_resource_and_milestone_routes_reach_their_commands(self):
+        initiative = self.logic.ensure_initiative()
+        actor = self.logic.user_profile().uuid
+
+        intended = self._post("/api/initiative/clauses/create", {
+            "parent_uuid": initiative.uuid, "text": "Two teams renew",
+        })
+        assessed = self._post("/api/initiative/realities/create", {
+            "parent_uuid": initiative.uuid, "text": "Three teams renewed",
+        })
+        availability = self._post("/api/initiative/investments/create", {
+            "actor_uuid": actor, "availability": "One day a week",
+        })
+        milestone_created = self._post("/api/initiative/milestones/create", {
+            "title": "Pilot", "planned_at": "2026-04-30",
+        })
+        milestone = self.logic.milestones()[0]
+        milestone_updated = self._post("/api/initiative/milestones/update", {
+            "milestone_uuid": milestone.uuid, "title": "Pilot complete",
+        })
+        milestone_reached = self._post("/api/initiative/milestones/reach", {
+            "milestone_uuid": milestone.uuid, "value": "2026-05-02",
+        })
+        milestone_moved = self._post("/api/initiative/milestones/move", {
+            "milestone_uuid": milestone.uuid, "index": 0,
+        })
+
+        for response in (
+            intended, assessed, availability, milestone_created,
+            milestone_updated, milestone_reached, milestone_moved,
+        ):
+            self.assertEqual(response.status_code, 200)
+        held = self.session.get_node(milestone.uuid)
+        self.assertEqual(held.data["title"], "Pilot complete")
+        self.assertEqual(held.data["reached_at"], "2026-05-02")
+
+    def test_new_node_types_outside_an_initiative_are_refused(self):
+        foreign_milestone = self.session.create_child(
+            self.session.root_uuid(),
+            {"type": "initiative_milestone", "title": "foreign", "order": 0}, {},
+        ).value
+        foreign_reality = self.session.create_child(
+            self.session.root_uuid(),
+            {
+                "type": "initiative_reality",
+                "author_actor_uuid": self.logic.user_profile().uuid,
+                "text": "foreign",
+                "recorded_at": "2026-01-01T00:00:00+00:00",
+            },
+            {},
+        ).value
+        foreign_investment = self.session.create_child(
+            self.session.root_uuid(),
+            {
+                "type": "initiative_investment",
+                "actor_uuid": self.logic.user_profile().uuid,
+                "availability": "foreign",
+                "previous_uuid": "",
+                "recorded_at": "2026-01-01T00:00:00+00:00",
+            },
+            {},
+        ).value
+
+        responses = (
+            self._post("/api/initiative/milestones/delete", {
+                "milestone_uuid": foreign_milestone.uuid,
+            }),
+            self._post("/api/initiative/realities/delete", {
+                "reality_uuid": foreign_reality.uuid,
+            }),
+            self._post("/api/initiative/investments/delete", {
+                "investment_uuid": foreign_investment.uuid,
+            }),
+        )
+
+        self.assertEqual([response.status_code for response in responses], [409, 409, 409])
+
     def test_delete_column_rejects_a_kanban_typed_node_outside_a_board(self):
         foreign = self.session.create_child(
             self.session.root_uuid(), {"type": "kanban_column", "name": "foreign"}, {},

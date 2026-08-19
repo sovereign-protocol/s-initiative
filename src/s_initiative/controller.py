@@ -98,6 +98,110 @@ def build_routes(logic, runtime) -> list[Route]:
             data["need_uuid"], int(data.get("index", 0)),
         ))
 
+    async def api_create_section(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.create_section(data.get("title", "")),
+        )
+
+    async def api_rename_section(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.rename_section(
+            data["section_uuid"], data.get("title", ""),
+        ))
+
+    async def api_delete_section(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.delete_section(data["section_uuid"]),
+        )
+
+    async def api_move_section(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.move_section(
+            data["section_uuid"], int(data.get("index", 0)),
+        ))
+
+    async def api_create_clause(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.create_clause(
+            data["parent_uuid"], data.get("text", ""),
+        ))
+
+    async def api_update_clause(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.update_clause(
+            data["clause_uuid"], data.get("text", ""),
+        ))
+
+    async def api_delete_clause(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.delete_clause(data["clause_uuid"]),
+        )
+
+    async def api_move_clause(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.move_clause(
+            data["clause_uuid"], int(data.get("index", 0)),
+        ))
+
+    async def api_create_reality(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.create_reality(
+            data["parent_uuid"], data.get("text", ""),
+        ))
+
+    async def api_delete_reality(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.delete_reality(data["reality_uuid"]),
+        )
+
+    async def api_create_investment(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.create_investment(
+            data.get("actor_uuid", ""), data.get("availability", ""),
+        ))
+
+    async def api_delete_investment(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.delete_investment(data["investment_uuid"]),
+        )
+
+    async def api_create_milestone(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.create_milestone(
+            data.get("title", ""), data.get("planned_at", ""),
+            data.get("intention", ""),
+        ))
+
+    async def api_update_milestone(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.update_milestone(
+            data["milestone_uuid"], data.get("title"), data.get("planned_at"),
+            data.get("intention"),
+        ))
+
+    async def api_delete_milestone(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.delete_milestone(data["milestone_uuid"]),
+        )
+
+    async def api_move_milestone(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.move_milestone(
+            data["milestone_uuid"], int(data.get("index", 0)),
+        ))
+
+    async def api_reach_milestone(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.claim_milestone_reached(
+            data["milestone_uuid"], data.get("value", ""),
+        ))
+
     async def api_create_column(request: Request):
         data = await request.json()
         return await _json_result(
@@ -274,6 +378,23 @@ def build_routes(logic, runtime) -> list[Route]:
         Route("/api/initiative/needs/update", api_update_need, methods=["POST"]),
         Route("/api/initiative/needs/delete", api_delete_need, methods=["POST"]),
         Route("/api/initiative/needs/move", api_move_need, methods=["POST"]),
+        Route("/api/initiative/sections/create", api_create_section, methods=["POST"]),
+        Route("/api/initiative/sections/rename", api_rename_section, methods=["POST"]),
+        Route("/api/initiative/sections/delete", api_delete_section, methods=["POST"]),
+        Route("/api/initiative/sections/move", api_move_section, methods=["POST"]),
+        Route("/api/initiative/clauses/create", api_create_clause, methods=["POST"]),
+        Route("/api/initiative/clauses/update", api_update_clause, methods=["POST"]),
+        Route("/api/initiative/clauses/delete", api_delete_clause, methods=["POST"]),
+        Route("/api/initiative/clauses/move", api_move_clause, methods=["POST"]),
+        Route("/api/initiative/realities/create", api_create_reality, methods=["POST"]),
+        Route("/api/initiative/realities/delete", api_delete_reality, methods=["POST"]),
+        Route("/api/initiative/investments/create", api_create_investment, methods=["POST"]),
+        Route("/api/initiative/investments/delete", api_delete_investment, methods=["POST"]),
+        Route("/api/initiative/milestones/create", api_create_milestone, methods=["POST"]),
+        Route("/api/initiative/milestones/update", api_update_milestone, methods=["POST"]),
+        Route("/api/initiative/milestones/delete", api_delete_milestone, methods=["POST"]),
+        Route("/api/initiative/milestones/move", api_move_milestone, methods=["POST"]),
+        Route("/api/initiative/milestones/reach", api_reach_milestone, methods=["POST"]),
         Route("/api/initiative/columns/create", api_create_column, methods=["POST"]),
         Route("/api/initiative/columns/rename", api_rename_column, methods=["POST"]),
         Route("/api/initiative/columns/delete", api_delete_column, methods=["POST"]),

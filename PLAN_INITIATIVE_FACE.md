@@ -1,8 +1,13 @@
 # Implementation plan — the mandate face
 
+Status: **completed.** The final simplification replaces Phase 4's separate
+clause-set impact model with the existing initiative `objective` displayed as
+one **Intention** field, and one `intention` field per milestone. No migration
+of the superseded nodes is part of the implementation.
+
 `DESIGN_INITIATIVE.md` says what an initiative is. `DESIGN_INITIATIVE_UI.md`
 says how it is shown. Neither says in what order to build it, and the order
-matters here because seven node types, a second face and a seam between the two
+matters here because six node types, a second face and a seam between the two
 faces are not one change.
 
 This is that order. Where it names a file or a function, that is the thing as it
@@ -16,7 +21,7 @@ stands today, not as the design imagines it.
 the topic root is `initiative`, `kanban_board` is gone, the `board_uuid` /
 `create_board` identifier sweep followed. Everything else is unwritten:
 `initiative_need`, `initiative_section`, `initiative_clause`,
-`initiative_intent`, `initiative_milestone`, `initiative_reality` and
+`initiative_milestone`, `initiative_reality` and
 `initiative_investment` appear in no source file in any of the four
 repositories. The only field of the mandate face that exists is `objective`,
 and it is not on this application's page at all — it is editable only from Board
@@ -28,7 +33,7 @@ of Boards, through the Cockpit's forwarding route.
 on `fix/node-classes-groundwork` with the §9 work uncommitted — in
 `s-initiative` alone, 926 insertions and 3,386 deletions unstaged, the four
 `test_kanban_*.py` → `test_initiative_*.py` renames among them, and
-`DESIGN_INITIATIVE_UI.md` itself still untracked. Seven node types added on top
+`DESIGN_INITIATIVE_UI.md` itself still untracked. Six node types added on top
 of an unlanded four-repository rename is a conflict in every file this plan
 touches.
 
@@ -252,41 +257,27 @@ as a Team Agreement's sections and clauses, and the first phase with nesting.
 
 **Tests:** the seed exists on a new initiative and on one made from a snapshot; a
 section renamed and a clause added round-trip through export and import; a clause
-is refused under anything but a section or an intent.
+is refused under anything but a section.
 
 **Done when:** a new initiative opens with four seeded sections you can rewrite,
 and a snapshot of it restores them.
 
+**Done.** New initiatives seed four ordinary sections; section and clause CRUD,
+ordering, divergence, routes, facade methods, the collapsed region, copies and
+snapshot round-trips are covered by the suite.
+
 ---
 
-### Phase 4 — Intended Impact
+### Phase 4 — Intention
 
-`initiative_intent`, region 3, labelled **Intended Impact**. Exactly one per
-parent, holding `initiative_clause` children — the type already built in
-Phase 3. See §3 decision 2 for why it is not called Expected Impact.
+The existing initiative `objective` is the one overall **Intention**, labelled
+at the top of the Mandate and prompted with “What is this initiative meant to
+change and for whom?”. There is no separate Intended Impact region, intent node
+or clause collection. Each milestone carries one optional `intention` text
+field; assessments remain many.
 
-- **The region has no "add intent" control**, only add-clause. That is not a
-  validation rule, it is the absence of a surface: there is nowhere in the
-  interface for a second one to come from, which is the only honest way to state
-  the type rule.
-- **The objective is not repeated here.** The objective is the aim in one
-  sentence and it is everybody's; the Intended Impact is the specific changes
-  that aim is supposed to produce, in clauses, and it is what Assessed Impact
-  answers. The head region states the first, this region states the second, and
-  neither draws the other's text.
-- Create the intent node lazily, inside the add-clause command, rather than
-  seeding it with the initiative. An initiative that has never stated an
-  intended impact should not carry an empty node that syncs, and lazy creation
-  keeps "exactly one" in one place.
-- A second intent arriving from a peer is a divergence and renders as one. Do
-  not silently merge or drop it.
-- The strip's read-only line in Phase 7 says **`Intended:`**, not `Expected:`.
-
-**Tests:** adding two clauses creates one intent node; the payload never carries
-two; the page contains no add-intent control (source scan).
-
-**Done when:** the initiative states the changes it means to produce, in
-clauses, distinct from its one-line objective.
+**Done.** The Mandate, board summary, milestone editor, snapshots and copies all
+use those single fields. Approach clauses remain confined to sections.
 
 ---
 
@@ -309,6 +300,10 @@ survives its author going unreachable.
 
 **Done when:** two clients can each record what they think happened and both
 observations stand.
+
+**Done.** Assessments are immutable authored records under an initiative or a
+milestone, ordered in time, deletable only by their author, adopted without a
+divergence lamp, and excluded from snapshots and copies.
 
 ---
 
@@ -333,42 +328,44 @@ in order; an unreachable peer's head is still drawn and is labelled as last seen
 
 **Done when:** each member's availability is on the page, written only by them.
 
+**Done.** Topic holders are prepared in the `resources` payload, each with the
+head of their availability chain. Only the local actor's line composes, earlier
+commitments remain disclosed, and an unreachable actor's persisted head is
+said as last seen.
+
 ---
 
 ### Phase 7 — Milestones, and the seam
 
 `initiative_milestone` (region 1) and the strip on the board face (§4). Last,
-because a milestone contains an intended impact (Phase 4) and realities
-(Phase 5),
+because a milestone contains an Intention (Phase 4) and realities (Phase 5),
 and because it is the only phase that touches both faces.
 
-- Fields: `title`, `order`, `planned_at`, `reached_at`.
+- Fields: `title`, `order`, `intention`, `planned_at`, `reached_at`.
 - Region 1 sits **first** on the face, ahead of Needs — it is the region the
   strip is a window onto, and landing next to the thing you just acted on from
   the other face is what makes the two feel like one initiative.
-- The strip shows two zones and four claims: the bookends from the initiative's
-  own dates, and the current milestone. Planned dates are shown and **not
-  editable there**.
+- The strip is a read-only line beside the switcher:
+  `Start ⇒ Intention ⇒ End | Last ⇒ Intention ⇒ Next`. Actual dates replace
+  planned dates, and absent facts draw nothing.
 - **The current milestone is the lowest `order` with no `reached_at`.** Nothing
   more. Not a date comparison — §7 of the type doc refuses dependencies, a
   critical path and a derived schedule, and reading `order` respects all three.
   Reaching one out of order is allowed and the strip moves on.
-- After a milestone is reached with an intended impact and no reality of
-  **yours**,
-  the strip offers `Record what happened`, once. It asks and does not insist, and
-  it says nothing once the person reading it has written theirs — what is missing
-  is their observation, not a field's value.
-- Empty cases: "No milestones yet" with a link to the other face; all-reached
-  keeps the bookends and offers `actual_end`.
+- The strip contains no action buttons. Claims and assessments are made on
+  their own surfaces.
 - Not a progress bar, not a count, not date arithmetic.
 
 **Tests:** the current milestone is derived from `order` and not from dates;
-reaching out of order advances to the next unreached; the prompt disappears for
-the author who wrote a reality and stays for one who has not; the no-milestones
-strip renders and links to the other face.
+reaching out of order advances to the next unreached; summary segments use the
+single Intention fields and omit absent facts.
 
-**Done when:** the board opens on a strip that shows what is next and what it is
-supposed to change, and marking it reached asks you what happened.
+**Done when:** the board opens on a line that shows what is next and what it is
+supposed to change without competing with the board's controls.
+
+**Done.** Milestones are ordered, dated content with one Intention and many
+realities. The board line derives the first unreached milestone from order and
+uses the initiative and milestone Intention fields directly.
 
 ---
 
@@ -382,35 +379,12 @@ they are one person's, and a new initiative is nobody's yet. **Recommendation:
 strip record nodes after the copy**, and state it in the type doc beside the
 snapshot rule. Decide it before Phase 5, not after.
 
-**2. Expected Impact is renamed Intended Impact, and the type with it.**
-Region 3 and the `objective` both answer "what is this meant to change", and
-naming one of them *Expected* made the overlap worse: it reads as a forecast of
-the objective, which is a thing already said. **Intended Impact** names an act
-instead of a prediction — these are the changes we mean to produce — and the
-pair *intended / assessed* reads as intent against observation, which is what
-§6 of the type doc says the two regions are. The node type follows the label to
-`initiative_intent`: nothing is built, so it is free today and it is drift
-tomorrow, and the strip's read-only line says `Intended:` for the same reason.
-
-The cost is one split with the blueprint, and it is worth paying. Both
-`Domain-Driven-Design.md` §3 entries — Initiative and Bet — say *Expected
-Impact*, and S-Team's already-built Bet keeps it. That is correct there: a Bet
-is signals, then a decision, then what the decider expects to follow from it,
-and a forecast attached to a decision genuinely is an expectation. An
-initiative's is a statement of intent held by everybody on the topic. The
-blueprint collapsed two acts under one noun; this separates them, and the type
-doc should say so where it maps the vocabulary.
-
-**Also settled here: the objective stays.** Merging it into the first clause of
-the Intended Impact would give Board of Boards no tagline to draw without a
-"the first clause is the title" rule, which is exactly the kind of implicit
-structure the type doc refuses elsewhere. One sentence and a set of clauses are
-different grains of the same question, and both are worth having.
-
-**Lazy or seeded.** Recommended lazy above, in Phase 4. The alternative —
-seeding an empty intent with every initiative — makes "exactly one" true by
-construction, at the cost of a node that syncs and says nothing. Worth a
-moment's thought because it is awkward to change later.
+**2. Expected Impact becomes Intention, with no second field.** Region 3 and
+the `objective` answered the same question. The final decision removes the
+region and presents `objective` as **Intention**; milestones receive the same
+concept as one `intention` field. The storage name stays so Board of Boards can
+continue to draw it directly. No clause list, first-clause convention or empty
+container remains.
 
 **3. Where the date control lives.** Five date fields across the two faces, and
 Core's `SovereignUI` has no date primitive. **Recommendation: build it locally
@@ -428,12 +402,12 @@ dispatches, and neither renderer reaches into the other's DOM.
 
 **The full-render/patch trap this codebase has already met.** The reason the new
 face full-renders is that `reconcileDOM` needs a create/update pair per node type
-and seven new types is seven new ways for a pair to fall out of step. If a patch
+and six new types is six new ways for a pair to fall out of step. If a patch
 function is ever added to the mandate face, it arrives with its twin or it
 does not arrive.
 
 **Payload growth.** `board_payload` is fetched every 1500ms and already carries
-every peer's tree. Seven node types are added to it across these phases. The page
+every peer's tree. Six node types are added to it across these phases. The page
 skips the *render* when the JSON is unchanged; nothing skips the *fetch*. Not a
 reason to change anything now, and a reason to watch it after Phase 7.
 

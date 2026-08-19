@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **The board summary is one compact line beside the face switch.** It shows
+  `Start ⇒ Intention ⇒ End` for the initiative and
+  `Last ⇒ Intention ⇒ Next` for its milestones. Actual dates replace planned
+  dates where they exist, each Intention comes from its single field, and
+  absent facts leave no placeholder or dangling arrow. The status is
+  right-aligned behind a divider from the switcher and contains no actions.
+
+- **Intention is one field at both scales.** The initiative's existing
+  `objective` is displayed as **Intention** at the top of the Mandate and asks
+  what the initiative is meant to change and for whom. The separate Intended
+  Impact region and clause collection are gone. Each milestone has one
+  `intention` text field while retaining any number of authored assessments.
+
+- **Records remain personal.** `initiative_reality` and
+  `initiative_investment` are immutable, time-ordered records which only their
+  author may write or delete. They are adopted rather than diverged, always
+  show author and date, and are excluded from snapshots and stripped from
+  copied initiatives. Resource commitments form per-actor chains; the page
+  lists topic holders, exposes a composer only on your own line, retains earlier
+  commitments behind a disclosure, and labels an unreachable actor's persisted
+  head as last seen.
+
+- **The Approach is implemented.** New initiatives seed four ordinary,
+  editable sections; sections and clauses can be added, reordered, renamed and
+  deleted, carry divergence controls, and round-trip through copies and
+  snapshots. The region arrives collapsed.
+
 - **The mandate holds Needs.** `initiative_need` — text, a beneficiary label,
   an optional beneficiary actor and an order — as a direct child of the
   initiative, decidable like the rest of the mandate: edited in place,

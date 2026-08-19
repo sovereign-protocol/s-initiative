@@ -8,8 +8,8 @@ Contract:
     - Column data: {type: "kanban_column", name, order}
     - Card data: {type: "kanban_card", name, description, participants, owner, order}
       owner is a profile uuid that must also be present in participants, or None.
-    Initiative data additionally carries: objective (short free-text tagline,
-      default ""), used by the Board of Boards summary view, and four
+    Initiative data additionally carries: objective (the single free-text
+      Intention, default ""), also used by the Board of Boards summary view, and four
       optional ISO dates - planned_start, planned_end, actual_start,
       actual_end. All five are content: edited, and a disagreement about
       one is a divergence. A date not yet said is absent from the data
@@ -35,6 +35,23 @@ Contract:
       # any field omitted is left alone; empty clears the two beneficiary ones
     POST /api/initiative/needs/delete         {need_uuid}
     POST /api/initiative/needs/move           {need_uuid, index}
+    POST /api/initiative/sections/create      {title}
+    POST /api/initiative/sections/rename      {section_uuid, title}
+    POST /api/initiative/sections/delete      {section_uuid}
+    POST /api/initiative/sections/move        {section_uuid, index}
+    POST /api/initiative/clauses/create       {parent_uuid, text}
+    POST /api/initiative/clauses/update       {clause_uuid, text}
+    POST /api/initiative/clauses/delete       {clause_uuid}
+    POST /api/initiative/clauses/move         {clause_uuid, index}  # among its own siblings
+    POST /api/initiative/realities/create     {parent_uuid, text}
+    POST /api/initiative/realities/delete     {reality_uuid}
+    POST /api/initiative/investments/create   {actor_uuid, availability}
+    POST /api/initiative/investments/delete   {investment_uuid}
+    POST /api/initiative/milestones/create    {title, planned_at, intention}
+    POST /api/initiative/milestones/update    {milestone_uuid, title, planned_at, intention}
+    POST /api/initiative/milestones/delete    {milestone_uuid}
+    POST /api/initiative/milestones/move      {milestone_uuid, index}
+    POST /api/initiative/milestones/reach     {milestone_uuid, value}
     POST /api/initiative/agenda/create        {text, priority}  # priority optional
     POST /api/initiative/agenda/delete        {item_uuid}
     POST /api/initiative/agenda/set_priority  {item_uuid, priority}  # priority optional, clears if omitted
@@ -74,6 +91,25 @@ Contract:
     two disagreeing is information. Needs travel inside the initiative's own
     subtree, so there is no payload key of their own.
 
+  Approach:
+    initiative_section {type, title, order} holding initiative_clause
+    {type, text, order}, both direct content of the initiative and both
+    decidable. A new initiative is seeded with four sections - Strategy,
+    Plan, Risks, Conditions for success - which are ordinary content from
+    the moment they exist: renamable, reorderable, deletable, and a fifth is
+    added the same way. Nothing marks the four as special. A clause sits
+    under a section and never at the top level; it reorders among its own
+    siblings only.
+
+  Impact, resources and milestones:
+    The initiative's objective field is presented as its single Intention.
+    initiative_milestone carries title, order, a single optional intention,
+    and optional planned_at / reached_at ISO dates. Both are decidable
+    content. initiative_reality {author_actor_uuid, text,
+    recorded_at} and initiative_investment {actor_uuid, availability,
+    previous_uuid, recorded_at} are immutable authored records: they are
+    adopted, never diverged, and never copied or snapshotted.
+
   Links:
     An initiative names the team it belongs to (0-1) and the flows it runs
     (0-n), through Core's topic_link node as a direct child of the initiative.
@@ -107,6 +143,10 @@ DISPLAYED_DIVERGENCE_TYPES = frozenset({
     # holding the topic may write one, and two clients disagreeing about
     # what is being addressed is worth a human seeing.
     "initiative_need",
+    # The Approach is agreed text: two clients holding different versions of
+    # how this will be gone about is exactly what the lamp is for.
+    "initiative_section", "initiative_clause",
+    "initiative_milestone",
     # Anybody on the initiative may add or remove one, and which team an
     # initiative belongs to is worth a human noticing when two clients
     # disagree about it. A link's data never changes after it is written -
@@ -117,6 +157,7 @@ DISPLAYED_DIVERGENCE_TYPES = frozenset({
 OWNED_NODE_TYPES = frozenset({
     *DISPLAYED_DIVERGENCE_TYPES,
     "agenda_item", "card_attachment", "card_comment",
+    "initiative_reality", "initiative_investment",
 })
 INITIATIVE_POSITION_POLICY = LastWriteWinsPolicy(
     node_type="kanban_card",
@@ -229,6 +270,9 @@ class InitiativeLogic:
                 self._attachments_by_card(initiative) if initiative else {}
             ),
             "links": self.initiative_links(initiative) if initiative else [],
+            "resources": (
+                self.initiative_resources(initiative) if initiative else []
+            ),
             "linkable_topics": (
                 self.linkable_topics(initiative.uuid) if initiative else []
             ),
@@ -815,6 +859,16 @@ class InitiativeLogic:
         if result.status != "ok":
             return result
         clone = result.value
+        # A copy is a new initiative, and is nobody's yet. Observations and
+        # commitments are authored records, not reusable content; copying
+        # their author uuids would turn a person's statement about one topic
+        # into a statement they never made about another.
+        for node in list(self._descendants(clone)):
+            if node.data.get("type") in {
+                "initiative_reality", "initiative_investment",
+            }:
+                self.session.delete(node.uuid)
+        clone = self.session.get_node(clone.uuid) or clone
         data = dict(clone.data)
         data["name"] = self._distinct_name(
             f"{data.get('name', 'Initiative')} copy",
@@ -855,6 +909,14 @@ class InitiativeLogic:
             "source_name": source_name,
             "content": {
                 "objective": str(initiative.data.get("objective") or ""),
+                **{
+                    field: str(initiative.data[field])
+                    for field in (
+                        "planned_start", "planned_end",
+                        "actual_start", "actual_end",
+                    )
+                    if initiative.data.get(field)
+                },
                 "columns": columns,
                 # Content, so a template carries it. What a snapshot must
                 # never carry is a record - somebody's observation or
@@ -867,8 +929,47 @@ class InitiativeLogic:
                             need.data.get("beneficiary_label") or "",
                         ),
                         "order": need.data.get("order", 0),
+                        **(
+                            {"beneficiary_actor_uuid": str(
+                                need.data["beneficiary_actor_uuid"],
+                            )}
+                            if need.data.get("beneficiary_actor_uuid") else {}
+                        ),
                     }
                     for need in self.needs(initiative)
+                ],
+                "sections": [
+                    {
+                        "title": str(section.data.get("title") or ""),
+                        "order": section.data.get("order", 0),
+                        "clauses": [
+                            {
+                                "text": str(clause.data.get("text") or ""),
+                                "order": clause.data.get("order", 0),
+                            }
+                            for clause in self.clauses(section)
+                        ],
+                    }
+                    for section in self.sections(initiative)
+                ],
+                "milestones": [
+                    {
+                        "title": str(milestone.data.get("title") or ""),
+                        "order": milestone.data.get("order", 0),
+                        **(
+                            {"intention": str(milestone.data["intention"])}
+                            if milestone.data.get("intention") else {}
+                        ),
+                        **(
+                            {"planned_at": str(milestone.data["planned_at"])}
+                            if milestone.data.get("planned_at") else {}
+                        ),
+                        **(
+                            {"reached_at": str(milestone.data["reached_at"])}
+                            if milestone.data.get("reached_at") else {}
+                        ),
+                    }
+                    for milestone in self.milestones(initiative)
                 ],
             },
         })
@@ -889,6 +990,14 @@ class InitiativeLogic:
                 "type": "initiative",
                 "name": self._distinct_name(requested, self._initiative_names()),
                 "objective": str(content.get("objective") or ""),
+                **{
+                    field: str(content[field])
+                    for field in (
+                        "planned_start", "planned_end",
+                        "actual_start", "actual_end",
+                    )
+                    if content.get(field)
+                },
             },
             {},
         )
@@ -920,12 +1029,76 @@ class InitiativeLogic:
                     "text": str(need.get("text") or ""),
                     "beneficiary_label": str(need.get("beneficiary_label") or ""),
                     "order": need.get("order", order),
+                    **(
+                        {"beneficiary_actor_uuid": str(
+                            need["beneficiary_actor_uuid"],
+                        )}
+                        if need.get("beneficiary_actor_uuid") else {}
+                    ),
                 },
                 {},
             )
             if made_need.status != "ok":
                 return made_need
             effects.extend(made_need.effects)
+        # The seeded four are ordinary content, so what a snapshot restores is
+        # whatever it recorded - not the seed. An initiative whose Approach
+        # was rewritten to two sections comes back with two.
+        for order, section in enumerate(content.get("sections") or []):
+            if not isinstance(section, dict):
+                return SessionResult("error", reason="snapshot section is invalid")
+            made_section = self.session.create_child(
+                target_uuid,
+                {
+                    "type": "initiative_section",
+                    "title": str(section.get("title") or "Section"),
+                    "order": section.get("order", order),
+                },
+                {},
+            )
+            if made_section.status != "ok":
+                return made_section
+            effects.extend(made_section.effects)
+            for index, clause in enumerate(section.get("clauses") or []):
+                if not isinstance(clause, dict):
+                    return SessionResult(
+                        "error", reason="snapshot clause is invalid",
+                    )
+                made_clause = self.session.create_child(
+                    made_section.value.uuid,
+                    {
+                        "type": "initiative_clause",
+                        "text": str(clause.get("text") or ""),
+                        "order": clause.get("order", index),
+                    },
+                    {},
+                )
+                if made_clause.status != "ok":
+                    return made_clause
+                effects.extend(made_clause.effects)
+        for order, milestone in enumerate(content.get("milestones") or []):
+            if not isinstance(milestone, dict):
+                return SessionResult("error", reason="snapshot milestone is invalid")
+            data = {
+                "type": "initiative_milestone",
+                "title": str(milestone.get("title") or "Milestone"),
+                "order": milestone.get("order", order),
+            }
+            intention = str(milestone.get("intention") or "").strip()
+            if intention:
+                data["intention"] = intention
+            for field in ("planned_at", "reached_at"):
+                value = str(milestone.get(field) or "")
+                if value:
+                    if not self._is_iso_date(value):
+                        return SessionResult(
+                            "error", reason=f"snapshot milestone {field} is invalid",
+                        )
+                    data[field] = value
+            made_milestone = self.session.create_child(target_uuid, data, {})
+            if made_milestone.status != "ok":
+                return made_milestone
+            effects.extend(made_milestone.effects)
         columns = content.get("columns")
         if not isinstance(columns, list):
             return SessionResult("error", reason="snapshot columns are invalid")
@@ -1009,6 +1182,12 @@ class InitiativeLogic:
             self.session.create_child(
                 initiative.uuid,
                 {"type": "kanban_column", "name": name, "order": order},
+                {},
+            )
+        for order, title in enumerate(self.DEFAULT_SECTIONS):
+            self.session.create_child(
+                initiative.uuid,
+                {"type": "initiative_section", "title": title, "order": order},
                 {},
             )
         return self.session.get_node(initiative.uuid) or initiative
@@ -1120,6 +1299,400 @@ class InitiativeLogic:
         return self.session.move_child_to_parent_index(
             need.uuid, initiative.uuid, index,
         )
+
+    # The Approach: sections holding clauses, the same two-level shape a Team
+    # Agreement uses. A section holds clauses and a clause holds nothing; the
+    # shape permits nesting and this document does not use it.
+    #
+    # A new initiative is seeded with four sections, and they are *ordinary
+    # content from the moment they exist* - renamable, reorderable,
+    # deletable, and a fifth is added by the same composer. Nothing marks the
+    # four as special, because nothing about them is: a risk and a condition
+    # for success read as different things and behave identically. Making
+    # them separate node types would buy a portfolio view that could ask for
+    # every open risk, and would charge every initiative that thinks in some
+    # other shape for it.
+    DEFAULT_SECTIONS = ("Strategy", "Plan", "Risks", "Conditions for success")
+    CLAUSE_PARENT_TYPES = frozenset({"initiative_section"})
+
+    def sections(self, initiative: ProtocolNode | None = None) -> list[ProtocolNode]:
+        initiative = initiative or self.ensure_initiative()
+        return sorted(
+            [child for child in initiative.live_children()
+             if child.data.get("type") == "initiative_section"],
+            key=lambda node: (node.data.get("order", 0), node.uuid),
+        )
+
+    def clauses(self, parent: ProtocolNode) -> list[ProtocolNode]:
+        return sorted(
+            [child for child in parent.live_children()
+             if child.data.get("type") == "initiative_clause"],
+            key=lambda node: (node.data.get("order", 0), node.uuid),
+        )
+
+    def create_section(self, title: str) -> SessionResult:
+        initiative = self.ensure_initiative()
+        title = (title or "").strip()
+        if not title:
+            return SessionResult("error", reason="section title is required")
+        return self.session.create_child(
+            initiative.uuid,
+            {
+                "type": "initiative_section",
+                "title": title,
+                "order": self.session.next_child_order(
+                    initiative.uuid, "initiative_section",
+                ),
+            },
+            {},
+        )
+
+    def rename_section(self, section_uuid: str, title: str) -> SessionResult:
+        section = self._node(section_uuid, "initiative_section")
+        if not section:
+            return SessionResult("error", reason="section not found")
+        title = (title or "").strip()
+        if not title:
+            return SessionResult("error", reason="section title is required")
+        data = dict(section.data)
+        data["title"] = title
+        return self.session.modify(section.uuid, data, section.weights)
+
+    def delete_section(self, section_uuid: str) -> SessionResult:
+        section = self._node(section_uuid, "initiative_section")
+        if not section:
+            return SessionResult("error", reason="section not found")
+        return self.session.delete(section.uuid)
+
+    def move_section(self, section_uuid: str, index: int) -> SessionResult:
+        initiative = self.ensure_initiative()
+        section = self._node(section_uuid, "initiative_section")
+        if not section or section.parent_uuid != initiative.uuid:
+            return SessionResult("error", reason="section not found")
+        return self.session.move_child_to_parent_index(
+            section.uuid, initiative.uuid, index,
+        )
+
+    def create_clause(self, parent_uuid: str, text: str) -> SessionResult:
+        parent = self._clause_parent(parent_uuid)
+        if not parent:
+            return SessionResult("error", reason="clause parent not found")
+        text = (text or "").strip()
+        if not text:
+            return SessionResult("error", reason="clause text is required")
+        return self.session.create_child(
+            parent.uuid,
+            {
+                "type": "initiative_clause",
+                "text": text,
+                "order": self.session.next_child_order(
+                    parent.uuid, "initiative_clause",
+                ),
+            },
+            {},
+        )
+
+    def update_clause(self, clause_uuid: str, text: str) -> SessionResult:
+        clause = self._node(clause_uuid, "initiative_clause")
+        if not clause:
+            return SessionResult("error", reason="clause not found")
+        text = (text or "").strip()
+        if not text:
+            return SessionResult("error", reason="clause text is required")
+        data = dict(clause.data)
+        data["text"] = text
+        return self.session.modify(clause.uuid, data, clause.weights)
+
+    def delete_clause(self, clause_uuid: str) -> SessionResult:
+        clause = self._node(clause_uuid, "initiative_clause")
+        if not clause:
+            return SessionResult("error", reason="clause not found")
+        return self.session.delete(clause.uuid)
+
+    def move_clause(self, clause_uuid: str, index: int) -> SessionResult:
+        """Reorder a clause among its own siblings.
+
+        Within its parent and never across one: moving a clause from the
+        Risks section into Strategy is deleting it there and writing it here,
+        and a drag that quietly rewrote which section a line belongs to would
+        be the interface deciding something the section headings say.
+        """
+        clause = self._node(clause_uuid, "initiative_clause")
+        if not clause:
+            return SessionResult("error", reason="clause not found")
+        return self.session.move_child_to_parent_index(
+            clause.uuid, clause.parent_uuid, index,
+        )
+
+    def _clause_parent(self, parent_uuid: str) -> ProtocolNode | None:
+        node = self.session.protocol.index.get(parent_uuid)
+        if (
+            node
+            and node.data.get("type") in self.CLAUSE_PARENT_TYPES
+            and self.owns_node(parent_uuid)
+        ):
+            return node
+        return None
+
+    # Assessed Impact ---------------------------------------------------
+
+    REALITY_PARENT_TYPES = frozenset({"initiative", "initiative_milestone"})
+
+    def realities(self, parent: ProtocolNode) -> list[ProtocolNode]:
+        return sorted(
+            [
+                child for child in parent.live_children()
+                if child.data.get("type") == "initiative_reality"
+            ],
+            key=lambda node: (node.created_at, node.uuid),
+        )
+
+    def create_reality(self, parent_uuid: str, text: str) -> SessionResult:
+        parent = self.session.protocol.index.get(parent_uuid)
+        if (
+            not parent
+            or parent.data.get("type") not in self.REALITY_PARENT_TYPES
+            or not self.owns_node(parent.uuid)
+        ):
+            return SessionResult("error", reason="reality parent not found")
+        text = (text or "").strip()
+        if not text:
+            return SessionResult("error", reason="assessment text is required")
+        return self.session.create_child(
+            parent.uuid,
+            {
+                "type": "initiative_reality",
+                "author_actor_uuid": self.user_profile().uuid,
+                "text": text,
+                "recorded_at": self._recorded_now(),
+            },
+            {},
+        )
+
+    def delete_reality(self, reality_uuid: str) -> SessionResult:
+        reality = self._node(reality_uuid, "initiative_reality")
+        if not reality:
+            return SessionResult("error", reason="assessment not found")
+        if reality.data.get("author_actor_uuid") != self.user_profile().uuid:
+            return SessionResult(
+                "error", reason="only the author can delete an assessment",
+            )
+        return self.session.delete(reality.uuid)
+
+    # Resources ---------------------------------------------------------
+
+    def investments(
+        self, initiative: ProtocolNode | None = None,
+        actor_uuid: str | None = None,
+    ) -> list[ProtocolNode]:
+        initiative = (
+            self.session.get_node(initiative.uuid) if initiative
+            else self.ensure_initiative()
+        ) or initiative
+        return sorted(
+            [
+                child for child in initiative.live_children()
+                if child.data.get("type") == "initiative_investment"
+                and (
+                    actor_uuid is None
+                    or child.data.get("actor_uuid") == actor_uuid
+                )
+            ],
+            key=lambda node: (node.created_at, node.uuid),
+        )
+
+    def create_investment(
+        self, actor_uuid: str, availability: str,
+    ) -> SessionResult:
+        initiative = self.ensure_initiative()
+        actor_uuid = (actor_uuid or "").strip()
+        if actor_uuid != self.user_profile().uuid:
+            return SessionResult(
+                "error", reason="only the actor can record their availability",
+            )
+        availability = (availability or "").strip()
+        if not availability:
+            return SessionResult("error", reason="availability is required")
+        chain = self.investments(initiative, actor_uuid)
+        previous_uuid = chain[-1].uuid if chain else ""
+        return self.session.create_child(
+            initiative.uuid,
+            {
+                "type": "initiative_investment",
+                "actor_uuid": actor_uuid,
+                "availability": availability,
+                "previous_uuid": previous_uuid,
+                "recorded_at": self._recorded_now(),
+            },
+            {},
+        )
+
+    def delete_investment(self, investment_uuid: str) -> SessionResult:
+        investment = self._node(investment_uuid, "initiative_investment")
+        if not investment:
+            return SessionResult("error", reason="availability record not found")
+        if investment.data.get("actor_uuid") != self.user_profile().uuid:
+            return SessionResult(
+                "error", reason="only the actor can delete their availability",
+            )
+        return self.session.delete(investment.uuid)
+
+    def initiative_resources(self, initiative: ProtocolNode) -> list[dict]:
+        """Resolve topic holders and the persisted head of each record chain."""
+        peers = self.session.peer_perspectives_for_topic()
+        holder_addresses = {self.session.address, *peers.keys()}
+        users = [
+            user for user in self.users()
+            if user.get("address") in holder_addresses
+        ]
+        resources = []
+        for user in users:
+            actor_uuid = str(user.get("id") or "")
+            records = self.investments(initiative, actor_uuid) if actor_uuid else []
+            # A reachable peer's own perspective is the primary source. The
+            # adopted local record remains the last-seen fallback when that
+            # perspective is not available.
+            peer_root = peers.get(str(user.get("address") or ""))
+            if peer_root and actor_uuid:
+                peer_records = sorted(
+                    [
+                        node for node in self._descendants(peer_root)
+                        if node.data.get("type") == "initiative_investment"
+                        and node.data.get("actor_uuid") == actor_uuid
+                        and not node.deleted
+                    ],
+                    key=lambda node: (node.created_at, node.uuid),
+                )
+                if peer_records:
+                    records = peer_records
+            resources.append({
+                "actor_uuid": actor_uuid,
+                "user": user,
+                "head": records[-1].to_dict() if records else None,
+                "history": [node.to_dict() for node in records[:-1]],
+            })
+        return resources
+
+    # Milestones --------------------------------------------------------
+
+    def milestones(
+        self, initiative: ProtocolNode | None = None,
+    ) -> list[ProtocolNode]:
+        initiative = initiative or self.ensure_initiative()
+        return sorted(
+            [
+                child for child in initiative.live_children()
+                if child.data.get("type") == "initiative_milestone"
+            ],
+            key=lambda node: (node.data.get("order", 0), node.uuid),
+        )
+
+    def current_milestone(
+        self, initiative: ProtocolNode | None = None,
+    ) -> ProtocolNode | None:
+        return next(
+            (
+                milestone for milestone in self.milestones(initiative)
+                if not milestone.data.get("reached_at")
+            ),
+            None,
+        )
+
+    def create_milestone(
+        self, title: str, planned_at: str = "", intention: str = "",
+    ) -> SessionResult:
+        initiative = self.ensure_initiative()
+        title = (title or "").strip()
+        if not title:
+            return SessionResult("error", reason="milestone title is required")
+        planned_at = (planned_at or "").strip()
+        if planned_at and not self._is_iso_date(planned_at):
+            return SessionResult("error", reason="planned date must be an ISO date")
+        data = {
+            "type": "initiative_milestone",
+            "title": title,
+            "order": self.session.next_child_order(
+                initiative.uuid, "initiative_milestone",
+            ),
+        }
+        if planned_at:
+            data["planned_at"] = planned_at
+        intention = (intention or "").strip()
+        if intention:
+            data["intention"] = intention
+        return self.session.create_child(initiative.uuid, data, {})
+
+    def update_milestone(
+        self, milestone_uuid: str, title: str | None = None,
+        planned_at: str | None = None, intention: str | None = None,
+    ) -> SessionResult:
+        milestone = self._node(milestone_uuid, "initiative_milestone")
+        if not milestone:
+            return SessionResult("error", reason="milestone not found")
+        data = dict(milestone.data)
+        if title is not None:
+            title = title.strip()
+            if not title:
+                return SessionResult("error", reason="milestone title is required")
+            data["title"] = title
+        if planned_at is not None:
+            planned_at = planned_at.strip()
+            if planned_at and not self._is_iso_date(planned_at):
+                return SessionResult(
+                    "error", reason="planned date must be an ISO date",
+                )
+            if planned_at:
+                data["planned_at"] = planned_at
+            else:
+                data.pop("planned_at", None)
+        if intention is not None:
+            intention = intention.strip()
+            if intention:
+                data["intention"] = intention
+            else:
+                data.pop("intention", None)
+        return self.session.modify(milestone.uuid, data, milestone.weights)
+
+    def claim_milestone_reached(
+        self, milestone_uuid: str, value: str = "",
+    ) -> SessionResult:
+        milestone = self._node(milestone_uuid, "initiative_milestone")
+        if not milestone:
+            return SessionResult("error", reason="milestone not found")
+        value = (value or "").strip()
+        if value and not self._is_iso_date(value):
+            return SessionResult("error", reason="reached date must be an ISO date")
+        data = dict(milestone.data)
+        if value:
+            data["reached_at"] = value
+        else:
+            data.pop("reached_at", None)
+        return self.session.modify(milestone.uuid, data, milestone.weights)
+
+    def delete_milestone(self, milestone_uuid: str) -> SessionResult:
+        milestone = self._node(milestone_uuid, "initiative_milestone")
+        if not milestone:
+            return SessionResult("error", reason="milestone not found")
+        return self.session.delete(milestone.uuid)
+
+    def move_milestone(self, milestone_uuid: str, index: int) -> SessionResult:
+        initiative = self.ensure_initiative()
+        milestone = self._node(milestone_uuid, "initiative_milestone")
+        if not milestone or milestone.parent_uuid != initiative.uuid:
+            return SessionResult("error", reason="milestone not found")
+        return self.session.move_child_to_parent_index(
+            milestone.uuid, initiative.uuid, index,
+        )
+
+    @staticmethod
+    def _recorded_now() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+    @classmethod
+    def _descendants(cls, node: ProtocolNode):
+        for child in node.live_children():
+            yield child
+            yield from cls._descendants(child)
 
     def create_column(self, name: str) -> SessionResult:
         initiative = self.ensure_initiative()
@@ -1578,6 +2151,11 @@ class InitiativeLogic:
             "agenda_item": "Discussion topic",
             "topic_link": "Link",
             "initiative_need": "Need",
+            "initiative_section": "Section",
+            "initiative_clause": "Clause",
+            "initiative_milestone": "Milestone",
+            "initiative_reality": "Assessment",
+            "initiative_investment": "Availability",
         }.get(node_type, "Item")
         if not local:
             return self._annotate_authorship([{
@@ -1678,7 +2256,7 @@ class InitiativeLogic:
         scalar_labels = {
             "name": "Name",
             "description": "Description",
-            "objective": "Objective",
+            "objective": "Intention",
             "text": "Text",
             "priority": "Priority",
             # Content, so a disagreement about them is worth seeing. The
@@ -1688,6 +2266,11 @@ class InitiativeLogic:
             "actual_start": "Started",
             "actual_end": "Ended",
             "beneficiary_label": "Beneficiary",
+            "title": "Title",
+            "intention": "Intention",
+            "planned_at": "Planned date",
+            "reached_at": "Reached",
+            "availability": "Availability",
         }
         for field, label in scalar_labels.items():
             local_value = local.data.get(field)

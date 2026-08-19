@@ -106,6 +106,91 @@ class InitiativeFacade:
     def move_need(self, need_uuid: str, index: int):
         return self._logic.move_need(need_uuid, index)
 
+    def sections(self, initiative: ProtocolNode | None = None) -> list[ProtocolNode]:
+        return self._logic.sections(initiative)
+
+    def clauses(self, parent: ProtocolNode) -> list[ProtocolNode]:
+        return self._logic.clauses(parent)
+
+    def create_section(self, title: str):
+        return self._logic.create_section(title)
+
+    def rename_section(self, section_uuid: str, title: str):
+        return self._logic.rename_section(section_uuid, title)
+
+    def delete_section(self, section_uuid: str):
+        return self._logic.delete_section(section_uuid)
+
+    def move_section(self, section_uuid: str, index: int):
+        return self._logic.move_section(section_uuid, index)
+
+    def create_clause(self, parent_uuid: str, text: str):
+        return self._logic.create_clause(parent_uuid, text)
+
+    def update_clause(self, clause_uuid: str, text: str):
+        return self._logic.update_clause(clause_uuid, text)
+
+    def delete_clause(self, clause_uuid: str):
+        return self._logic.delete_clause(clause_uuid)
+
+    def move_clause(self, clause_uuid: str, index: int):
+        return self._logic.move_clause(clause_uuid, index)
+
+    def realities(self, parent: ProtocolNode) -> list[ProtocolNode]:
+        return self._logic.realities(parent)
+
+    def create_reality(self, parent_uuid: str, text: str):
+        return self._logic.create_reality(parent_uuid, text)
+
+    def delete_reality(self, reality_uuid: str):
+        return self._logic.delete_reality(reality_uuid)
+
+    def investments(
+        self, initiative: ProtocolNode | None = None,
+        actor_uuid: str | None = None,
+    ) -> list[ProtocolNode]:
+        return self._logic.investments(initiative, actor_uuid)
+
+    def create_investment(self, actor_uuid: str, availability: str):
+        return self._logic.create_investment(actor_uuid, availability)
+
+    def delete_investment(self, investment_uuid: str):
+        return self._logic.delete_investment(investment_uuid)
+
+    def milestones(
+        self, initiative: ProtocolNode | None = None,
+    ) -> list[ProtocolNode]:
+        return self._logic.milestones(initiative)
+
+    def current_milestone(
+        self, initiative: ProtocolNode | None = None,
+    ) -> ProtocolNode | None:
+        return self._logic.current_milestone(initiative)
+
+    def create_milestone(
+        self, title: str, planned_at: str = "", intention: str = "",
+    ):
+        return self._logic.create_milestone(title, planned_at, intention)
+
+    def update_milestone(
+        self, milestone_uuid: str, title: str | None = None,
+        planned_at: str | None = None, intention: str | None = None,
+    ):
+        return self._logic.update_milestone(
+            milestone_uuid, title, planned_at, intention,
+        )
+
+    def claim_milestone_reached(
+        self, milestone_uuid: str, value: str = "",
+    ):
+        return self._logic.claim_milestone_reached(milestone_uuid, value)
+
+    def delete_milestone(self, milestone_uuid: str):
+        return self._logic.delete_milestone(milestone_uuid)
+
+    def move_milestone(self, milestone_uuid: str, index: int):
+        return self._logic.move_milestone(milestone_uuid, index)
+
     def move_card(self, card_uuid: str, column_uuid: str, index: int):
         return self._logic.move_card(card_uuid, column_uuid, index)
 

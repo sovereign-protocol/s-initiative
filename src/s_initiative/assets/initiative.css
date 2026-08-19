@@ -503,11 +503,20 @@ button.auto-adopt-square {
 .board {
   flex: 1;
   display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.board-columns {
   align-items: flex-start;
+  display: flex;
+  flex: 1;
   gap: 12px;
-  padding: 12px;
+  min-height: 0;
   overflow-x: auto;
   overflow-y: hidden;
+  padding: 12px;
 }
 
 .column {
@@ -903,12 +912,22 @@ menu button {
   display: none;
 }
 
-/* In the content area, at its top left, above both faces. Not the shell
-   bar: that row is destinations among topics (U7). */
+/* In the content area, at its top left, beside the board's one-line
+   initiative summary. Not the shell bar: that row is destinations among
+   topics (U7). */
+.face-summary-row {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 12px;
+  padding: 8px 12px 0;
+}
+
 .face-switch {
   display: flex;
+  flex: 0 0 auto;
   gap: 4px;
-  padding: 10px 12px 0;
+  padding: 0;
 }
 
 .face-switch-item {
@@ -937,7 +956,7 @@ menu button {
   padding: 12px;
 }
 
-/* Always open, directly under the page's own rule: the objective is the
+/* Always open, directly under the page's own rule: the intention is the
    answer to "what is this" and is the first thing said. */
 .mandate-head {
   border-bottom: 1px solid var(--border);
@@ -946,7 +965,12 @@ menu button {
   padding-bottom: 16px;
 }
 
-.mandate-objective {
+.mandate-intention-label {
+  font-size: 0.85rem;
+  margin: 0 0 6px;
+}
+
+.mandate-intention {
   font-size: 1.15rem;
   line-height: 1.5;
   margin: 0 0 12px;
@@ -1074,4 +1098,257 @@ menu button {
 
 .need-delete:hover {
   color: var(--warning);
+}
+
+/* The Approach -------------------------------------------------------- */
+
+.section-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.approach-section {
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+
+.approach-section.diff {
+  border-left-color: var(--stage-review-fill);
+}
+
+.approach-section-head {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.approach-section-title {
+  flex: 1;
+  font-size: 0.95rem;
+  margin: 0;
+  min-width: 0;
+}
+
+.approach-section-actions {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.clause-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0;
+}
+
+.clause-row {
+  align-items: baseline;
+  border-radius: 6px;
+  display: flex;
+  gap: 6px;
+  padding: 3px 4px;
+}
+
+.clause-row:hover {
+  background: var(--card-hover);
+}
+
+.clause-row.diff {
+  outline: 2px solid var(--stage-review-fill);
+}
+
+.clause-text {
+  flex: 1;
+  margin: 0;
+  min-width: 0;
+}
+
+.clause-actions {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
+/* Assessed impact ----------------------------------------------------- */
+
+.record-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.record-row {
+  background: var(--surface);
+  border-left: 2px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 8px 10px;
+  position: relative;
+}
+
+.record-text,
+.resource-availability {
+  margin: 0;
+}
+
+.record-meta {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 3px 0 0;
+}
+
+.record-delete {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  position: absolute;
+  right: 6px;
+  top: 6px;
+}
+
+/* Resources ----------------------------------------------------------- */
+
+.resource-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.resource-row {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 10px;
+}
+
+.resource-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 9px;
+}
+
+.resource-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.investment-record {
+  color: var(--muted);
+  font-size: 0.86rem;
+  margin: 4px 0;
+}
+
+/* Milestones on the mandate ------------------------------------------ */
+
+.milestone-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.milestone-block {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.milestone-block.diff {
+  outline: 2px solid var(--stage-review-fill);
+}
+
+.milestone-head {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.milestone-title {
+  flex: 1;
+  font-size: 1rem;
+  margin: 0;
+  min-width: 0;
+}
+
+.milestone-date {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 3px 5px;
+}
+
+.milestone-reached {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 4px 0;
+}
+
+.milestone-intention {
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.milestone-intention h5 {
+  margin: 0;
+}
+
+.milestone-intention-text {
+  margin: 6px 0 0;
+}
+
+.milestone-assessments {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+/* The board/mandate seam --------------------------------------------- */
+
+.milestone-strip {
+  border-left: 1px solid var(--border-strong);
+  flex: 1;
+  margin-left: auto;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 0 0 4px 14px;
+}
+
+.milestone-strip[hidden] {
+  display: none;
+}
+
+.milestone-strip-content {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  min-width: 100%;
+  white-space: nowrap;
+  width: max-content;
+}
+
+.summary-segment {
+  font-size: 0.86rem;
+}
+
+.summary-segment strong {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.summary-separator,
+.summary-divider {
+  color: var(--muted);
+}
+
+.summary-divider {
+  padding: 0 2px;
+}
+
+@media (max-width: 760px) {
+  .face-summary-row { gap: 8px; padding-left: 8px; padding-right: 8px; }
+  .milestone-head { align-items: flex-start; flex-wrap: wrap; }
 }

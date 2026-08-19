@@ -1,15 +1,8 @@
 # Interface — S-Initiative
 
-Status: **proposed, except §3, §8, §9 and the head of §5, which are done.**
-The switch exists, the mandate face exists and holds its head region, and
-the two faces render by the two regimes §8 sets out. The seven node types in
-§4, §5 and §6 are still a specification; `PLAN_INITIATIVE_FACE.md` is the
-order they arrive in.
+Status: **built.** `PLAN_INITIATIVE_FACE.md` records the implementation order.
 
-`DESIGN_INITIATIVE.md` says what an initiative is. This says how it is shown,
-and it exists because that document defined twenty-odd fields across nine node
-types and the application has a surface for exactly one of them — `objective`,
-which was added as a tagline so Board of Boards had something to draw.
+`DESIGN_INITIATIVE.md` says what an initiative is. This says how it is shown.
 
 Where this names something Core owns, Core is the source:
 `s-core/DESIGN_UI_CONSISTENCY.md` (U1–U8) and `s-core/DESIGN_VOCABULARY.md`.
@@ -36,7 +29,7 @@ stutter §9 takes trouble to avoid between a face and its topic, arriving in the
 one place a reader actually looks.
 
 **Mandate**, because the face is where you agree (§2) and a mandate is what was
-agreed: the objective, whose needs it answers, the impact intended, what it
+agreed: the Intention, whose needs it answers, what it
 costs, and how it will be gone about. Assessed Impact sits under it without
 strain — reporting against a mandate is part of holding one, which is more than
 "Definition" could carry, and that was the objection to *that* name. Not
@@ -68,8 +61,8 @@ three fields do not:
 
 | Field                                                                                                  | Face                                                       | Why                                                          |
 | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- | ------------------------------------------------------------ |
-| `objective`, `initiative_need`, `initiative_section`, `initiative_clause`, `initiative_intent`     | the mandate                                                | agreeing                                                     |
-| `initiative_milestone.title`, `.order`, `.planned_at`                                                  | the mandate                                                | planning                                                     |
+| `objective` (shown as Intention), `initiative_need`, `initiative_section`, `initiative_clause`         | the mandate                                                | agreeing                                                     |
+| `initiative_milestone.title`, `.order`, `.planned_at`, `.intention`                                    | the mandate                                                | planning                                                     |
 | `planned_start`, `planned_end`                                                                         | the mandate                                                | planning                                                     |
 | **`actual_start`, `actual_end`, `reached_at`**                                                         | **the board**                                              | a claim made on the day it is true                           |
 | `initiative_reality`                                                                                   | both — written on the board, read on the mandate           | observing what just happened, reading what was observed      |
@@ -112,7 +105,7 @@ that has scrolled off the top. The staleness that a switch costs is paid for in
 
 **Rejected: the initiative as a pane.** Core's panes hold what is being worked
 out and are entered transiently. This is the longer of the two documents and
-the one with seven regions in it.
+the one with several regions in it.
 
 **Not in the URL, and no `?face=`.** `?topic=` is the only parameter Core
 composes routes from (U6), and a second one would have to be understood by
@@ -133,35 +126,20 @@ plan and a fact. Everything else on the mandate face is one or the other.
 
 ### What it shows
 
-Two zones, and between them the four claims an initiative ever makes:
+One compact status line to the right of the face switch, separated from it by a
+vertical rule:
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│ 12 Mar → 30 Jun                                    [Started ✓]     │
-│                                                                    │
-│ Next: Pilot with three teams          planned 30 Apr               │
-│ Intended: two teams renew unprompted · support load flat          │
-│                                                    [Mark reached]  │
-└────────────────────────────────────────────────────────────────────┘
+Start: 12 Mar ⇒ Intention: two teams renew ⇒ End: 30 Jun |
+Last: 8 Apr: Prototype ⇒ Intention: three teams pilot ⇒ Next: 30 Apr: Pilot
 ```
 
-| Zone                  | From                                | Acts                                              |
-| --------------------- | ----------------------------------- | ------------------------------------------------- |
-| the bookends          | the `initiative` node's four dates  | claim `actual_start`, claim `actual_end`          |
-| the current milestone | one `initiative_milestone`          | claim `reached_at`, then write an `initiative_reality` |
-
-The planned dates are shown and are **not editable here** — planning is the
-other face. A claimed `actual_start` replaces the planned one in the line and
-says it was claimed. This is the same treatment `reached_at` gets, for the same
-reason: §3 says clearing one is undoing a claim rather than tidying up, so the
-strip must never make it look like a correction to a field.
-
-**"Intended" is read-only on the strip**, one line, its clauses joined. It is
-there so that marking a milestone reached happens in front of what the milestone
-was supposed to change, which is the entire argument for the seam. Editing it
-means going to the other face, and that is correct — changing what you expect,
-on the day you are judging whether you got it, is a decision and not a
-bookkeeping act.
+The initiative group reads `Start ⇒ Intention ⇒ End`; the milestone group reads
+`Last ⇒ Intention ⇒ Next`. Actual dates replace planned dates where they exist.
+The milestone Intention comes from the single field on the next milestone. Any
+missing fact is omitted, including its label and separator. The entire line is
+read-only and has no action buttons; planning, claims and assessments happen on
+their respective surfaces.
 
 ### The current milestone is the first unreached one in order
 
@@ -178,27 +156,10 @@ and draws no conclusion about the others.
 next unreached one. The alternative — refusing, or reordering silently — would
 make the strip an authority over a list it does not own.
 
-### After reaching one
-
-The strip asks for an observation, once: a reached milestone that carries an
-intended impact and no `initiative_reality` shows **`Record what happened`**,
-opening the same composer the mandate face uses. It asks and it does not
-insist — a prompt that cannot be dismissed is a validation rule about somebody
-else's perception, and §3 is explicit that no observation is *the* record.
-
-The prompt is written by whoever is looking, for themselves. It never says "the
-team has not assessed this"; it says nothing at all once the person reading it
-has written theirs, because what is missing is their observation and not a
-field's value.
-
 ### The empty cases
 
-Each states what is absent and where the act is, and neither is an error:
-
-- **No milestones.** "No milestones yet" with a link to the other face. This is
-  what makes §1's "always land on the board" rule survive a new initiative.
-- **All reached.** The bookends stay, the milestone zone says so, and
-  `actual_end` becomes the claim on offer.
+Absence is quiet: no placeholder is drawn for a missing date, Intention or
+milestone. If no status fact exists, the status line itself is hidden.
 
 ### What the strip is not
 
@@ -210,22 +171,22 @@ question and Board of Boards is where portfolio questions are asked.
 
 ## 5. The mandate face
 
-One document, seven regions, in this order:
+One document, with Intention fixed at the top and five regions beneath it:
 
 |      | Region                    | Holds                                                                     | Class            |
 | ---- | ------------------------- | ------------------------------------------------------------------------- | ---------------- |
-| head | **Objective and dates**   | `objective`, the four dates                                               | content          |
-| 1    | **Milestones**            | `initiative_milestone`, each with its intended impact and its realities  | content + record |
+| head | **Intention and dates**   | `objective` (displayed as Intention), the four dates                      | content          |
+| 1    | **Milestones**            | `initiative_milestone`, each with one Intention and its realities        | content + record |
 | 2    | **Needs**                 | `initiative_need`                                                         | content          |
-| 3    | **Intended Impact**       | the initiative's `initiative_intent`                                 | content          |
-| 4    | **Resources**             | who holds the topic, each with their `initiative_investment`              | record           |
-| 5    | **Approach**              | `initiative_section` → `initiative_clause`                                | content          |
-| 6    | **Assessed Impact**       | the initiative's `initiative_reality`                                     | record           |
+| 3    | **Resources**             | who holds the topic, each with their `initiative_investment`              | record           |
+| 4    | **Approach**              | `initiative_section` → `initiative_clause`                                | content          |
+| 5    | **Assessed Impact**       | the initiative's `initiative_reality`                                     | record           |
 
-**[DONE] The head is not a disclosure.** One paragraph and four dates, always open,
-directly under the page's own rule. It is the answer to "what is this", it is
-everybody's (§3), and a caret in front of it would suggest there is a version of
-this page on which the objective is not the first thing said. The dates read as
+**The head is not a disclosure.** One Intention field and four dates, always
+open, directly under the page's own rule. It is labelled **Intention** and asks
+"What is this initiative meant to change and for whom?" It is everybody's
+(§3), and a caret in front of it would suggest there is a version of this page
+on which the Intention is not the first thing said. The dates read as
 one line — planned, and claimed where claimed — with the same treatment the
 strip uses, so the two faces do not describe the same four fields in two
 vocabularies.
@@ -275,13 +236,13 @@ actor in this system at all. Where `beneficiary_actor_uuid` resolves to an actor
 this client holds, the live name is drawn and the label becomes what it was
 called here — shown, not hidden, since the two disagreeing is information.
 
-### Intended Impact, and why the region can never hold two
+### Intention is one field
 
-Exactly one `initiative_intent` per parent (§3), so the region has no "add
-intent" control at all — only add-clause. There is nowhere in the interface
-for a second one to come from, which is the surface half of the type rule and
-the only honest way to state it. Two side by side would let the initiative hold
-a contradiction without anybody having to notice.
+The initiative uses its existing `objective` field as Intention; there is no
+separate Intended Impact region or clause collection. Each milestone likewise
+has one editable `intention` text field. Assessments remain append-only and may
+still be many, because perspectives on what happened are records rather than a
+second agreed Intention.
 
 ---
 
@@ -322,8 +283,9 @@ truths — which is the failure the class exists to prevent.
 Everything it has: the columns, the cards, comments, attachments, the
 participant picker, ghost columns, the adopt tools, the agenda in Core's pane.
 Nothing on it moves except `objective`, which stops being a tagline edited in
-place on the board and becomes the head of the other face. The field stays —
-Board of Boards reads it — and only where it is written changes.
+place on the board and becomes the Intention at the head of the other face. The
+storage name stays because Board of Boards reads it; only its presentation and
+where it is written change.
 
 The strip in §4 is the one addition.
 
@@ -337,7 +299,7 @@ The strip in §4 is the one addition.
 This is a decision against the pattern the board face uses, and the reason is
 already recorded twice. `reconcileDOM(parent, dataItems, keyFn, createFn,
 updateFn)` needs a create/update pair per node type; the board has two and the
-mandate face would add seven. S-Team considered copying the helper for five
+mandate face adds several. S-Team considered copying the helper for five
 new pairs and refused, naming the failure exactly: "a pair falling out of step
 is a silent bug class this codebase has already met." It has — a full-render
 function updated without its patch twin draws the old thing until something
@@ -503,9 +465,9 @@ would have to be understood by every surface that builds a link to an
 initiative.
 
 **Nothing is required to move on.** No milestone must be reached before the next
-is, no intended impact must be written before a milestone, no reality before an
+is, no Intention must be written before a milestone, no reality before an
 initiative ends. The strip asks; nothing blocks.
 
-**No per-member view of any of it.** One objective and it is everybody's (§3),
+**No per-member view of any of it.** One Intention and it is everybody's (§3),
 one Approach, one set of milestones. The only thing on either face that is
 per-person is what that person wrote: their investment, their observations.

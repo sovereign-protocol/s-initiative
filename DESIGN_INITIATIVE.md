@@ -1,8 +1,6 @@
 # Initiative — what the thing is
 
-Status: proposed, except for the links in §3, the `initiative` root itself
-and its four dates, which are built. The seven node types below have no code
-against them yet; `PLAN_INITIATIVE_FACE.md` is the order they arrive in.
+Status: **built.** `PLAN_INITIATIVE_FACE.md` records the implementation order.
 
 Where these are shown is `DESIGN_INITIATIVE_UI.md`: two faces, the board and
 the initiative, and the milestone strip that is the one place they touch.
@@ -29,9 +27,7 @@ initiative_app "S-Initiative"          local folder, never shared
     ├── topic_link                     the team it belongs to, the flows it runs
     ├── initiative_need
     ├── initiative_section → initiative_clause          the Approach
-    ├── initiative_intent → initiative_clause           Intended Impact
     ├── initiative_milestone
-    │     ├── initiative_intent → initiative_clause
     │     └── initiative_reality
     ├── initiative_reality
     └── initiative_investment
@@ -53,8 +49,8 @@ section can arrive is a level that can diverge on its own.
 
 Two kinds of node, and the difference decides everything else about them.
 
-**Content** is what people are agreeing to. It is *edited*: the objective, the
-needs, the approach, what is expected of a milestone. Anyone holding the topic
+**Content** is what people are agreeing to. It is *edited*: the Intention, the
+needs, the approach, what is intended at a milestone. Anyone holding the topic
 may write it, a second person editing it is a divergence, and the divergence is
 shown and resolved by a human. **Decidable**, in the node-class vocabulary —
 more than one writer, and changing it changes what everybody holds.
@@ -86,13 +82,15 @@ The topic. One per topic, and the node every other one here hangs off.
 | Field                       | Requirement                                              |
 | --------------------------- | -------------------------------------------------------- |
 | `name`                      | required — numbered on collision, as board names already are |
-| `objective`                 | required, may be empty                                     |
+| `objective`                 | required, may be empty — displayed as **Intention**         |
 | `planned_start`             | optional — ISO date                                        |
 | `planned_end`               | optional — ISO date                                        |
 | `actual_start`              | optional — ISO date                                        |
 | `actual_end`                | optional — ISO date                                        |
 
-**There is one objective and it is everybody's.** Not an objective per member —
+**There is one Intention and it is everybody's.** The existing storage and API
+name is `objective`, retained because Board of Boards reads it. It is not an
+objective per member —
 the whole reason to be on the same initiative is to be pointed at the same
 thing, and where somebody's own aim differs it is a card, a need, or a
 disagreement worth having in the open. A per-member objective would make the
@@ -180,21 +178,6 @@ for it. The seed gives the same structure to anybody who wants it without
 closing the vocabulary. If the portfolio view is later worth the cost, the way
 to pay it is a declared kind on the section, not four types.
 
-### `initiative_intent` — Intended Impact
-
-Exactly one per parent, holding `initiative_clause` children. Under the
-initiative it is what the whole thing is for. Under a milestone it is what that
-point is supposed to have changed by the time it is reached.
-
-| Field   | Requirement |
-| ------- | ------------ |
-| *(none beyond `type`)* | the text lives in its clauses |
-
-**Why one and not many.** A second intent is not a second opinion, it is a
-disagreement about what we are doing — and a disagreement about content is
-exactly what the divergence machinery is for. Two of them side by side would
-let the initiative hold both without anybody having to notice.
-
 ### `initiative_milestone`
 
 A point on the timeline. 0-n, ordered.
@@ -203,11 +186,12 @@ A point on the timeline. 0-n, ordered.
 | ------------ | ---------------------------------------------------------------- |
 | `title`      | required                                                          |
 | `order`      | required                                                          |
+| `intention`  | optional — one free-text Intention                                 |
 | `planned_at` | optional — ISO date                                               |
 | `reached_at` | optional — ISO date; clearing it is undoing a claim, not tidying up |
 
 A milestone is the same shape as the initiative's own bookends, repeated: a
-planned date, a reached date, an intended impact, and the observations of how it
+planned date, a reached date, one Intention, and the observations of how it
 actually went. That is why "a roadmap with milestones", "expected impact at
 certain milestones" and "actual impact at certain milestones" are one type here
 and not three.
@@ -225,8 +209,8 @@ each milestone. Appended, never edited by anybody but its author, never merged.
 
 **Many, and none of them wins.** Diverging perspectives on what an initiative
 achieved are not a conflict to resolve; the blueprint files this under
-Subjective Reality, and calls them fuel for organisational learning. Intended
-impact is one and contested. Assessed impact is many and kept.
+Subjective Reality, and calls them fuel for organisational learning. Intention
+is one and contested. Assessed impact is many and kept.
 
 This is the same pair as S-Team's `team_trustee_action` and
 `team_trustee_reality`, and takes the same name for the second half of it
@@ -263,6 +247,12 @@ actor; the current commitment is the head of it.
 possible value is a comment. It is added when there is a second kind and not
 before.
 
+**Copies and snapshots carry content, never records.** A copied initiative
+keeps its needs, approach, Intention, milestone intentions and dates, but strips
+every `initiative_reality` and `initiative_investment`. A snapshot omits the
+same two types. Their author uuids are claims about one topic; carrying them
+into a new initiative would make actors say something they never wrote there.
+
 ---
 
 ## 4. Members, and why there is no member list
@@ -298,7 +288,6 @@ both; everything else is observed.
 | `initiative_need`        | yes | yes | **decidable**  | —          |
 | `initiative_section`     | yes | yes | **decidable**  | —          |
 | `initiative_clause`      | yes | yes | **decidable**  | —          |
-| `initiative_intent`      | yes | yes | **decidable**  | —          |
 | `initiative_milestone`   | yes | yes | **decidable**  | —          |
 | `initiative_reality`     | no (the observer) | — | observed | persisted |
 | `initiative_investment`  | no (the owner)    | — | observed | persisted |
@@ -331,7 +320,7 @@ evaporated as people drifted off would have no history at all.
 | `Initiative: 1 Team`                        | `topic_link` with `application_id` `team`, at most one — **built** |
 | *(nothing)*                                 | `topic_link` to a flow — the blueprint has no way to say an initiative runs one |
 | `0-n Investments`                           | `initiative_investment`, availability only               |
-| `1 Expected Impact [C-Text]`                | `initiative_intent` on the initiative — renamed, see below |
+| `1 Expected Impact [C-Text]`                | `initiative.objective`, displayed as **Intention**         |
 | `0-n Assessed Impact [C-Text]`              | `initiative_reality`, one per observation, per author    |
 | `0-n Boards [Kanban]`                       | exactly one, held as the columns of the initiative — §7  |
 | `Resource: 1 Owner, 1 Availability, 1 Value`| collapsed into `initiative_investment` while availability is the only kind |
@@ -346,16 +335,11 @@ genuinely is an expectation. S-Team's built `team_trustee_action` carries it
 under exactly that reading.
 
 On an initiative it is not a forecast. It is what everybody holding the topic
-means to bring about, and calling it *expected* put it beside the `objective`
-as a prediction of the same thing — two fields answering "what is this meant
-to change", one of them apparently guessing at the other. **Intended Impact**
-names the act instead, and the pair *intended / assessed* then reads as intent
-against observation, which is what §2 says these two kinds of node are.
-
-**The objective is not folded into it.** One sentence and a set of clauses are
-different grains of the same question. Board of Boards draws the sentence, and
-recovering one from a clause list would need a "the first clause is the title"
-rule — implicit structure of exactly the kind this document refuses elsewhere.
+means to bring about, so the interface calls the existing `objective` field
+**Intention**. There is no second clause set answering the same question. The
+pair *intention / assessed impact* reads as intent against observation, which
+is what §2 says these two kinds of content are. Milestones use the same concept
+at their own scale, as one `intention` text field each.
 
 ---
 

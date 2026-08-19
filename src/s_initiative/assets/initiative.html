@@ -26,8 +26,13 @@
            whole tells a reader nothing about either. The switch is in the
            content area and not in the shell bar (U7) - the bar's navigation
            row is destinations among topics. -->
-      <nav id="faceSwitch" class="face-switch"></nav>
-      <section id="board" class="board"></section>
+      <div class="face-summary-row">
+        <nav id="faceSwitch" class="face-switch"></nav>
+        <div id="milestoneStrip" class="milestone-strip"></div>
+      </div>
+      <section id="board" class="board">
+        <div id="boardColumns" class="board-columns"></div>
+      </section>
       <section id="mandate" class="mandate-face" hidden></section>
     </main>
 
@@ -408,7 +413,7 @@
       }
 
       async function loadBoard() {
-        if (dragActive || el("board")?.dataset.reordering === "true") return;
+        if (dragActive || el("boardColumns")?.dataset.reordering === "true") return;
         try {
           state = await api("/api/initiative/board");
 
@@ -451,7 +456,8 @@
       function showFace(face) {
         ephemeral.face = face;
         el("board").hidden = face !== "board";
-        el("mandate").hidden = face !== "initiative";
+        el("mandate").hidden = face !== "mandate";
+        el("milestoneStrip").hidden = face !== "board";
         // The face was hidden while the payload moved on, so the skip check
         // below has nothing useful to compare against.
         renderedMandateJson = null;
@@ -503,10 +509,512 @@
           renderedMandateJson = null;
           return;
         }
-        const encoded = JSON.stringify(initiative.data ?? null);
+        const encoded = mandateFingerprint(initiative);
         if (encoded === renderedMandateJson) return;
         renderedMandateJson = encoded;
-        article.replaceChildren(mandateHead(initiative), needsRegion(initiative));
+        article.replaceChildren(
+          mandateHead(initiative),
+          milestonesRegion(initiative),
+          needsRegion(initiative),
+          resourcesRegion(),
+          approachRegion(initiative),
+          assessedImpactRegion(initiative),
+        );
+      }
+
+      function milestoneNodes(initiative) {
+        return sortNodes(
+          (initiative?.children || []).filter(
+            (child) => !child.deleted && child.data.type === "initiative_milestone",
+          ),
+        );
+      }
+
+      function realityNodes(parent) {
+        return (parent?.children || [])
+          .filter((child) => !child.deleted && child.data.type === "initiative_reality")
+          .sort((left, right) =>
+            String(left.data.recorded_at || left.created_at || "").localeCompare(
+              String(right.data.recorded_at || right.created_at || ""),
+            ),
+          );
+      }
+
+      function recordDate(value) {
+        if (!value) return "";
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return value;
+        return date.toLocaleString(undefined, {
+          day: "numeric", month: "short", year: "numeric",
+          hour: "2-digit", minute: "2-digit",
+        });
+      }
+
+      function mandateRegion(title) {
+        const section = document.createElement("section");
+        section.className = "mandate-region";
+        const heading = document.createElement("h3");
+        heading.className = "mandate-region-title";
+        heading.textContent = title;
+        section.append(heading);
+        return section;
+      }
+
+      // Region 6. These are authored observations: appended in time, never
+      // edited or reordered, and never given a divergence lamp.
+      function assessedImpactRegion(initiative) {
+        const section = mandateRegion("Assessed Impact");
+        const list = document.createElement("div");
+        list.className = "record-list";
+        const records = realityNodes(initiative);
+        if (!records.length) {
+          const empty = document.createElement("p");
+          empty.className = "mandate-empty";
+          empty.textContent = "No assessments recorded yet.";
+          list.append(empty);
+        }
+        for (const reality of records) list.append(realityRow(reality));
+        section.append(list, realityComposer(initiative.uuid));
+        return section;
+      }
+
+      function realityComposer(parentUuid) {
+        return SovereignUI.addComposer({
+          noun: "assessment",
+          placeholder: "What happened?",
+          onSubmit: async (text) => {
+            await api("/api/initiative/realities/create", {
+              parent_uuid: parentUuid, text,
+            });
+            showToast("Assessment recorded");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        });
+      }
+
+      function realityRow(reality) {
+        const row = document.createElement("article");
+        row.className = "record-row";
+        const text = document.createElement("p");
+        text.className = "record-text";
+        text.textContent = reality.data.text || "";
+        const meta = document.createElement("p");
+        meta.className = "record-meta";
+        meta.textContent = `${actorName(reality.data.author_actor_uuid) || "Unknown actor"} · ${
+          recordDate(reality.data.recorded_at || reality.created_at)
+        }`;
+        row.append(text, meta);
+        if (reality.data.author_actor_uuid === state.user_profile?.uuid) {
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.className = "record-delete";
+          remove.textContent = "Remove";
+          remove.onclick = () => run(
+            () => api("/api/initiative/realities/delete", {
+              reality_uuid: reality.uuid,
+            }),
+            "Assessment removed",
+          );
+          row.append(remove);
+        }
+        return row;
+      }
+
+      // Region 4. Membership comes from holding the topic. Each line shows
+      // the head of an immutable availability chain; only your line can append.
+      function resourcesRegion() {
+        const section = mandateRegion("Resources");
+        const list = document.createElement("div");
+        list.className = "resource-list";
+        for (const resource of state.resources || []) {
+          list.append(resourceRow(resource));
+        }
+        section.append(list);
+        return section;
+      }
+
+      function resourceRow(resource) {
+        const row = document.createElement("article");
+        row.className = "resource-row";
+        const user = resource.user || {};
+        const mine = resource.actor_uuid === state.user_profile?.uuid;
+        const presence = mine ? {online: true} : peerPresence(user.address);
+        const head = document.createElement("div");
+        head.className = "resource-head";
+        head.append(SovereignUI.avatar(user, {self: mine}));
+        const body = document.createElement("div");
+        body.className = "resource-body";
+        const name = document.createElement("strong");
+        name.textContent = user.name || "Unknown actor";
+        body.append(name);
+        if (resource.head) {
+          const availability = document.createElement("p");
+          availability.className = "resource-availability";
+          availability.textContent = resource.head.data.availability || "";
+          const meta = document.createElement("p");
+          meta.className = "record-meta";
+          meta.textContent = `${presence.online ? "Recorded" : "Last seen"} ${
+            recordDate(resource.head.data.recorded_at || resource.head.created_at)
+          }`;
+          body.append(availability, meta);
+        } else {
+          const empty = document.createElement("p");
+          empty.className = "record-meta";
+          empty.textContent = "No availability recorded";
+          body.append(empty);
+        }
+        head.append(body);
+        row.append(head);
+        if (mine && (resource.history || []).length) {
+          const disclosure = SovereignUI.disclosure("Earlier commitments", {
+            expanded: Boolean(ephemeral.disclosures[`resource-${resource.actor_uuid}`]),
+            onToggle: (open) => {
+              ephemeral.disclosures[`resource-${resource.actor_uuid}`] = open;
+            },
+          });
+          for (const item of resource.history) {
+            disclosure.content.append(investmentRecord(item));
+          }
+          row.append(disclosure.section);
+        }
+        if (mine) {
+          row.append(SovereignUI.addComposer({
+            noun: "availability",
+            placeholder: "What can you commit?",
+            onSubmit: async (availability) => {
+              await api("/api/initiative/investments/create", {
+                actor_uuid: resource.actor_uuid, availability,
+              });
+              showToast("Availability recorded");
+              await loadBoard();
+            },
+            onError: (error) => showToast(error.message, true),
+          }));
+        }
+        return row;
+      }
+
+      function investmentRecord(investment) {
+        const item = document.createElement("p");
+        item.className = "investment-record";
+        item.textContent = `${investment.data.availability || ""} · ${
+          recordDate(investment.data.recorded_at || investment.created_at)
+        }`;
+        return item;
+      }
+
+      // Region 1. Milestones and their single Intention are planned here;
+      // reached_at is shown here as a claim rather than an editable date.
+      function milestonesRegion(initiative) {
+        const section = mandateRegion("Milestones");
+        const list = document.createElement("div");
+        list.className = "milestone-list";
+        const milestones = milestoneNodes(initiative);
+        if (!milestones.length) {
+          const empty = document.createElement("p");
+          empty.className = "mandate-empty";
+          empty.textContent = "No milestones yet.";
+          list.append(empty);
+        }
+        for (const milestone of milestones) list.append(milestoneBlock(milestone));
+        SovereignUI.reorderableList({
+          container: list,
+          itemSelector: ".milestone-block",
+          getId: (block) => block.dataset.uuid,
+          onMove: ({id, index}) => api("/api/initiative/milestones/move", {
+            milestone_uuid: id, index,
+          }),
+          onChanged: async () => {
+            showToast("Milestone moved");
+            await loadBoard();
+          },
+          onError: error => showToast(error.message, true),
+        });
+        section.append(list, SovereignUI.addComposer({
+          noun: "milestone",
+          placeholder: "Milestone title",
+          onSubmit: async (title) => {
+            await api("/api/initiative/milestones/create", {title});
+            showToast("Milestone added");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }));
+        return section;
+      }
+
+      function milestoneBlock(milestone) {
+        const block = document.createElement("article");
+        block.className = "milestone-block";
+        block.dataset.uuid = milestone.uuid;
+        const head = document.createElement("header");
+        head.className = "milestone-head";
+        head.append(SovereignUI.reorderHandle({label: "Reorder milestone"}));
+        head.append(SovereignUI.editableText({
+          tag: "h4",
+          className: "milestone-title",
+          value: milestone.data.title || "",
+          placeholder: "Milestone title",
+          onCommit: (title) => api("/api/initiative/milestones/update", {
+            milestone_uuid: milestone.uuid, title,
+          }),
+          onChanged: async () => {
+            showToast("Milestone saved");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }));
+        const planned = document.createElement("input");
+        planned.type = "date";
+        planned.className = "milestone-date";
+        planned.value = milestone.data.planned_at || "";
+        planned.setAttribute("aria-label", "Planned date");
+        planned.onchange = () => run(
+          () => api("/api/initiative/milestones/update", {
+            milestone_uuid: milestone.uuid, planned_at: planned.value,
+          }),
+          "Milestone date saved",
+        );
+        head.append(planned, ...reactionTools(milestone));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "need-delete";
+        remove.textContent = "Remove";
+        remove.onclick = () => run(
+          () => api("/api/initiative/milestones/delete", {
+            milestone_uuid: milestone.uuid,
+          }),
+          "Milestone removed",
+        );
+        head.append(remove);
+        block.append(head);
+        if (milestone.data.reached_at) {
+          const reached = document.createElement("p");
+          reached.className = "milestone-reached";
+          reached.textContent = `Reached ${formatDay(milestone.data.reached_at)}`;
+          block.append(reached);
+        }
+        const intention = document.createElement("div");
+        intention.className = "milestone-intention";
+        const label = document.createElement("h5");
+        label.textContent = "Intention";
+        intention.append(label, SovereignUI.editableText({
+          tag: "p",
+          className: "milestone-intention-text",
+          value: milestone.data.intention || "",
+          placeholder: "What should this milestone change and for whom?",
+          onCommit: (value) => api("/api/initiative/milestones/update", {
+            milestone_uuid: milestone.uuid, intention: value,
+          }),
+          onChanged: async () => {
+            showToast("Intention saved");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }));
+        const assessments = document.createElement("div");
+        assessments.className = "milestone-assessments";
+        for (const reality of realityNodes(milestone)) {
+          assessments.append(realityRow(reality));
+        }
+        assessments.append(realityComposer(milestone.uuid));
+        block.append(intention, assessments);
+        applyTransitionClass(block, milestone.uuid, {});
+        return block;
+      }
+
+      function sections(initiative) {
+        return sortNodes(
+          (initiative?.children || []).filter(
+            (child) => !child.deleted && child.data.type === "initiative_section",
+          ),
+        );
+      }
+
+      function clauses(parent) {
+        return sortNodes(
+          (parent?.children || []).filter(
+            (child) => !child.deleted && child.data.type === "initiative_clause",
+          ),
+        );
+      }
+
+      // Region 5, and it arrives collapsed. It is the longest region and the
+      // least often changed, and S-Team learned in use that leading with the
+      // long text buried the team behind its own text.
+      //
+      // The four seeded sections are ordinary content from the moment they
+      // exist - renamable, reorderable, deletable, and a fifth added by the
+      // same composer. Nothing here marks them as special, because nothing
+      // about them is.
+      function approachRegion(initiative) {
+        const disclosure = SovereignUI.disclosure("Approach", {
+          className: "mandate-region",
+          expanded: Boolean(ephemeral.disclosures.approach),
+          onToggle: (open) => {
+            ephemeral.disclosures.approach = open;
+          },
+        });
+        const list = document.createElement("div");
+        list.className = "section-list";
+        for (const section of sections(initiative)) {
+          list.append(sectionBlock(section));
+        }
+        SovereignUI.reorderableList({
+          container: list,
+          itemSelector: ".approach-section",
+          getId: (block) => block.dataset.uuid,
+          onMove: ({id, index}) => api("/api/initiative/sections/move", {
+            section_uuid: id, index,
+          }),
+          onChanged: async () => {
+            showToast("Section moved");
+            await loadBoard();
+          },
+          onError: error => showToast(error.message, true),
+        });
+        disclosure.content.append(list, SovereignUI.addComposer({
+          noun: "section",
+          placeholder: "Section title",
+          onSubmit: async (title) => {
+            await api("/api/initiative/sections/create", {title});
+            showToast("Section added");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }));
+        return disclosure.section;
+      }
+
+      function sectionBlock(section) {
+        const block = document.createElement("article");
+        block.className = "approach-section";
+        block.dataset.uuid = section.uuid;
+
+        const head = document.createElement("header");
+        head.className = "approach-section-head";
+        head.append(SovereignUI.reorderHandle({label: "Reorder section"}));
+        head.append(SovereignUI.editableText({
+          tag: "h4",
+          className: "approach-section-title",
+          value: section.data.title || "",
+          placeholder: "Section title",
+          onCommit: (value) => api("/api/initiative/sections/rename", {
+            section_uuid: section.uuid,
+            title: value,
+          }),
+          onChanged: async () => {
+            showToast("Section renamed");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }));
+        const actions = document.createElement("div");
+        actions.className = "approach-section-actions";
+        actions.append(...reactionTools(section));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "need-delete";
+        remove.textContent = "Remove";
+        remove.onclick = () => run(
+          () => api("/api/initiative/sections/delete", {
+            section_uuid: section.uuid,
+          }),
+          "Section removed",
+        );
+        actions.append(remove);
+        head.append(actions);
+
+        const list = document.createElement("div");
+        list.className = "clause-list";
+        for (const clause of clauses(section)) list.append(clauseRow(clause));
+        // Within its own section and never across one: moving a line into a
+        // different section is deleting it there and writing it here, and a
+        // drag that quietly rewrote which section a line belongs to would be
+        // the interface deciding something the headings say.
+        SovereignUI.reorderableList({
+          container: list,
+          itemSelector: ".clause-row",
+          getId: (row) => row.dataset.uuid,
+          onMove: ({id, index}) => api("/api/initiative/clauses/move", {
+            clause_uuid: id, index,
+          }),
+          onChanged: async () => {
+            showToast("Clause moved");
+            await loadBoard();
+          },
+          onError: error => showToast(error.message, true),
+        });
+
+        block.append(head, list, SovereignUI.addComposer({
+          noun: "clause",
+          placeholder: "Add a line",
+          onSubmit: async (text) => {
+            await api("/api/initiative/clauses/create", {
+              parent_uuid: section.uuid, text,
+            });
+            showToast("Clause added");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }));
+        applyTransitionClass(block, section.uuid, {});
+        return block;
+      }
+
+      function clauseRow(clause) {
+        const row = document.createElement("div");
+        row.className = "clause-row";
+        row.dataset.uuid = clause.uuid;
+        row.append(SovereignUI.reorderHandle({label: "Reorder clause"}));
+        row.append(SovereignUI.editableText({
+          tag: "p",
+          className: "clause-text",
+          value: clause.data.text || "",
+          placeholder: "Say what is meant",
+          onCommit: (value) => api("/api/initiative/clauses/update", {
+            clause_uuid: clause.uuid,
+            text: value,
+          }),
+          onChanged: async () => {
+            showToast("Clause saved");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }));
+        const actions = document.createElement("div");
+        actions.className = "clause-actions";
+        actions.append(...reactionTools(clause));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "need-delete";
+        remove.textContent = "Remove";
+        remove.onclick = () => run(
+          () => api("/api/initiative/clauses/delete", {clause_uuid: clause.uuid}),
+          "Clause removed",
+        );
+        actions.append(remove);
+        row.append(actions);
+        applyTransitionClass(row, clause.uuid, {});
+        return row;
+      }
+
+      // Everything the face draws from, and nothing else. It has to be the
+      // whole node and not `initiative.data`: the regions below the head are
+      // built from its *children*, so keying the skip on the topic's own
+      // fields would leave a need somebody just added invisible until an
+      // unrelated edit happened to move the objective. Peer state counts too
+      // - the lamp comes from transition_by_node and the beneficiary's live
+      // name from users, and neither of those touches this tree at all.
+      function mandateFingerprint(initiative) {
+        return JSON.stringify([
+          initiative,
+          state.transition_by_node || {},
+          state.users || [],
+          state.resources || [],
+          state.network || {},
+        ]);
       }
 
       function needs(initiative) {
@@ -648,29 +1156,30 @@
         });
       }
 
-      // The head is not a disclosure. One paragraph and four dates, always
-      // open: it is the answer to "what is this", and a caret in front of it
-      // would suggest there is a version of this page on which the objective
-      // is not the first thing said.
+      // The head is not a disclosure. Intention and dates are always open:
+      // they are the answer to "what is this", and belong first on the face.
       function mandateHead(initiative) {
         const head = document.createElement("header");
         head.className = "mandate-head";
-        const objective = SovereignUI.editableText({
+        const label = document.createElement("h2");
+        label.className = "mandate-intention-label";
+        label.textContent = "Intention";
+        const intention = SovereignUI.editableText({
           tag: "p",
-          className: "mandate-objective",
+          className: "mandate-intention",
           value: initiative.data.objective || "",
-          placeholder: "What is this initiative meant to change?",
+          placeholder: "What is this initiative meant to change and for whom?",
           onCommit: (value) => api("/api/initiative/initiatives/set_objective", {
             initiative_uuid: initiative.uuid,
             objective: value,
           }),
           onChanged: async () => {
-            showToast("Objective saved");
+            showToast("Intention saved");
             await loadBoard();
           },
           onError: (error) => showToast(error.message, true),
         });
-        head.append(objective, mandateDates(initiative));
+        head.append(label, intention, mandateDates(initiative));
         return head;
       }
 
@@ -735,8 +1244,103 @@
         });
       }
 
+      function renderMilestoneStrip(initiative) {
+        const container = el("milestoneStrip");
+        if (
+          container.contains(document.activeElement) &&
+          document.activeElement.matches("input, textarea, select")
+        ) return;
+        const content = milestoneStripContent(initiative);
+        container.replaceChildren(content);
+        container.hidden = ephemeral.face !== "board" || !content.childElementCount;
+      }
+
+      function milestoneStripContent(initiative) {
+        const content = document.createElement("div");
+        content.className = "milestone-strip-content";
+        const milestones = milestoneNodes(initiative);
+        const next = milestones.find((item) => !item.data.reached_at) || null;
+        const last = [...milestones]
+          .filter((item) => item.data.reached_at)
+          .sort((left, right) =>
+            String(right.data.reached_at).localeCompare(String(left.data.reached_at)) ||
+            Number(right.data.order || 0) - Number(left.data.order || 0),
+          )[0] || null;
+
+        const initiativeSegments = initiativeSummarySegments(initiative);
+        const milestoneSegments = milestoneSummarySegments(last, next);
+        appendSummarySegments(content, initiativeSegments);
+        if (initiativeSegments.length && milestoneSegments.length) {
+          const divider = document.createElement("span");
+          divider.className = "summary-divider";
+          divider.textContent = "|";
+          content.append(divider);
+        }
+        appendSummarySegments(content, milestoneSegments);
+        return content;
+      }
+
+      function initiativeSummarySegments(initiative) {
+        const segments = [];
+        const start = initiative.data.actual_start || initiative.data.planned_start;
+        const end = initiative.data.actual_end || initiative.data.planned_end;
+        const intention = initiative.data.objective || "";
+        if (start) {
+          segments.push(summarySegment("Start", formatDay(start)));
+        }
+        if (intention) {
+          segments.push(summarySegment("Intention", intention));
+        }
+        if (end) {
+          segments.push(summarySegment("End", formatDay(end)));
+        }
+        return segments;
+      }
+
+      function milestoneSummarySegments(last, next) {
+        const segments = [];
+        const lastValue = milestonePoint(last, last?.data.reached_at);
+        const intention = next?.data.intention || "";
+        const nextValue = milestonePoint(next, next?.data.planned_at);
+        if (lastValue) segments.push(summarySegment("Last", lastValue));
+        if (intention) segments.push(summarySegment("Intention", intention));
+        if (nextValue) segments.push(summarySegment("Next", nextValue));
+        return segments;
+      }
+
+      function milestonePoint(milestone, date) {
+        if (!milestone) return "";
+        const title = milestone.data.title || "";
+        const parts = [];
+        if (date) parts.push(formatDay(date));
+        if (title) parts.push(title);
+        return parts.join(date && title ? ": " : "");
+      }
+
+      function summarySegment(label, value) {
+        const segment = document.createElement("span");
+        segment.className = "summary-segment";
+        const name = document.createElement("strong");
+        name.textContent = `${label}:`;
+        segment.append(name, document.createTextNode(` ${value}`));
+        return segment;
+      }
+
+      function appendSummarySegments(container, segments) {
+        for (const segment of segments) {
+          if (container.lastElementChild?.classList.contains("summary-segment")) {
+            const separator = document.createElement("span");
+            separator.className = "summary-separator";
+            separator.textContent = "⇒";
+            container.append(separator);
+          }
+          container.append(segment);
+        }
+      }
+
       function renderBoard() {
-        const board = el("board");
+        renderMilestoneStrip(state.initiative);
+        const board = el("boardColumns");
 
         // Alle Spalten (regulär + ghost) aus dem State holen und markieren.
         // A column the peer has deleted stops being live here at once and is

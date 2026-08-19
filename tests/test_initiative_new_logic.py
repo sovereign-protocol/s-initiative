@@ -2,7 +2,9 @@ import json
 import time
 import unittest
 
-from s_initiative.logic import InitiativeLogic
+from s_initiative.logic import (
+    DISPLAYED_DIVERGENCE_TYPES, OWNED_NODE_TYPES, InitiativeLogic,
+)
 from sovereign.protocol import ProtocolNode
 from sovereign.session import Session
 from tests.relay_clients import (
@@ -280,6 +282,377 @@ class InitiativeNewLogicTests(unittest.TestCase):
         restored_uuid = logic.create_from_snapshot(document, "Restored").value
 
         self.assertEqual(logic.needs(session.get_node(restored_uuid)), [])
+
+    # The Approach --------------------------------------------------------
+
+    def test_a_new_initiative_is_seeded_with_four_sections(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+
+        self.assertEqual(
+            [section.data["title"] for section in logic.sections(initiative)],
+            ["Strategy", "Plan", "Risks", "Conditions for success"],
+        )
+
+    def test_the_seeded_sections_are_ordinary_content(self):
+        # Renamable, reorderable, deletable, and a fifth added the same way.
+        # Nothing marks the four as special, because nothing about them is.
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        logic.ensure_initiative()
+        strategy, plan, risks, conditions = logic.sections()
+
+        logic.rename_section(strategy.uuid, "How we will win")
+        logic.delete_section(risks.uuid)
+        logic.create_section("Open questions")
+        logic.move_section(conditions.uuid, 0)
+
+        self.assertEqual(
+            [section.data["title"] for section in logic.sections()],
+            ["Conditions for success", "How we will win", "Plan",
+             "Open questions"],
+        )
+
+    def test_a_section_without_a_title_is_refused(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        logic.ensure_initiative()
+        before = len(logic.sections())
+
+        self.assertEqual(logic.create_section("  ").status, "error")
+        self.assertEqual(
+            logic.rename_section(logic.sections()[0].uuid, "").status, "error",
+        )
+        self.assertEqual(len(logic.sections()), before)
+
+    def test_clauses_live_under_a_section_and_reorder_among_themselves(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        logic.ensure_initiative()
+        section = logic.sections()[0]
+
+        logic.create_clause(section.uuid, "Win the first three teams")
+        second = logic.create_clause(section.uuid, "Then the rest").value
+        logic.move_clause(second.uuid, 0)
+
+        held = logic.clauses(session.get_node(section.uuid))
+        self.assertEqual(
+            [clause.data["text"] for clause in held],
+            ["Then the rest", "Win the first three teams"],
+        )
+
+    def test_a_clause_is_refused_anywhere_but_a_clause_parent(self):
+        # The shape permits nesting and this document does not use it: a
+        # clause under another clause, a need, the initiative, or a milestone
+        # is a level nobody asked for.
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+        section = logic.sections()[0]
+        clause = logic.create_clause(section.uuid, "A line").value
+        need = logic.create_need("A need").value
+        milestone = logic.create_milestone("A milestone").value
+
+        for parent in (
+            clause.uuid, need.uuid, initiative.uuid, milestone.uuid, "nonsense",
+        ):
+            self.assertEqual(
+                logic.create_clause(parent, "Nope").status, "error",
+                f"a clause was accepted under {parent}",
+            )
+
+    def test_an_empty_clause_is_refused(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        logic.ensure_initiative()
+        section = logic.sections()[0]
+        clause = logic.create_clause(section.uuid, "A line").value
+
+        self.assertEqual(logic.create_clause(section.uuid, " ").status, "error")
+        self.assertEqual(logic.update_clause(clause.uuid, "").status, "error")
+        self.assertEqual(
+            session.get_node(clause.uuid).data["text"], "A line",
+        )
+
+    def test_the_approach_round_trips_through_a_snapshot(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+        strategy = logic.sections()[0]
+        logic.rename_section(strategy.uuid, "How we will win")
+        logic.create_clause(strategy.uuid, "Win the first three teams")
+
+        document = logic.export_snapshot(initiative.uuid).value
+        restored = session.get_node(
+            logic.create_from_snapshot(document, "Restored").value,
+        )
+
+        titles = [section.data["title"] for section in logic.sections(restored)]
+        self.assertEqual(
+            titles,
+            ["How we will win", "Plan", "Risks", "Conditions for success"],
+        )
+        first = logic.sections(restored)[0]
+        self.assertEqual(
+            [clause.data["text"] for clause in logic.clauses(first)],
+            ["Win the first three teams"],
+        )
+
+    def test_a_snapshot_restores_what_it_recorded_and_not_the_seed(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+        for section in logic.sections()[1:]:
+            logic.delete_section(section.uuid)
+
+        document = logic.export_snapshot(initiative.uuid).value
+        restored = session.get_node(
+            logic.create_from_snapshot(document, "Restored").value,
+        )
+
+        self.assertEqual(
+            [section.data["title"] for section in logic.sections(restored)],
+            ["Strategy"],
+        )
+
+    def test_a_copied_initiative_keeps_its_approach(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+        strategy = logic.sections()[0]
+        logic.create_clause(strategy.uuid, "Win the first three teams")
+
+        copy = session.get_node(logic.copy_initiative(initiative.uuid).value)
+
+        first = logic.sections(copy)[0]
+        self.assertEqual(
+            [clause.data["text"] for clause in logic.clauses(first)],
+            ["Win the first three teams"],
+        )
+
+    def test_a_section_and_a_clause_are_decidable(self):
+        left = self.runtime(9321)
+        right = self.runtime(9322)
+        initiative = left.logic.ensure_initiative()
+        connect(left, right)
+        connect(left, right, initiative.uuid)
+        section = left.logic.sections()[0]
+        clause = left.logic.create_clause(section.uuid, "Win three teams").value
+        sync(left, right)
+        right.logic.board_payload()
+        right.logic.set_auto_adopt_mode("never")
+
+        left.logic.rename_section(section.uuid, "How we will win")
+        left.logic.update_clause(clause.uuid, "Win the first three teams")
+        sync(left, right)
+
+        section_changes = right.logic.describe_peer_changes(
+            left.peer_addr, section.uuid,
+        )
+        clause_changes = right.logic.describe_peer_changes(
+            left.peer_addr, clause.uuid,
+        )
+        self.assertEqual(
+            {change["node_label"] for change in section_changes}, {"Section"},
+        )
+        self.assertIn("title", {change.get("field") for change in section_changes})
+        self.assertEqual(
+            {change["node_label"] for change in clause_changes}, {"Clause"},
+        )
+        self.assertIn("text", {change.get("field") for change in clause_changes})
+
+    # Intention and Assessed Impact -------------------------------------
+
+    def test_initiative_intention_is_the_single_objective_field(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+
+        logic.set_initiative_objective(
+            initiative.uuid, "Two teams renew unprompted",
+        )
+
+        held = session.get_node(initiative.uuid)
+        self.assertEqual(held.data["objective"], "Two teams renew unprompted")
+        self.assertNotIn("initiative_intent", {
+            child.data.get("type") for child in held.live_children()
+        })
+
+    def test_initiative_intention_round_trips_through_a_snapshot(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+        logic.set_initiative_objective(
+            initiative.uuid, "Two teams renew unprompted",
+        )
+
+        document = logic.export_snapshot(initiative.uuid).value
+        restored = session.get_node(
+            logic.create_from_snapshot(document, "Restored intention").value,
+        )
+
+        self.assertEqual(restored.data["objective"], "Two teams renew unprompted")
+
+    def test_reality_is_an_authored_record_and_not_a_divergence(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+
+        reality = logic.create_reality(initiative.uuid, "Support load stayed flat").value
+
+        self.assertEqual(
+            reality.data["author_actor_uuid"], logic.user_profile().uuid,
+        )
+        self.assertTrue(reality.data["recorded_at"])
+        self.assertIn("initiative_reality", OWNED_NODE_TYPES)
+        self.assertNotIn("initiative_reality", DISPLAYED_DIVERGENCE_TYPES)
+
+    def test_another_actor_cannot_delete_an_assessment(self):
+        left = self.runtime(9341)
+        right = self.runtime(9342)
+        initiative = left.logic.ensure_initiative()
+        connect(left, right)
+        connect(left, right, initiative.uuid)
+        reality = left.logic.create_reality(
+            initiative.uuid, "Support load stayed flat",
+        ).value
+        sync(left, right)
+        right.logic.board_payload()
+
+        result = right.logic.delete_reality(reality.uuid)
+
+        self.assertEqual(result.status, "error")
+        self.assertIsNotNone(right.session.get_node(reality.uuid))
+
+    # Resources ----------------------------------------------------------
+
+    def test_availability_can_only_be_recorded_for_yourself(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        logic.ensure_initiative()
+
+        refused = logic.create_investment("somebody-else", "Two days a week")
+        accepted = logic.create_investment(
+            logic.user_profile().uuid, "Two days a week",
+        )
+
+        self.assertEqual(refused.status, "error")
+        self.assertEqual(accepted.status, "ok")
+
+    def test_availability_is_an_append_only_chain(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+        actor = logic.user_profile().uuid
+
+        first = logic.create_investment(actor, "Two days a week").value
+        second = logic.create_investment(actor, "One day a week").value
+
+        chain = logic.investments(initiative, actor)
+        self.assertEqual([item.uuid for item in chain], [first.uuid, second.uuid])
+        self.assertEqual(second.data["previous_uuid"], first.uuid)
+        self.assertIn("initiative_investment", OWNED_NODE_TYPES)
+        self.assertNotIn("initiative_investment", DISPLAYED_DIVERGENCE_TYPES)
+
+    def test_resource_payload_lists_topic_holders_and_their_chain_head(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        logic.ensure_initiative()
+        actor = logic.user_profile().uuid
+        logic.create_investment(actor, "Two days a week")
+        latest = logic.create_investment(actor, "One day a week").value
+
+        resource = logic.board_payload()["resources"][0]
+
+        self.assertEqual(resource["actor_uuid"], actor)
+        self.assertEqual(resource["head"]["uuid"], latest.uuid)
+        self.assertEqual(len(resource["history"]), 1)
+
+    # Milestones and the seam -------------------------------------------
+
+    def test_milestone_has_one_editable_intention_field(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        logic.ensure_initiative()
+        milestone = logic.create_milestone(
+            "Pilot", intention="Two teams renew",
+        ).value
+
+        logic.update_milestone(milestone.uuid, intention="Three teams renew")
+        held = session.get_node(milestone.uuid)
+        self.assertEqual(held.data["intention"], "Three teams renew")
+
+        logic.update_milestone(milestone.uuid, intention="")
+        self.assertNotIn("intention", session.get_node(milestone.uuid).data)
+
+    def test_current_milestone_uses_order_and_never_the_planned_date(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        logic.ensure_initiative()
+        first = logic.create_milestone("First", "2026-12-01").value
+        second = logic.create_milestone("Second", "2026-01-01").value
+
+        self.assertEqual(logic.current_milestone().uuid, first.uuid)
+        logic.move_milestone(second.uuid, 0)
+        self.assertEqual(logic.current_milestone().uuid, second.uuid)
+
+    def test_reaching_out_of_order_advances_to_the_next_unreached(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        logic.ensure_initiative()
+        first = logic.create_milestone("First").value
+        second = logic.create_milestone("Second").value
+        third = logic.create_milestone("Third").value
+
+        logic.claim_milestone_reached(second.uuid, "2026-04-10")
+        self.assertEqual(logic.current_milestone().uuid, first.uuid)
+        logic.claim_milestone_reached(first.uuid, "2026-04-11")
+        self.assertEqual(logic.current_milestone().uuid, third.uuid)
+
+    def test_milestone_content_is_snapshotted_but_records_are_not(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+        milestone = logic.create_milestone(
+            "Pilot", "2026-04-30", "Two teams renew unprompted",
+        ).value
+        logic.claim_milestone_reached(milestone.uuid, "2026-05-02")
+        logic.create_reality(milestone.uuid, "Three teams renewed")
+        logic.create_reality(initiative.uuid, "Support load stayed flat")
+        logic.create_investment(logic.user_profile().uuid, "One day a week")
+
+        document = logic.export_snapshot(initiative.uuid).value
+        restored = session.get_node(
+            logic.create_from_snapshot(document, "Restored milestone").value,
+        )
+        restored_milestone = logic.milestones(restored)[0]
+
+        self.assertEqual(restored_milestone.data["title"], "Pilot")
+        self.assertEqual(restored_milestone.data["reached_at"], "2026-05-02")
+        self.assertEqual(
+            restored_milestone.data["intention"], "Two teams renew unprompted",
+        )
+        self.assertEqual(logic.realities(restored), [])
+        self.assertEqual(logic.realities(restored_milestone), [])
+        self.assertEqual(logic.investments(restored), [])
+
+    def test_copy_strips_authored_records_but_keeps_decidable_content(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+        milestone = logic.create_milestone(
+            "Pilot", intention="Two teams renew",
+        ).value
+        logic.create_reality(milestone.uuid, "Three teams renewed")
+        logic.create_investment(logic.user_profile().uuid, "One day a week")
+
+        copied = session.get_node(logic.copy_initiative(initiative.uuid).value)
+        copied_milestone = logic.milestones(copied)[0]
+
+        self.assertEqual(copied_milestone.data["intention"], "Two teams renew")
+        self.assertEqual(logic.realities(copied_milestone), [])
+        self.assertEqual(logic.investments(copied), [])
 
     def test_board_snapshot_never_consults_transport_under_session(self):
         class NoTransport:
