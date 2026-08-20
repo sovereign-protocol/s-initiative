@@ -136,14 +136,31 @@ One compact status line to the right of the face switch, separated from it by a
 vertical rule:
 
 ```
-Start: 12 Mar ⇒ Intention: two teams renew ⇒ End: 30 Jun |
-Last: 8 Apr: Prototype ⇒ Intention: three teams pilot ⇒ Next: 30 Apr: Pilot
+Start: 12 Mar ✓ ⇒ Intention: two teams renew ⇒ End: 30 Jun ◎ |
+Prototype: 8 Apr ✓ ⇒ Intention: three teams pilot ⇒ Pilot: 30 Apr ◎ ⇒ Reached: [ ]
 ```
 
-The initiative group reads `Start ⇒ Intention ⇒ End`; the milestone group reads
-`Last ⇒ Intention ⇒ Next`. Actual dates replace planned dates where they exist.
-The milestone Intention comes from the single field on the next milestone. Any
-missing fact is omitted, including its label and separator.
+Both groups read `point ⇒ Intention ⇒ point`. The initiative's two points are
+its own bookends and are labelled `Start` and `End`; **a milestone's point is
+labelled with the milestone's name.** The Intention comes from the single field
+on the next milestone. Any missing fact is omitted, including its label and
+separator.
+
+**The name is the label, not a second value after the date.** `Last` and `Next`
+named a position in a list the reader is not looking at, and spent the label
+saying it — which pushed the one word identifying *which* milestone this is to
+the far side of a second colon, in `Last: 8 Apr: Prototype`. The name says which
+milestone. What `Last` and `Next` were really reporting is carried by the mark.
+
+**Every date says which kind it is.** A tick for a day somebody claimed, a
+target for one still being aimed at. This is not decoration: an actual date
+replaces a planned one *in the same position*, so before the marks the line
+drew "we start on the 12th" and "we started on the 12th" identically. The marks
+are U8 act glyphs — the conventional ones, never invented, on the 24×24 grid
+with no fill and a `currentColor` stroke, so they take the theme's text colour
+like everything else. Not emoji, which are full-colour, platform-dependent and
+deaf to `currentColor`. The tick is green because U2 reserves green for
+"agreed"; the target takes the muted colour, because a plan is not a status.
 
 **One control, and it is a date.** The milestone's `reached_at` is settable
 here — on the next milestone, which is the claim, and on the last one, which is

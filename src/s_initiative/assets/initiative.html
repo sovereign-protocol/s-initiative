@@ -1282,32 +1282,83 @@
 
       function initiativeSummarySegments(initiative) {
         const segments = [];
-        const start = initiative.data.actual_start || initiative.data.planned_start;
-        const end = initiative.data.actual_end || initiative.data.planned_end;
         const intention = initiative.data.objective || "";
-        if (start) {
-          segments.push(summarySegment("Start", formatDay(start)));
+        // An actual replaces a planned date in the same position, so without
+        // a mark beside it the line shows two different facts identically -
+        // "we start on the 12th" and "we started on the 12th" are not the
+        // same statement, and the strip was making them look the same.
+        if (initiative.data.actual_start || initiative.data.planned_start) {
+          segments.push(summarySegment("Start", datedFact(
+            initiative.data.actual_start || initiative.data.planned_start,
+            Boolean(initiative.data.actual_start),
+          )));
         }
         if (intention) {
           segments.push(summarySegment("Intention", intention));
         }
-        if (end) {
-          segments.push(summarySegment("End", formatDay(end)));
+        if (initiative.data.actual_end || initiative.data.planned_end) {
+          segments.push(summarySegment("End", datedFact(
+            initiative.data.actual_end || initiative.data.planned_end,
+            Boolean(initiative.data.actual_end),
+          )));
         }
         return segments;
       }
 
+      // U8: an act glyph is the conventional one and never invented, drawn on
+      // the 24x24 grid with no fill and a currentColor stroke. A tick for a
+      // day somebody claimed; a target for one still being aimed at.
+      const DATE_MARKS = {
+        reached: '<path d="M5 13l4 4L19 7"/>',
+        planned: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/>',
+      };
+
+      function dateMark(reached) {
+        const kind = reached ? "reached" : "planned";
+        const mark = document.createElement("span");
+        mark.className = `date-mark is-${kind}`;
+        mark.setAttribute("role", "img");
+        mark.setAttribute("aria-label", reached ? "reached" : "planned");
+        mark.innerHTML =
+          `<svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">` +
+          `${DATE_MARKS[kind]}</svg>`;
+        return mark;
+      }
+
+      function datedFact(date, reached) {
+        const wrap = document.createElement("span");
+        wrap.className = "summary-dated";
+        wrap.append(document.createTextNode(formatDay(date)), dateMark(reached));
+        return wrap;
+      }
+
+      // The milestone's own name is the label. "Last" and "Next" named a
+      // position in a list the reader is not looking at, and spent the label
+      // saying it - so the one word that identifies which milestone this is
+      // ended up after the date, behind a second colon. The name goes where
+      // the label was, and the mark beside the date carries what "Last" and
+      // "Next" were really telling you: whether it has happened.
       function milestoneSummarySegments(last, next) {
         const segments = [];
         const intention = next?.data.intention || "";
-        const nextValue = milestonePoint(next, next?.data.planned_at);
-        if (last) segments.push(summarySegment("Last", milestoneClaim(last)));
+        if (last) {
+          segments.push(summarySegment(
+            last.data.title || "Milestone", milestoneClaim(last),
+          ));
+        }
         if (intention) segments.push(summarySegment("Intention", intention));
-        if (nextValue) segments.push(summarySegment("Next", nextValue));
-        // The one act the strip carries, and the reason it is a seam rather
-        // than a status line: marking a milestone reached happens in front of
-        // what that milestone was supposed to change.
-        if (next) segments.push(summarySegment("Reached", reachedDate(next)));
+        if (next) {
+          segments.push(summarySegment(
+            next.data.title || "Milestone",
+            next.data.planned_at
+              ? datedFact(next.data.planned_at, false)
+              : dateMark(false),
+          ));
+          // The one act the strip carries, and the reason it is a seam rather
+          // than a status line: marking a milestone reached happens in front
+          // of what that milestone was supposed to change.
+          segments.push(summarySegment("Reached", reachedDate(next)));
+        }
         return segments;
       }
 
@@ -1318,10 +1369,7 @@
       function milestoneClaim(milestone) {
         const wrap = document.createElement("span");
         wrap.className = "summary-claim";
-        wrap.append(reachedDate(milestone));
-        if (milestone.data.title) {
-          wrap.append(document.createTextNode(` ${milestone.data.title}`));
-        }
+        wrap.append(reachedDate(milestone), dateMark(true));
         return wrap;
       }
 
@@ -1347,15 +1395,6 @@
           input.value ? "Milestone reached" : "Claim taken back",
         );
         return input;
-      }
-
-      function milestonePoint(milestone, date) {
-        if (!milestone) return "";
-        const title = milestone.data.title || "";
-        const parts = [];
-        if (date) parts.push(formatDay(date));
-        if (title) parts.push(title);
-        return parts.join(date && title ? ": " : "");
       }
 
       function summarySegment(label, value) {

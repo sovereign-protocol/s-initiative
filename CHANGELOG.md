@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **A milestone on the strip is labelled with its own name, and every date
+  says which kind it is.** `Last` and `Next` named a position in a list the
+  reader is not looking at, and spent the label saying it — which pushed the
+  one word identifying *which* milestone this is to the far side of a second
+  colon, in `Last: 8 Apr: Prototype`. It now reads `Prototype: 8 Apr ✓`.
+
+  What `Last` and `Next` were really reporting is carried by a mark beside the
+  date: a tick for a day somebody claimed, a target for one still being aimed
+  at. That is not decoration. An actual date replaces a planned one *in the
+  same position*, so before the marks the line drew "we start on the 12th" and
+  "we started on the 12th" identically — on the initiative's bookends as much
+  as on its milestones, which is why both got marks.
+
+  The marks are U8 act glyphs: the conventional ones, never invented, on the
+  24×24 grid with no fill and a `currentColor` stroke, so they take the
+  theme's text colour like every other icon. Not emoji — full-colour,
+  platform-dependent, and deaf to `currentColor`. The tick is green because U2
+  reserves green for "agreed"; the target is muted, because a plan is not a
+  status. The green is a local token: U2 reserves the colour system-wide and
+  Core defines nothing for it, and one caller is not enough to guess what a
+  shared one should be, so it moves to Core when a second application marks
+  something as done.
+
 - **A milestone is marked reached on the strip, by picking the day.** The
   strip had become a read-only status line, which left `reached_at` displayed
   and unsettable — the milestone block drew "Reached 2 May" and nothing in the

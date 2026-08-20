@@ -17,6 +17,7 @@
   --warning: #c68200;
   --blue: #0b63b6;
   --blue-dark: #84bbff;
+  --reached: #63b968;
 }
 
 /* Light theme. Only these tokens move - the rest of this file already reads
@@ -39,6 +40,7 @@
   --warning: #8a5a00;
   --blue: #0b63b6;
   --blue-dark: #0a4d8c;
+  --reached: #1f7a34;
 }
 
 * { box-sizing: border-box; }
@@ -1370,6 +1372,39 @@ menu button {
 .summary-reached-input:focus {
   border-color: var(--teal);
   outline: none;
+}
+
+/* Which kind of date this is, beside the date itself. U8: the conventional
+   glyph and never an invented one, on the 24x24 grid, no fill, currentColor.
+   A tick reads as done anywhere, and concentric rings read as something aimed
+   at - neither has to be learned.
+
+   The green is local. U2 reserves green for "agreed"/success across every
+   application, and Core defines no token for it; one caller is not enough to
+   guess what a shared one should be, so this moves to Core when a second
+   application marks something as done. */
+.date-mark {
+  align-items: center;
+  display: inline-flex;
+  margin-left: 4px;
+}
+
+.date-mark .icon-svg {
+  height: 13px;
+  width: 13px;
+}
+
+.date-mark.is-reached {
+  color: var(--reached);
+}
+
+.date-mark.is-planned {
+  color: var(--muted);
+}
+
+.summary-dated {
+  align-items: center;
+  display: inline-flex;
 }
 
 /* Empty means no claim yet, and should read as an invitation rather than as

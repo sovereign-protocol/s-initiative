@@ -374,18 +374,52 @@ class AssetTests(unittest.TestCase):
         # Last shows a claim and Next shows a plan. The claimed date moved
         # into the control that edits it, so assert it where it now lives.
         self.assertIn("milestoneClaim(last)", point)
-        self.assertIn("next?.data.planned_at", point)
+        self.assertIn("next.data.planned_at", point)
         self.assertIn("milestone.data.reached_at", self._function_body("reachedDate"))
 
     def test_summary_uses_the_same_three_part_grammar_for_both_scales(self):
         initiative = self._function_body("initiativeSummarySegments")
         milestone = self._function_body("milestoneSummarySegments")
+        # Both scales read point => intention => point. The initiative's two
+        # points are its own bookends and have fixed words; a milestone's
+        # point is named by the milestone, because "Last" and "Next" spent
+        # the label on a position in a list nobody is looking at.
         for label in ('"Start"', '"Intention"', '"End"'):
             self.assertIn(label, initiative)
-        for label in ('"Last"', '"Intention"', '"Next"'):
-            self.assertIn(label, milestone)
+        self.assertIn('"Intention"', milestone)
+        self.assertIn('last.data.title', milestone)
+        self.assertIn('next.data.title', milestone)
+        for retired in ('"Last"', '"Next"'):
+            self.assertNotIn(retired, milestone)
         append = self._function_body("appendSummarySegments")
         self.assertIn('separator.textContent = "⇒"', append)
+
+    def test_every_date_on_the_strip_says_which_kind_it_is(self):
+        # An actual replaces a planned date in the same position, so without
+        # a mark the line shows "we start on the 12th" and "we started on the
+        # 12th" identically.
+        initiative = self._function_body("initiativeSummarySegments")
+        self.assertIn("Boolean(initiative.data.actual_start)", initiative)
+        self.assertIn("Boolean(initiative.data.actual_end)", initiative)
+        milestone = self._function_body("milestoneSummarySegments")
+        self.assertIn("datedFact(next.data.planned_at, false)", milestone)
+        self.assertIn("dateMark(true)", self._function_body("milestoneClaim"))
+
+    def test_the_date_marks_are_conventional_glyphs_built_u8_s_way(self):
+        # U8: an act glyph is the conventional one and never invented, on the
+        # 24x24 grid with no fill and a currentColor stroke. Emoji would be
+        # none of those - full colour, platform-dependent, and deaf to
+        # currentColor.
+        marks = self.initiative.split("const DATE_MARKS", 1)[1].split("};", 1)[0]
+        self.assertIn("path", marks)
+        self.assertIn("circle", marks)
+        builder = self._function_body("dateMark")
+        self.assertIn('viewBox="0 0 24 24"', builder)
+        for emoji in ("🎯", "✅", "✓", "✔"):
+            self.assertNotIn(emoji, marks + builder)
+        # U2 reserves green for agreed/success; it is a token, not a literal.
+        self.assertIn("color: var(--reached)", self.css)
+        self.assertIn("--reached:", self.css)
 
     def test_switching_to_the_mandate_actually_unhides_it(self):
         switch = self._function_body("showFace")
