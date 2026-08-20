@@ -102,8 +102,10 @@
   `/initiatives/set_dates` plans, and `/initiatives/claim_date` claims. A
   date nobody has said is absent from the data rather than stored empty,
   and clearing a claim removes it, because undoing a claim is not the same
-  act as tidying a field. The claim's control arrives with the milestone
-  strip; the command exists now so the face can say what was claimed.
+  act as tidying a field. Of the two claims, only a milestone's `reached_at`
+  has a control so far — on the strip, see above. `claim_date` carries
+  `actual_start` and `actual_end`, is reachable over HTTP and is called by no
+  surface yet; the face shows both where they exist.
 
 - **The mandate face rebuilds itself whole and does not use
   `reconcileDOM`.** §8's decision, and the reason is one this codebase has
