@@ -1349,11 +1349,6 @@ menu button {
 /* The one control on the strip. Sized to sit inside a line of text rather
    than to stand out from it: it is a claim being recorded in passing, not a
    form to fill in. */
-.summary-claim {
-  align-items: center;
-  display: inline-flex;
-  gap: 4px;
-}
 
 .summary-reached-input {
   background: var(--surface);
@@ -1383,10 +1378,17 @@ menu button {
    application, and Core defines no token for it; one caller is not enough to
    guess what a shared one should be, so this moves to Core when a second
    application marks something as done. */
+/* Inside the label, before the colon: it qualifies the name, not the date. */
 .date-mark {
   align-items: center;
   display: inline-flex;
-  margin-left: 4px;
+  margin-left: 3px;
+  vertical-align: -1px;
+}
+
+.summary-label {
+  align-items: center;
+  display: inline-flex;
 }
 
 .date-mark .icon-svg {
@@ -1402,10 +1404,6 @@ menu button {
   color: var(--muted);
 }
 
-.summary-dated {
-  align-items: center;
-  display: inline-flex;
-}
 
 /* Empty means no claim yet, and should read as an invitation rather than as
    a date somebody deleted. */

@@ -136,8 +136,8 @@ One compact status line to the right of the face switch, separated from it by a
 vertical rule:
 
 ```
-Start: 12 Mar ✓ ⇒ Intention: two teams renew ⇒ End: 30 Jun ◎ |
-Prototype: 8 Apr ✓ ⇒ Intention: three teams pilot ⇒ Pilot: 30 Apr ◎ ⇒ Reached: [ ]
+Start ✓: 12 Mar ⇒ Intention: two teams renew ⇒ End ⚑: 30 Jun |
+Prototype ✓: 8 Apr ⇒ Intention: three teams pilot ⇒ Pilot ⚑: 30 Apr ⇒ Reached: [ ]
 ```
 
 Both groups read `point ⇒ Intention ⇒ point`. The initiative's two points are
@@ -152,15 +152,25 @@ saying it — which pushed the one word identifying *which* milestone this is to
 the far side of a second colon, in `Last: 8 Apr: Prototype`. The name says which
 milestone. What `Last` and `Next` were really reporting is carried by the mark.
 
-**Every date says which kind it is.** A tick for a day somebody claimed, a
-target for one still being aimed at. This is not decoration: an actual date
-replaces a planned one *in the same position*, so before the marks the line
-drew "we start on the 12th" and "we started on the 12th" identically. The marks
-are U8 act glyphs — the conventional ones, never invented, on the 24×24 grid
-with no fill and a `currentColor` stroke, so they take the theme's text colour
-like everything else. Not emoji, which are full-colour, platform-dependent and
-deaf to `currentColor`. The tick is green because U2 reserves green for
-"agreed"; the target takes the muted colour, because a plan is not a status.
+**Every point says which kind of date it has.** A tick where the day was
+claimed, a flag where it is still being aimed at. This is not decoration: an
+actual date replaces a planned one *in the same position*, so without the marks
+the line draws "we start on the 12th" and "we started on the 12th" identically.
+
+**The mark sits on the name, before the colon** — `Prototype ✓: 8 Apr`, which
+reads "Prototype reached: 8 Apr". After the date it read as "8 Apr, reached",
+qualifying the wrong word: the day is not the thing that was achieved, the
+milestone is.
+
+The marks are U8 act glyphs — the conventional ones, never invented, on the
+24×24 grid with no fill and a `currentColor` stroke, so they take the theme's
+text colour like everything else. Not emoji, which are full-colour,
+platform-dependent and deaf to `currentColor`. A flag rather than a target:
+concentric rings collapse into a blurred dot at 13px and read as whatever is
+nearby, while a pole and a pennant keep a silhouette no tick can be confused
+with — and a milestone is a flag you plant. The tick is green because U2
+reserves green for "agreed"; the flag takes the muted colour, because a plan is
+not a status.
 
 **One control, and it is a date.** The milestone's `reached_at` is settable
 here — on the next milestone, which is the claim, and on the last one, which is

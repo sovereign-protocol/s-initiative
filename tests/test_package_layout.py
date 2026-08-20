@@ -373,7 +373,7 @@ class AssetTests(unittest.TestCase):
         point = self._function_body("milestoneSummarySegments")
         # Last shows a claim and Next shows a plan. The claimed date moved
         # into the control that edits it, so assert it where it now lives.
-        self.assertIn("milestoneClaim(last)", point)
+        self.assertIn("reachedDate(last)", point)
         self.assertIn("next.data.planned_at", point)
         self.assertIn("milestone.data.reached_at", self._function_body("reachedDate"))
 
@@ -402,8 +402,8 @@ class AssetTests(unittest.TestCase):
         self.assertIn("Boolean(initiative.data.actual_start)", initiative)
         self.assertIn("Boolean(initiative.data.actual_end)", initiative)
         milestone = self._function_body("milestoneSummarySegments")
-        self.assertIn("datedFact(next.data.planned_at, false)", milestone)
-        self.assertIn("dateMark(true)", self._function_body("milestoneClaim"))
+        self.assertIn("dateMark(false)", milestone)
+        self.assertIn("dateMark(true)", milestone)
 
     def test_the_date_marks_are_conventional_glyphs_built_u8_s_way(self):
         # U8: an act glyph is the conventional one and never invented, on the
@@ -412,7 +412,6 @@ class AssetTests(unittest.TestCase):
         # currentColor.
         marks = self.initiative.split("const DATE_MARKS", 1)[1].split("};", 1)[0]
         self.assertIn("path", marks)
-        self.assertIn("circle", marks)
         builder = self._function_body("dateMark")
         self.assertIn('viewBox="0 0 24 24"', builder)
         for emoji in ("🎯", "✅", "✓", "✔"):
@@ -432,7 +431,7 @@ class AssetTests(unittest.TestCase):
         # control is on the board - and it is the only control there.
         segments = self._function_body("milestoneSummarySegments")
         self.assertIn('summarySegment("Reached", reachedDate(next))', segments)
-        self.assertIn("milestoneClaim(last)", segments)
+        self.assertIn("reachedDate(last)", segments)
 
         claim = self._function_body("reachedDate")
         self.assertIn("/api/initiative/milestones/reach", claim)
@@ -454,8 +453,21 @@ class AssetTests(unittest.TestCase):
     def test_a_reached_milestone_keeps_its_claim_editable(self):
         # Clearing one is undoing a claim rather than tidying a field, so the
         # control stays rather than hardening into text once it has a value.
-        claim = self._function_body("milestoneClaim")
-        self.assertIn("reachedDate(milestone)", claim)
+        segments = self._function_body("milestoneSummarySegments")
+        self.assertIn("reachedDate(last)", segments)
+
+    def test_the_mark_qualifies_the_name_and_not_the_date(self):
+        # "Prototype reached: 8 Apr" is what the line says. After the date it
+        # read as "8 Apr, reached", which qualifies the wrong word - the day
+        # is not the thing that was achieved.
+        segment = self._function_body("summarySegment")
+        mark = segment.index("name.append(mark)")
+        colon = segment.index('name.append(document.createTextNode(":"))')
+        self.assertLess(mark, colon, "the mark must sit before the colon")
+        self.assertIn("segment.append(name)", segment)
+        self.assertLess(colon, segment.index("segment.append(name)"))
+        # And it belongs to the label element, not to the value beside it.
+        self.assertIn("summary-label", segment)
 
     def test_the_initiative_bookends_stay_read_only_on_the_strip(self):
         # Only milestones are claimable here. The initiative's own two

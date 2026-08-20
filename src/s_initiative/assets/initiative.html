@@ -1288,19 +1288,21 @@
         // "we start on the 12th" and "we started on the 12th" are not the
         // same statement, and the strip was making them look the same.
         if (initiative.data.actual_start || initiative.data.planned_start) {
-          segments.push(summarySegment("Start", datedFact(
-            initiative.data.actual_start || initiative.data.planned_start,
-            Boolean(initiative.data.actual_start),
-          )));
+          segments.push(summarySegment(
+            "Start",
+            formatDay(initiative.data.actual_start || initiative.data.planned_start),
+            dateMark(Boolean(initiative.data.actual_start)),
+          ));
         }
         if (intention) {
           segments.push(summarySegment("Intention", intention));
         }
         if (initiative.data.actual_end || initiative.data.planned_end) {
-          segments.push(summarySegment("End", datedFact(
-            initiative.data.actual_end || initiative.data.planned_end,
-            Boolean(initiative.data.actual_end),
-          )));
+          segments.push(summarySegment(
+            "End",
+            formatDay(initiative.data.actual_end || initiative.data.planned_end),
+            dateMark(Boolean(initiative.data.actual_end)),
+          ));
         }
         return segments;
       }
@@ -1310,7 +1312,7 @@
       // day somebody claimed; a target for one still being aimed at.
       const DATE_MARKS = {
         reached: '<path d="M5 13l4 4L19 7"/>',
-        planned: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/>',
+        planned: '<path d="M6 21V4"/><path d="M6 5h12l-3 4 3 4H6"/>',
       };
 
       function dateMark(reached) {
@@ -1325,13 +1327,6 @@
         return mark;
       }
 
-      function datedFact(date, reached) {
-        const wrap = document.createElement("span");
-        wrap.className = "summary-dated";
-        wrap.append(document.createTextNode(formatDay(date)), dateMark(reached));
-        return wrap;
-      }
-
       // The milestone's own name is the label. "Last" and "Next" named a
       // position in a list the reader is not looking at, and spent the label
       // saying it - so the one word that identifies which milestone this is
@@ -1343,16 +1338,15 @@
         const intention = next?.data.intention || "";
         if (last) {
           segments.push(summarySegment(
-            last.data.title || "Milestone", milestoneClaim(last),
+            last.data.title || "Milestone", reachedDate(last), dateMark(true),
           ));
         }
         if (intention) segments.push(summarySegment("Intention", intention));
         if (next) {
           segments.push(summarySegment(
             next.data.title || "Milestone",
-            next.data.planned_at
-              ? datedFact(next.data.planned_at, false)
-              : dateMark(false),
+            next.data.planned_at ? formatDay(next.data.planned_at) : "",
+            dateMark(false),
           ));
           // The one act the strip carries, and the reason it is a seam rather
           // than a status line: marking a milestone reached happens in front
@@ -1360,17 +1354,6 @@
           segments.push(summarySegment("Reached", reachedDate(next)));
         }
         return segments;
-      }
-
-      // A reached milestone keeps its claim editable. Correcting the day is
-      // not the same act as making the claim, and clearing it is undoing one
-      // rather than tidying a field, so the control stays rather than
-      // hardening into text once it has a value.
-      function milestoneClaim(milestone) {
-        const wrap = document.createElement("span");
-        wrap.className = "summary-claim";
-        wrap.append(reachedDate(milestone), dateMark(true));
-        return wrap;
       }
 
       // A date and never a button. "We got there" is a claim about a day, and
@@ -1397,13 +1380,22 @@
         return input;
       }
 
-      function summarySegment(label, value) {
+      // The mark belongs to the name and not to the date. "Prototype reached:
+      // 8 Apr" is what the line says; putting the tick after the date made it
+      // read as "8 Apr, reached", which qualifies the wrong word - the day is
+      // not the thing that was achieved.
+      function summarySegment(label, value, mark = null) {
         const segment = document.createElement("span");
         segment.className = "summary-segment";
         const name = document.createElement("strong");
-        name.textContent = `${label}:`;
+        name.className = "summary-label";
+        name.append(document.createTextNode(label));
+        if (mark) name.append(mark);
+        const hasValue = value instanceof Node || String(value ?? "") !== "";
+        if (hasValue) name.append(document.createTextNode(":"));
         segment.append(name);
         // A segment carries either a fact or the one control on this line.
+        if (!hasValue) return segment;
         if (value instanceof Node) segment.append(" ", value);
         else segment.append(document.createTextNode(` ${value}`));
         return segment;
