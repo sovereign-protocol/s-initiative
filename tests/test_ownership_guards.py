@@ -166,9 +166,11 @@ class InitiativeOwnershipControllerTests(unittest.TestCase):
         initiative = self.logic.ensure_initiative()
         actor = self.logic.user_profile().uuid
 
-        intended = self._post("/api/initiative/clauses/create", {
-            "parent_uuid": initiative.uuid, "text": "Two teams renew",
-        })
+        # No clause is posted here. A clause belongs to the Approach and its
+        # route is covered above, under a section; the Intention is one field
+        # on the initiative and has no clause collection under it, which
+        # `test_a_clause_is_refused_anywhere_but_a_clause_parent` states from
+        # the other side.
         assessed = self._post("/api/initiative/realities/create", {
             "parent_uuid": initiative.uuid, "text": "Three teams renewed",
         })
@@ -190,7 +192,7 @@ class InitiativeOwnershipControllerTests(unittest.TestCase):
         })
 
         for response in (
-            intended, assessed, availability, milestone_created,
+            assessed, availability, milestone_created,
             milestone_updated, milestone_reached, milestone_moved,
         ):
             self.assertEqual(response.status_code, 200)
