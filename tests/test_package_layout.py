@@ -371,8 +371,11 @@ class AssetTests(unittest.TestCase):
         strip = self._function_body("milestoneStripContent")
         self.assertIn("item.data.reached_at", strip)
         point = self._function_body("milestoneSummarySegments")
-        self.assertIn("last?.data.reached_at", point)
+        # Last shows a claim and Next shows a plan. The claimed date moved
+        # into the control that edits it, so assert it where it now lives.
+        self.assertIn("milestoneClaim(last)", point)
         self.assertIn("next?.data.planned_at", point)
+        self.assertIn("milestone.data.reached_at", self._function_body("reachedDate"))
 
     def test_summary_uses_the_same_three_part_grammar_for_both_scales(self):
         initiative = self._function_body("initiativeSummarySegments")
@@ -388,6 +391,51 @@ class AssetTests(unittest.TestCase):
         switch = self._function_body("showFace")
         self.assertIn('face !== "mandate"', switch)
         self.assertNotIn('face !== "initiative"', switch)
+
+    def test_the_strip_carries_the_reached_claim_and_nothing_else(self):
+        # 2: a field belongs to the face where its act happens. Marking a
+        # milestone reached is a claim made on the day it is true, so its
+        # control is on the board - and it is the only control there.
+        segments = self._function_body("milestoneSummarySegments")
+        self.assertIn('summarySegment("Reached", reachedDate(next))', segments)
+        self.assertIn("milestoneClaim(last)", segments)
+
+        claim = self._function_body("reachedDate")
+        self.assertIn("/api/initiative/milestones/reach", claim)
+        # Planning is the Mandate's act and must not be reachable from here.
+        self.assertNotIn("/api/initiative/milestones/update", claim)
+        self.assertNotIn("set_dates", claim)
+
+    def test_the_claim_is_a_date_and_never_a_one_click_button(self):
+        # "We got there" is a claim about a day, and the day is usually not
+        # today. A one-click control would record the moment somebody looked
+        # instead of the moment it happened.
+        claim = self._function_body("reachedDate")
+        self.assertIn('input.type = "date"', claim)
+        self.assertIn("milestone.data.reached_at", claim)
+        self.assertNotIn("createElement(\"button\")", claim)
+        self.assertNotIn("Date.now", claim)
+        self.assertNotIn("new Date()", claim)
+
+    def test_a_reached_milestone_keeps_its_claim_editable(self):
+        # Clearing one is undoing a claim rather than tidying a field, so the
+        # control stays rather than hardening into text once it has a value.
+        claim = self._function_body("milestoneClaim")
+        self.assertIn("reachedDate(milestone)", claim)
+
+    def test_the_initiative_bookends_stay_read_only_on_the_strip(self):
+        # Only milestones are claimable here. The initiative's own two
+        # actuals are shown and not offered for editing on this line.
+        initiative_segments = self._function_body("initiativeSummarySegments")
+        self.assertIn("actual_start", initiative_segments)
+        self.assertIn("actual_end", initiative_segments)
+        self.assertNotIn("input", initiative_segments)
+        self.assertNotIn("claim_date", self.initiative)
+
+    def test_the_strip_does_not_rebuild_under_an_open_date_picker(self):
+        body = self._function_body("renderMilestoneStrip")
+        self.assertIn("document.activeElement", body)
+        self.assertIn("input, textarea, select", body)
 
     def test_the_second_face_is_not_named_after_the_whole_topic(self):
         # The topic is the initiative. A face called Initiative would give one

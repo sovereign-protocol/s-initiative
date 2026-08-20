@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **A milestone is marked reached on the strip, by picking the day.** The
+  strip had become a read-only status line, which left `reached_at` displayed
+  and unsettable — the milestone block drew "Reached 2 May" and nothing in the
+  interface could ever put a date there. It is settable now, on the next
+  milestone, which is the claim, and on the last one, which is correcting or
+  withdrawing one already made.
+
+  **A date input and not a `[Mark reached]` button.** "We got there" is a
+  claim about a *day*, and the day is usually not today: a milestone noticed
+  on Monday was often reached the Thursday before, and a one-click control
+  would record the moment somebody looked instead of the moment it happened —
+  then need a second control to correct itself. One date does both, and
+  clearing it withdraws the claim, which `DESIGN_INITIATIVE.md` §3 calls a
+  different act from tidying a field.
+
+  Everything else on the line stays read-only. Planned dates belong to
+  planning, which is the Mandate's act, and the Intention is drawn beside the
+  claim so that marking a milestone reached happens in front of what it was
+  supposed to change — which is the whole argument for the strip being a seam
+  rather than a summary. `actual_start` and `actual_end` are still shown and
+  still claimable nowhere; §2 of the interface doc now records that as an
+  undecided surface instead of implying a home for them.
+
 - **The board summary is one compact line beside the face switch.** It shows
   `Start ⇒ Intention ⇒ End` for the initiative and
   `Last ⇒ Intention ⇒ Next` for its milestones. Actual dates replace planned

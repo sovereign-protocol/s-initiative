@@ -1299,13 +1299,54 @@
 
       function milestoneSummarySegments(last, next) {
         const segments = [];
-        const lastValue = milestonePoint(last, last?.data.reached_at);
         const intention = next?.data.intention || "";
         const nextValue = milestonePoint(next, next?.data.planned_at);
-        if (lastValue) segments.push(summarySegment("Last", lastValue));
+        if (last) segments.push(summarySegment("Last", milestoneClaim(last)));
         if (intention) segments.push(summarySegment("Intention", intention));
         if (nextValue) segments.push(summarySegment("Next", nextValue));
+        // The one act the strip carries, and the reason it is a seam rather
+        // than a status line: marking a milestone reached happens in front of
+        // what that milestone was supposed to change.
+        if (next) segments.push(summarySegment("Reached", reachedDate(next)));
         return segments;
+      }
+
+      // A reached milestone keeps its claim editable. Correcting the day is
+      // not the same act as making the claim, and clearing it is undoing one
+      // rather than tidying a field, so the control stays rather than
+      // hardening into text once it has a value.
+      function milestoneClaim(milestone) {
+        const wrap = document.createElement("span");
+        wrap.className = "summary-claim";
+        wrap.append(reachedDate(milestone));
+        if (milestone.data.title) {
+          wrap.append(document.createTextNode(` ${milestone.data.title}`));
+        }
+        return wrap;
+      }
+
+      // A date and never a button. "We got there" is a claim about a day, and
+      // the day is usually not today - a milestone noticed on Monday was
+      // often reached the Thursday before, and a one-click "mark reached"
+      // would record the moment somebody looked instead of the moment it
+      // happened. The planned dates beside it stay read-only: planning is the
+      // Mandate's act, and only the claim belongs here.
+      function reachedDate(milestone) {
+        const input = document.createElement("input");
+        input.type = "date";
+        input.className = "summary-reached-input";
+        input.value = milestone.data.reached_at || "";
+        input.setAttribute(
+          "aria-label", `Date reached: ${milestone.data.title || "milestone"}`,
+        );
+        input.onchange = () => run(
+          () => api("/api/initiative/milestones/reach", {
+            milestone_uuid: milestone.uuid,
+            value: input.value,
+          }),
+          input.value ? "Milestone reached" : "Claim taken back",
+        );
+        return input;
       }
 
       function milestonePoint(milestone, date) {
@@ -1322,7 +1363,10 @@
         segment.className = "summary-segment";
         const name = document.createElement("strong");
         name.textContent = `${label}:`;
-        segment.append(name, document.createTextNode(` ${value}`));
+        segment.append(name);
+        // A segment carries either a fact or the one control on this line.
+        if (value instanceof Node) segment.append(" ", value);
+        else segment.append(document.createTextNode(` ${value}`));
         return segment;
       }
 

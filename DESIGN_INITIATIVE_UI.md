@@ -64,16 +64,22 @@ three fields do not:
 | `objective` (shown as Intention), `initiative_need`, `initiative_section`, `initiative_clause`         | the mandate                                                | agreeing                                                     |
 | `initiative_milestone.title`, `.order`, `.planned_at`, `.intention`                                    | the mandate                                                | planning                                                     |
 | `planned_start`, `planned_end`                                                                         | the mandate                                                | planning                                                     |
-| **`actual_start`, `actual_end`, `reached_at`**                                                         | **the board**                                              | a claim made on the day it is true                           |
+| **`reached_at`**                                                                                       | **the board** — the strip's one control                    | a claim made about the day it is true                        |
+| `actual_start`, `actual_end`                                                                           | shown on the board, claimable nowhere yet                  | the same act, no surface decided                             |
 | `initiative_reality`                                                                                   | both — written on the board, read on the mandate           | observing what just happened, reading what was observed      |
 | `initiative_investment`                                                                                | the mandate                                                | committing what you have                                     |
 | `topic_link`                                                                                           | neither — Core's, in the bar (U6, U7)                      |                                                              |
 
-The three dates in bold are content by class, and §3 is right about why: two
-people who disagree about when it started have a divergence worth seeing rather
-than two private truths. But their *act* is not agreement, it is a claim, and
-nobody navigates to a reference page to say "we got there". The data is
-definition data; the control is on the board.
+All three dates are content by class, and §3 is right about why: two people who
+disagree about when it started have a divergence worth seeing rather than two
+private truths. But their *act* is not agreement, it is a claim, and nobody
+navigates to a reference page to say "we got there". The data is definition
+data; the control is on the board.
+
+`reached_at` is built that way — one date input on the strip, per §4. The
+initiative's own two actuals follow the same reasoning and have no control
+anywhere yet, which is an unfinished surface rather than a different rule. The
+row above says so rather than implying a home that does not exist.
 
 > **A field belongs to the face where its act happens, not to the face where
 > its siblings live.**
@@ -137,9 +143,28 @@ Last: 8 Apr: Prototype ⇒ Intention: three teams pilot ⇒ Next: 30 Apr: Pilot
 The initiative group reads `Start ⇒ Intention ⇒ End`; the milestone group reads
 `Last ⇒ Intention ⇒ Next`. Actual dates replace planned dates where they exist.
 The milestone Intention comes from the single field on the next milestone. Any
-missing fact is omitted, including its label and separator. The entire line is
-read-only and has no action buttons; planning, claims and assessments happen on
-their respective surfaces.
+missing fact is omitted, including its label and separator.
+
+**One control, and it is a date.** The milestone's `reached_at` is settable
+here — on the next milestone, which is the claim, and on the last one, which is
+correcting or withdrawing a claim already made. Everything else on the line is
+read-only: the planned dates belong to planning, which is the Mandate's act,
+and the Intention is shown so that marking a milestone reached happens in front
+of what it was supposed to change.
+
+**A date and never a one-click button.** "We got there" is a claim about a
+*day*, and the day is usually not today — a milestone noticed on Monday was
+often reached the Thursday before. A `[Mark reached ✓]` button would record the
+moment somebody looked instead of the moment it happened, and would then need a
+second control to correct itself. One date input does both, and clearing it
+undoes the claim, which §3 of the type doc says is a different act from tidying
+a field rather than the same one.
+
+**The initiative's own two actuals are not claimable here.** `actual_start` and
+`actual_end` are shown where they exist and have no control on this line or
+anywhere else yet. That is a decision not yet taken rather than a rule: the
+`claim_date` command exists and nothing calls it. §2's row is written to say
+so.
 
 ### The current milestone is the first unreached one in order
 

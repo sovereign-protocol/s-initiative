@@ -1344,6 +1344,41 @@ menu button {
   color: var(--muted);
 }
 
+/* The one control on the strip. Sized to sit inside a line of text rather
+   than to stand out from it: it is a claim being recorded in passing, not a
+   form to fill in. */
+.summary-claim {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.summary-reached-input {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+  padding: 1px 4px;
+}
+
+.summary-reached-input:hover {
+  border-color: var(--border-strong);
+}
+
+.summary-reached-input:focus {
+  border-color: var(--teal);
+  outline: none;
+}
+
+/* Empty means no claim yet, and should read as an invitation rather than as
+   a date somebody deleted. */
+.summary-reached-input:not([value]):not(:focus),
+.summary-reached-input[value=""]:not(:focus) {
+  border-style: dashed;
+}
+
 .summary-divider {
   padding: 0 2px;
 }
