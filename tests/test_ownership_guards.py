@@ -268,9 +268,11 @@ class InitiativeOwnershipControllerTests(unittest.TestCase):
         )
         self.session.note_indirect_peer_topic("peer", foreign_topic.uuid)
 
-        response = self._post("/api/initiative/adopt", {
+        response = self._post("/api/initiative/react", {
             "source_addr": "peer",
             "node_uuid": peer_card.uuid,
+            "reaction": "adopt",
+            "absent": False,
         })
 
         self.assertEqual(response.status_code, 409)

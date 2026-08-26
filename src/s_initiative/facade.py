@@ -7,7 +7,7 @@ from sovereign import ProtocolNode
 from .logic import InitiativeLogic
 
 
-INITIATIVE_FACADE_API_VERSION = 2
+INITIATIVE_FACADE_API_VERSION = 3
 
 
 class InitiativeFacade:
@@ -35,9 +35,6 @@ class InitiativeFacade:
         self, topic_uuid: str, network: dict | None = None,
     ) -> list[dict]:
         return self._logic.transition_events(topic_uuid, network)
-
-    def transition_by_node(self, events: list[dict]) -> dict:
-        return self._logic.transition_by_node(events)
 
     def collaboration_context(
         self, topic_uuid: str, network: dict | None = None,
@@ -207,19 +204,12 @@ class InitiativeFacade:
     def delete_card(self, card_uuid: str):
         return self._logic.delete_card(card_uuid)
 
-    def accept_peer_node(
-        self, source_addr: str, node_uuid: str, adopt_absence: bool = False,
+    def react_to_node(
+        self, source_addr: str, node_uuid: str, reaction: str,
+        absent: bool = False,
     ):
-        return self._logic.accept_peer_node(
-            source_addr, node_uuid, adopt_absence,
-        )
-
-    def rollback_peer_node(
-        self, source_addr: str, node_uuid: str,
-        rollback_absence: bool = False,
-    ):
-        return self._logic.rollback_peer_node(
-            source_addr, node_uuid, rollback_absence,
+        return self._logic.react_to_node(
+            source_addr, node_uuid, reaction, absent,
         )
 
     def create_agenda_item(

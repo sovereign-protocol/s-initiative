@@ -57,10 +57,12 @@ class CardCommentTests(unittest.TestCase):
         connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("never")
 
-        left.logic.create_card_comment(card.uuid, "note")
+        comment = left.logic.create_card_comment(card.uuid, "note").value
         sync(left, right)
         payload = right.logic.board_payload()
 
+        self.assertIn(comment.uuid, right.session.protocol.index)
+        self.assertIn(card.uuid, payload["comments_by_card"])
         card_transition = payload["transition_by_node"].get(card.uuid, {}).get("type")
         self.assertIn(card_transition, (None, "in_agreement"))
 
@@ -178,10 +180,14 @@ class CardAttachmentTests(unittest.TestCase):
         connect(left, right, initiative.uuid)
         right.logic.set_auto_adopt_mode("never")
 
-        left.logic.create_card_attachment(card.uuid, self._reference(left))
+        attachment = left.logic.create_card_attachment(
+            card.uuid, self._reference(left),
+        ).value
         sync(left, right)
         payload = right.logic.board_payload()
 
+        self.assertIn(attachment.uuid, right.session.protocol.index)
+        self.assertIn(card.uuid, payload["attachments_by_card"])
         card_transition = payload["transition_by_node"].get(card.uuid, {}).get("type")
         self.assertIn(card_transition, (None, "in_agreement"))
 

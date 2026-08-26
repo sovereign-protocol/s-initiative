@@ -2,63 +2,44 @@
 
 ## Unreleased
 
-- **A milestone on the strip is labelled with its own name, and every date
-  says which kind it is.** `Last` and `Next` named a position in a list the
-  reader is not looking at, and spent the label saying it — which pushed the
-  one word identifying *which* milestone this is to the far side of a second
-  colon, in `Last: 8 Apr: Prototype`. It now reads `Prototype: 8 Apr ✓`.
+- **Adoption settings now govern team-view changes only.** The four visible
+  choices are review every change, review changes involving me, review changes
+  I am responsible for, and adopt every change automatically. Involvement and
+  responsibility are checked against both the current and proposed values, so
+  adding or removing the local actor cannot bypass review. Assessed impact,
+  availability, comments, and attachments are explicitly author-scoped and
+  join without adoption; the UI marks that ownership.
 
-  What `Last` and `Next` were really reporting is carried by a mark on the
-  name, before the colon — `Prototype ✓: 8 Apr`, which reads "Prototype
-  reached: 8 Apr". A tick where the day was claimed, a flag where it is still
-  being aimed at. The mark qualifies the milestone and not the day: after the
-  date it read as "8 Apr, reached", and the day is not the thing that was
-  achieved. That is not decoration. An actual date replaces a planned one *in the
-  same position*, so before the marks the line drew "we start on the 12th" and
-  "we started on the 12th" identically — on the initiative's bookends as much
-  as on its milestones, which is why both got marks.
+- **The summary now contains only the initiative and the next milestone.** A
+  target icon introduces each Intention. After the divider it reads milestone
+  name and Intention, then a flag and an editable locale-native planned date;
+  the previous reached-milestone segment is omitted. The reached date remains
+  editable in the detailed milestone.
 
-  The marks are U8 act glyphs: the conventional ones, never invented, on the
-  24×24 grid with no fill and a `currentColor` stroke, so they take the
-  theme's text colour like every other icon. Not emoji — full-colour,
-  platform-dependent, and deaf to `currentColor`. A flag rather than a target:
-  concentric rings collapse into a blurred dot at 13px, while a pole and a
-  pennant keep a silhouette no tick can be confused with. The tick is green
-  because U2 reserves green for "agreed"; the flag is muted, because a plan is
-  not a status. The green is a local token: U2 reserves the colour system-wide and
-  Core defines nothing for it, and one caller is not enough to guess what a
-  shared one should be, so it moves to Core when a second application marks
-  something as done.
+- **The summary distinguishes the initiative's Intention from a milestone's.**
+  A target mark introduces Intention at both scales, while a milestone also
+  uses its own name. Date marks lead `Start`, `End`, and the next planned date.
+  The initiative header keeps `Adopt` / `Take back` short and exposes the full
+  field-aware reaction sentence on hover and keyboard focus.
 
-- **A milestone is marked reached on the strip, by picking the day.** The
-  strip had become a read-only status line, which left `reached_at` displayed
-  and unsettable — the milestone block drew "Reached 2 May" and nothing in the
-  interface could ever put a date there. It is settable now, on the next
-  milestone, which is the claim, and on the last one, which is correcting or
-  withdrawing one already made.
+- **Assessments join the shared record even when content is held.**
+  `initiative_reality` is an authored observation at both the initiative and
+  milestone scales, so `Review each change first` no longer leaves it hidden
+  as an unreactable addition.
 
-  **A date input and not a `[Mark reached]` button.** "We got there" is a
-  claim about a *day*, and the day is usually not today: a milestone noticed
-  on Monday was often reached the Thursday before, and a one-click control
-  would record the moment somebody looked instead of the moment it happened —
-  then need a second control to correct itself. One date does both, and
-  clearing it withdraws the claim, which `DESIGN_INITIATIVE.md` §3 calls a
-  different act from tidying a field.
+- **A new Approach starts with Roadmap and Risks & Chances.** Both remain
+  ordinary, editable sections; the shorter seed avoids prescribing four
+  overlapping ways to structure the work.
 
-  Everything else on the line stays read-only. Planned dates belong to
-  planning, which is the Mandate's act, and the Intention is drawn beside the
-  claim so that marking a milestone reached happens in front of what it was
-  supposed to change — which is the whole argument for the strip being a seam
-  rather than a summary. `actual_start` and `actual_end` are still shown and
-  still claimable nowhere; §2 of the interface doc now records that as an
-  undecided surface instead of implying a home for them.
+- **Team and Flow relationships moved into the Mandate.** They are now
+  S-Initiative-owned `initiative_relationship` nodes with normal transition
+  semantics; title-bar links are only local Core navigation shortcuts.
 
 - **The board summary is one compact line beside the face switch.** It shows
-  `Start ⇒ Intention ⇒ End` for the initiative and
-  `Last ⇒ Intention ⇒ Next` for its milestones. Actual dates replace planned
-  dates where they exist, each Intention comes from its single field, and
-  absent facts leave no placeholder or dangling arrow. The status is
-  right-aligned behind a divider from the switcher and contains no actions.
+  `Start ⇒ target-marked Intention ⇒ End` for the initiative. Behind the
+  divider it shows only the next milestone's name, target-marked Intention,
+  and flag-marked editable planned date. Actual initiative dates replace
+  planned dates where they exist; all displayed dates follow the user's locale.
 
 - **Intention is one field at both scales.** The initiative's existing
   `objective` is displayed as **Intention** at the top of the Mandate and asks
@@ -75,7 +56,7 @@
   commitments behind a disclosure, and labels an unreachable actor's persisted
   head as last seen.
 
-- **The Approach is implemented.** New initiatives seed four ordinary,
+- **The Approach is implemented.** New initiatives seed two ordinary,
   editable sections; sections and clauses can be added, reordered, renamed and
   deleted, carry divergence controls, and round-trip through copies and
   snapshots. The region arrives collapsed.

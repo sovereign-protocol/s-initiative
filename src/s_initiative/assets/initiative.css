@@ -532,30 +532,9 @@ button.auto-adopt-square {
   box-shadow: none;
 }
 
-.column.diff {
-  outline: 2px solid var(--warning);
-  position: relative;
-}
-
 .column.ghost {
   opacity: 0.78;
-  border: 1px dashed var(--border-strong);
 }
-
-/* One colour per stage of the exchange, not per relation: what a person
-   needs at a glance is whose turn it is, and the same situation must look
-   the same on both screens - and on every other surface that reports it.
-   The tokens come from shared.css, so a card here, a dot on a team row and
-   a band in the header are the same colour for the same fact.
-   Grey is not yet anybody's move, amber is theirs and waiting on me, red is
-   a real two-sided conflict - the only one to act on immediately.
-   In flight and awaiting a peer share the grey: the header counts both as
-   "in transition", and what separates them here is the pulse below, which
-   says "still travelling" without spending a second colour on it. */
-.column.stage-in_flight,
-.column.stage-awaiting_peer { outline-color: var(--stage-transit-fill); }
-.column.stage-awaiting_me { outline-color: var(--stage-review-fill); }
-.column.stage-conflict { outline-color: var(--stage-conflict-fill); }
 
 body.card-drag-pending,
 body.card-drag-pending * {
@@ -618,37 +597,6 @@ body.card-drag-active * {
   justify-content: flex-end;
 }
 
-.adopt {
-  border-color: var(--border-strong) !important;
-  color: var(--text) !important;
-  background: transparent !important;
-  cursor: pointer;
-  font-weight: 700;
-  width: auto;
-}
-
-/* Core draws the reaction control; these rules only lift it clear of the
-   generic ".card button" muting, which is more specific than Core's own
-   class and would otherwise grey out the one control a diverged card has. */
-.react-button {
-  color: var(--text);
-  cursor: pointer;
-  font-weight: 700;
-  width: auto;
-}
-
-.card button.react-button { color: var(--text); }
-
-.card button.react-button:hover,
-.card button.react-button:focus-visible {
-  border-color: var(--teal);
-  background: var(--teal-soft);
-  color: var(--text);
-}
-
-/* The menu itself is Core's (.ui-reaction-menu in shared.css) - only the
-   board's own trigger styling stays here. */
-
 .card-list {
   min-height: 18px;
   overflow-y: auto;
@@ -666,33 +614,8 @@ body.card-drag-active * {
   cursor: pointer;
 }
 
-.card.diff {
-  border-left: 4px solid var(--warning);
-}
-
 .card.ghost {
   background: rgba(255, 255, 255, 0.02);
-  border: 2px dashed rgba(255, 255, 255, 0.12);
-}
-/* In flight needs to be visible, not tasteful: this is the window where a
-   change has left but nobody has answered, and grey-on-grey made it look as
-   though nothing was happening at all. The pulse says "in progress" without
-   bringing back a badge that has to be decoded. */
-.card.stage-in_flight,
-.card.stage-awaiting_peer {
-  position: relative;
-}
-
-.card.stage-in_flight::after {
-  content: "";
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--stage-transit-fill);
-  animation: stage-pulse 1.4s ease-in-out infinite;
 }
 
 /* A ghost is only drawn once the other side has been seen still holding the
@@ -708,15 +631,9 @@ body.card-drag-active * {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .card.stage-in_flight::after { animation: none; }
   .card.ghost,
   .column.ghost { animation: none; }
 }
-
-.card.stage-in_flight,
-.card.stage-awaiting_peer { border-left-color: var(--stage-transit-fill); }
-.card.stage-awaiting_me { border-left-color: var(--stage-review-fill); }
-.card.stage-conflict { border-left-color: var(--stage-conflict-fill); }
 
 .card:hover {
   border-color: var(--border-strong);
@@ -1042,6 +959,42 @@ menu button {
   margin: 0 0 8px;
 }
 
+.initiative-relationship-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.initiative-relationship-row {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 10px;
+  min-height: 38px;
+  padding: 6px 8px 6px 10px;
+}
+
+.initiative-relationship-kind {
+  color: var(--muted);
+  flex: 0 0 48px;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.initiative-relationship-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.initiative-relationship-actions {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
 /* Content: edited in place, reordered, and lamped. */
 .need-row {
   align-items: flex-start;
@@ -1052,10 +1005,6 @@ menu button {
   gap: 8px;
   margin-bottom: 6px;
   padding: 8px 10px;
-}
-
-.need-row.diff {
-  outline: 2px solid var(--stage-review-fill);
 }
 
 .need-body {
@@ -1115,10 +1064,6 @@ menu button {
   padding-left: 10px;
 }
 
-.approach-section.diff {
-  border-left-color: var(--stage-review-fill);
-}
-
 .approach-section-head {
   align-items: center;
   display: flex;
@@ -1155,10 +1100,6 @@ menu button {
 
 .clause-row:hover {
   background: var(--card-hover);
-}
-
-.clause-row.diff {
-  outline: 2px solid var(--stage-review-fill);
 }
 
 .clause-text {
@@ -1255,10 +1196,6 @@ menu button {
   padding: 10px;
 }
 
-.milestone-block.diff {
-  outline: 2px solid var(--stage-review-fill);
-}
-
 .milestone-head {
   align-items: center;
   display: flex;
@@ -1347,10 +1284,9 @@ menu button {
 }
 
 /* The one control on the strip. Sized to sit inside a line of text rather
-   than to stand out from it: it is a claim being recorded in passing, not a
-   form to fill in. */
+   than to stand out from it. */
 
-.summary-reached-input {
+.summary-planned-input {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 5px;
@@ -1360,30 +1296,58 @@ menu button {
   padding: 1px 4px;
 }
 
-.summary-reached-input:hover {
+.summary-planned-input:hover {
   border-color: var(--border-strong);
 }
 
-.summary-reached-input:focus {
+.summary-planned-input:focus {
   border-color: var(--teal);
   outline: none;
 }
 
 /* Which kind of date this is, beside the date itself. U8: the conventional
    glyph and never an invented one, on the 24x24 grid, no fill, currentColor.
-   A tick reads as done anywhere, and concentric rings read as something aimed
-   at - neither has to be learned.
+   A tick reads as done anywhere, and a flag reads as something aimed at -
+   neither has to be learned.
 
    The green is local. U2 reserves green for "agreed"/success across every
    application, and Core defines no token for it; one caller is not enough to
    guess what a shared one should be, so this moves to Core when a second
    application marks something as done. */
 /* Inside the label, before the colon: it qualifies the name, not the date. */
-.date-mark {
+.date-mark,
+.summary-topic-mark {
   align-items: center;
   display: inline-flex;
-  margin-left: 3px;
+  margin-right: 3px;
   vertical-align: -1px;
+}
+
+.author-scope-mark {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-right: 5px;
+  vertical-align: -2px;
+}
+
+.author-scope-mark .icon-svg {
+  height: 14px;
+  width: 14px;
+}
+
+.resource-identity {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+}
+
+.resource-identity .author-scope-mark,
+.comment-author .author-scope-mark,
+.attachment-meta .author-scope-mark {
+  margin-left: 5px;
+  margin-right: 0;
 }
 
 .summary-label {
@@ -1391,7 +1355,8 @@ menu button {
   display: inline-flex;
 }
 
-.date-mark .icon-svg {
+.date-mark .icon-svg,
+.summary-topic-mark .icon-svg {
   height: 13px;
   width: 13px;
 }
@@ -1407,8 +1372,8 @@ menu button {
 
 /* Empty means no claim yet, and should read as an invitation rather than as
    a date somebody deleted. */
-.summary-reached-input:not([value]):not(:focus),
-.summary-reached-input[value=""]:not(:focus) {
+.summary-planned-input:not([value]):not(:focus),
+.summary-planned-input[value=""]:not(:focus) {
   border-style: dashed;
 }
 

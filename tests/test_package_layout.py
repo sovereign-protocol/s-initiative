@@ -261,6 +261,12 @@ class AssetTests(unittest.TestCase):
         self.assertIn("reactionTools(need)", row)
         self.assertIn("applyTransitionClass", row)
 
+    def test_reactable_nodes_are_decided_by_the_server(self):
+        body = self._function_body("needsReaction")
+        self.assertIn("reactable", body)
+        self.assertNotIn("auto_adopt_mode", body)
+        self.assertNotIn("autoAdoptAllowsNode", self.initiative)
+
     def test_the_beneficiary_label_is_drawn_beside_the_live_name_not_replaced(self):
         # S-Team's rule inverted: the beneficiary of a need is very often not
         # an actor in this system at all, so the label is the primary fact.
@@ -294,7 +300,7 @@ class AssetTests(unittest.TestCase):
         # must not know their names or treat them differently.
         approach = self._function_body("approachRegion")
         block = self._function_body("sectionBlock")
-        for seeded in ("Strategy", "Risks", "Conditions for success"):
+        for seeded in ("Roadmap", "Risks & Chances"):
             self.assertNotIn(seeded, approach)
             self.assertNotIn(seeded, block)
         self.assertIn("/api/initiative/sections/delete", block)
@@ -325,6 +331,7 @@ class AssetTests(unittest.TestCase):
         self.assertNotIn("reorder", row.lower())
         self.assertNotIn("reactionTools", row)
         self.assertIn("state.user_profile", row)
+        self.assertIn("authorScopeMark(author)", row)
 
     def test_only_your_resource_line_has_a_composer_and_offline_is_last_seen(self):
         row = self._function_body("resourceRow")
@@ -332,15 +339,27 @@ class AssetTests(unittest.TestCase):
         self.assertIn("SovereignUI.addComposer", row)
         self.assertIn('"Last seen"', row)
         self.assertIn("Earlier commitments", row)
+        self.assertIn("authorScopeMark", row)
 
-    def test_milestones_are_first_on_the_mandate_and_reached_only_on_the_board(self):
+    def test_team_view_setting_uses_the_agreed_wording(self):
+        for label in (
+            "Review every change",
+            "Review changes involving me",
+            "Review changes I'm responsible for",
+            "Adopt every change automatically",
+            'autoAdoptHeading: "Team-view changes"',
+        ):
+            self.assertIn(label, self.initiative)
+        self.assertIn("Individual views and contributions", self.initiative)
+
+    def test_milestones_are_first_and_both_dates_are_editable_in_detail(self):
         mandate = self._function_body("renderMandate")
         self.assertLess(
             mandate.index("milestonesRegion"), mandate.index("needsRegion"),
         )
         block = self._function_body("milestoneBlock")
         self.assertIn("planned_at", block)
-        self.assertNotIn("/milestones/reach", block)
+        self.assertIn("reachedDate(milestone)", block)
         strip = self._function_body("milestoneStripContent")
         self.assertNotIn("/api/", strip)
         self.assertNotIn("createElement(\"button\")", strip)
@@ -364,31 +383,26 @@ class AssetTests(unittest.TestCase):
         self.assertIn("actual_start || initiative.data.planned_start", initiative)
         self.assertIn("actual_end || initiative.data.planned_end", initiative)
         self.assertIn("initiative.data.objective", initiative)
-        self.assertIn('summarySegment("Intention"', initiative)
+        self.assertIn("summaryValueSegment(intention, intentionMark())", initiative)
         milestone = self._function_body("milestoneSummarySegments")
-        self.assertIn("next?.data.intention", milestone)
-        self.assertIn('summarySegment("Intention"', milestone)
+        self.assertIn("next.data.intention", milestone)
+        self.assertIn('next.data.title || "Milestone"', milestone)
+        self.assertIn("plannedMilestoneDate(next)", milestone)
         strip = self._function_body("milestoneStripContent")
         self.assertIn("item.data.reached_at", strip)
-        point = self._function_body("milestoneSummarySegments")
-        # Last shows a claim and Next shows a plan. The claimed date moved
-        # into the control that edits it, so assert it where it now lives.
-        self.assertIn("reachedDate(last)", point)
-        self.assertIn("next.data.planned_at", point)
+        self.assertNotIn("const last", strip)
         self.assertIn("milestone.data.reached_at", self._function_body("reachedDate"))
 
     def test_summary_uses_the_same_three_part_grammar_for_both_scales(self):
         initiative = self._function_body("initiativeSummarySegments")
         milestone = self._function_body("milestoneSummarySegments")
-        # Both scales read point => intention => point. The initiative's two
-        # points are its own bookends and have fixed words; a milestone's
-        # point is named by the milestone, because "Last" and "Next" spent
-        # the label on a position in a list nobody is looking at.
-        for label in ('"Start"', '"Intention"', '"End"'):
+        # The Initiative reads start => intention => end. After the divider,
+        # only the next milestone remains: name/intention => planned date.
+        for label in ('"Start"', '"End"', "intentionMark()"):
             self.assertIn(label, initiative)
-        self.assertIn('"Intention"', milestone)
-        self.assertIn('last.data.title', milestone)
+        self.assertNotIn('summarySegment("Intention"', milestone)
         self.assertIn('next.data.title', milestone)
+        self.assertNotIn("last", milestone)
         for retired in ('"Last"', '"Next"'):
             self.assertNotIn(retired, milestone)
         append = self._function_body("appendSummarySegments")
@@ -403,7 +417,15 @@ class AssetTests(unittest.TestCase):
         self.assertIn("Boolean(initiative.data.actual_end)", initiative)
         milestone = self._function_body("milestoneSummarySegments")
         self.assertIn("dateMark(false)", milestone)
-        self.assertIn("dateMark(true)", milestone)
+        segment = self._function_body("summarySegment")
+        self.assertLess(
+            segment.index("if (mark) name.append(mark)"),
+            segment.index("if (label instanceof Node)"),
+        )
+
+    def test_the_root_reaction_names_the_fields_it_will_take_back(self):
+        header = self._function_body("renderBoardAdoptTools")
+        self.assertIn('reactionTools(initiative, "review")', header)
 
     def test_the_date_marks_are_conventional_glyphs_built_u8_s_way(self):
         # U8: an act glyph is the conventional one and never invented, on the
@@ -425,13 +447,13 @@ class AssetTests(unittest.TestCase):
         self.assertIn('face !== "mandate"', switch)
         self.assertNotIn('face !== "initiative"', switch)
 
-    def test_the_strip_carries_the_reached_claim_and_nothing_else(self):
-        # 2: a field belongs to the face where its act happens. Marking a
-        # milestone reached is a claim made on the day it is true, so its
-        # control is on the board - and it is the only control there.
+    def test_the_strip_carries_only_the_editable_next_planned_date(self):
         segments = self._function_body("milestoneSummarySegments")
-        self.assertIn('summarySegment("Reached", reachedDate(next))', segments)
-        self.assertIn("reachedDate(last)", segments)
+        self.assertIn("plannedMilestoneDate(next)", segments)
+        self.assertNotIn("reachedDate", segments)
+        planned = self._function_body("plannedMilestoneDate")
+        self.assertIn("/api/initiative/milestones/update", planned)
+        self.assertIn('input.type = "date"', planned)
 
         claim = self._function_body("reachedDate")
         self.assertIn("/api/initiative/milestones/reach", claim)
@@ -450,11 +472,12 @@ class AssetTests(unittest.TestCase):
         self.assertNotIn("Date.now", claim)
         self.assertNotIn("new Date()", claim)
 
-    def test_a_reached_milestone_keeps_its_claim_editable(self):
+    def test_a_reached_milestone_keeps_its_claim_editable_in_detail(self):
         # Clearing one is undoing a claim rather than tidying a field, so the
-        # control stays rather than hardening into text once it has a value.
-        segments = self._function_body("milestoneSummarySegments")
-        self.assertIn("reachedDate(last)", segments)
+        # detailed control stays rather than hardening into text.
+        block = self._function_body("milestoneBlock")
+        self.assertIn("reachedDate(milestone)", block)
+        self.assertNotIn("reachedDate", self._function_body("milestoneSummarySegments"))
 
     def test_the_mark_qualifies_the_name_and_not_the_date(self):
         # "Prototype reached: 8 Apr" is what the line says. After the date it

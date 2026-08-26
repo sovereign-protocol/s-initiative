@@ -81,9 +81,9 @@ than by error. Two checklists, one per node class.
 2. **The author field is written from `self.user_profile().uuid`** and checked on
    delete. `delete_card_comment` is the shape, one `if` and a refusal.
 3. **No `order`, no move command.** Sorted by `created_at`, appended, in time.
-4. **Nothing in `_classify_incoming_node`.** Its default is adopt, and adopt is
-   what "persisted" means here; only `agenda_item` opts out, because it is the
-   one read-through type. Both new record types want the default.
+4. **An explicit auto classification in `_classify_incoming_node`.** Persisted
+   observations join even when the topic's content default is review-first;
+   `agenda_item` still opts out because it is the one read-through type.
 5. **The page draws author and date always, and offers no edit affordance to
    anybody but the author** — absent, not disabled.
 6. **Not in snapshots.** A template carries what a team agreed, never what
@@ -242,10 +242,9 @@ the subtree.
 `initiative_section` → `initiative_clause`, region 5. Two levels, the same shape
 as a Team Agreement's sections and clauses, and the first phase with nesting.
 
-- A new initiative is **seeded** with Strategy, Plan, Risks, Conditions for
-  success — ordinary content from the moment they exist, so renamable,
-  reorderable, deletable, and a fifth is added by the same composer. Nothing
-  marks the four as special.
+- A new initiative is **seeded** with Roadmap and Risks & Chances — ordinary
+  content from the moment they exist, so renamable, reorderable, deletable, and
+  a third is added by the same composer. Nothing marks the two as special.
 - The region **arrives collapsed**. It is the longest and least often changed,
   and S-Team learned in use that leading with the long text buries the team
   behind its own text.
@@ -259,10 +258,10 @@ as a Team Agreement's sections and clauses, and the first phase with nesting.
 section renamed and a clause added round-trip through export and import; a clause
 is refused under anything but a section.
 
-**Done when:** a new initiative opens with four seeded sections you can rewrite,
+**Done when:** a new initiative opens with two seeded sections you can rewrite,
 and a snapshot of it restores them.
 
-**Done.** New initiatives seed four ordinary sections; section and clause CRUD,
+**Done.** New initiatives seed two ordinary sections; section and clause CRUD,
 ordering, divergence, routes, facade methods, the collapsed region, copies and
 snapshot round-trips are covered by the suite.
 
@@ -346,7 +345,7 @@ and because it is the only phase that touches both faces.
   strip is a window onto, and landing next to the thing you just acted on from
   the other face is what makes the two feel like one initiative.
 - The strip is a read-only line beside the switcher:
-  `Start ⇒ Intention ⇒ End | Last ⇒ Intention ⇒ Next`. Actual dates replace
+  `Start ⇒ initiative mark ⇒ End | last name ⇒ next name ⇒ next point`. Actual dates replace
   planned dates, and absent facts draw nothing.
 - **The current milestone is the lowest `order` with no `reached_at`.** Nothing
   more. Not a date comparison — §7 of the type doc refuses dependencies, a

@@ -282,20 +282,13 @@ def build_routes(logic, runtime) -> list[Route]:
             runtime, logic.delete_card_attachment(data["attachment_uuid"]),
         )
 
-    async def api_adopt(request: Request):
+    async def api_react(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.accept_peer_node(
+        return await _json_result(runtime, logic.react_to_node(
             data["source_addr"],
             data["node_uuid"],
-            bool(data.get("adopt_absence")),
-        ))
-
-    async def api_rollback(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.rollback_peer_node(
-            data["source_addr"],
-            data["node_uuid"],
-            bool(data.get("rollback_absence")),
+            data.get("reaction", ""),
+            bool(data.get("absent")),
         ))
 
     async def api_create_agenda_item(request: Request):
@@ -322,18 +315,17 @@ def build_routes(logic, runtime) -> list[Route]:
             data["item_uuid"], data.get("priority"),
         ))
 
-    async def api_create_link(request: Request):
+    async def api_create_relationship(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.link_topic(
+        return await _json_result(runtime, logic.create_relationship(
             data["initiative_uuid"],
             data["topic_uuid"],
             data.get("application_id", ""),
-            data.get("title", ""),
         ))
 
-    async def api_make_link(request: Request):
+    async def api_make_related_topic(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.create_linked_topic(
+        return await _json_result(runtime, logic.create_related_topic(
             data["initiative_uuid"],
             data.get("application_id", ""),
             data.get("title", ""),
@@ -341,13 +333,11 @@ def build_routes(logic, runtime) -> list[Route]:
             data.get("snapshot"),
         ))
 
-    async def api_remove_link(request: Request):
+    async def api_remove_relationship(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.unlink_topic(data["link_uuid"]))
-
-    async def api_follow_link(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.follow_link(data["link_uuid"]))
+        return await _json_result(
+            runtime, logic.remove_relationship(data["relationship_uuid"]),
+        )
 
     async def api_move_agenda_item(request: Request):
         data = await request.json()
@@ -407,17 +397,24 @@ def build_routes(logic, runtime) -> list[Route]:
         Route("/api/initiative/cards/comments/delete", api_delete_card_comment, methods=["POST"]),
         Route("/api/initiative/cards/attachments/create", api_create_card_attachment, methods=["POST"]),
         Route("/api/initiative/cards/attachments/delete", api_delete_card_attachment, methods=["POST"]),
-        Route("/api/initiative/adopt", api_adopt, methods=["POST"]),
-        Route("/api/initiative/rollback", api_rollback, methods=["POST"]),
+        Route("/api/initiative/react", api_react, methods=["POST"]),
         Route("/api/initiative/agenda/create", api_create_agenda_item, methods=["POST"]),
         Route("/api/initiative/agenda/delete", api_delete_agenda_item, methods=["POST"]),
         Route("/api/initiative/agenda/update", api_update_agenda_item, methods=["POST"]),
         Route("/api/initiative/agenda/set_priority", api_set_agenda_item_priority, methods=["POST"]),
         Route("/api/initiative/agenda/move", api_move_agenda_item, methods=["POST"]),
-        Route("/api/initiative/links/create", api_create_link, methods=["POST"]),
-        Route("/api/initiative/links/make", api_make_link, methods=["POST"]),
-        Route("/api/initiative/links/remove", api_remove_link, methods=["POST"]),
-        Route("/api/initiative/links/follow", api_follow_link, methods=["POST"]),
+        Route(
+            "/api/initiative/relationships/create",
+            api_create_relationship, methods=["POST"],
+        ),
+        Route(
+            "/api/initiative/relationships/make",
+            api_make_related_topic, methods=["POST"],
+        ),
+        Route(
+            "/api/initiative/relationships/remove",
+            api_remove_relationship, methods=["POST"],
+        ),
     ]
 
 

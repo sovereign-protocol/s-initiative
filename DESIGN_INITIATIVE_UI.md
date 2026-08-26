@@ -46,8 +46,8 @@ the page.
 conditioned on how full the initiative is. A remembered face means one link
 opens two different pages for two people, and the board is where the work is.
 The one case that argues the other way — a just-created initiative, whose board
-is three empty columns while its Approach already holds four seeded sections —
-is answered by the strip in §4 rather than by an exception on day one.
+is three empty columns while its Approach already holds Roadmap and Risks &
+Chances — is answered by the strip in §4 rather than by an exception on day one.
 
 ---
 
@@ -68,7 +68,7 @@ three fields do not:
 | `actual_start`, `actual_end`                                                                           | shown on the board, claimable nowhere yet                  | the same act, no surface decided                             |
 | `initiative_reality`                                                                                   | both — written on the board, read on the mandate           | observing what just happened, reading what was observed      |
 | `initiative_investment`                                                                                | the mandate                                                | committing what you have                                     |
-| `topic_link`                                                                                           | neither — Core's, in the bar (U6, U7)                      |                                                              |
+| `initiative_relationship`                                                                              | the mandate                                                | domain content: team and flows                               |
 
 All three dates are content by class, and §3 is right about why: two people who
 disagree about when it started have a divergence worth seeing rather than two
@@ -132,60 +132,29 @@ plan and a fact. Everything else on the mandate face is one or the other.
 
 ### What it shows
 
-One compact status line to the right of the face switch, separated from it by a
+One compact line to the right of the face switch, separated from it by a
 vertical rule:
 
 ```
-Start ✓: 12 Mar ⇒ Intention: two teams renew ⇒ End ⚑: 30 Jun |
-Prototype ✓: 8 Apr ⇒ Intention: three teams pilot ⇒ Pilot ⚑: 30 Apr ⇒ Reached: [ ]
+⚑ Start: 12 Mar ⇒ ◎ two teams renew ⇒ ⚑ End: 30 Jun |
+Pilot: ◎ three teams pilot ⇒ ⚑ [30 Apr]
 ```
 
-Both groups read `point ⇒ Intention ⇒ point`. The initiative's two points are
-its own bookends and are labelled `Start` and `End`; **a milestone's point is
-labelled with the milestone's name.** The Intention comes from the single field
-on the next milestone. Any missing fact is omitted, including its label and
-separator.
+The target introduces Intention without repeating the word. After the divider,
+only the next unreached milestone is shown: its name, its target-marked
+Intention, and its flag-marked planned date. The last reached milestone is not
+repeated.
 
-**The name is the label, not a second value after the date.** `Last` and `Next`
-named a position in a list the reader is not looking at, and spent the label
-saying it — which pushed the one word identifying *which* milestone this is to
-the far side of a second colon, in `Last: 8 Apr: Prototype`. The name says which
-milestone. What `Last` and `Next` were really reporting is carried by the mark.
+**The planned date is the line's only control.** It is a native date input, so
+clicking it changes the plan and the browser presents it in the user's locale.
+All non-editable dates use the same locale-aware day/month/year formatter. The
+milestone's reached date remains an explicit date input in the detailed
+milestone; there is no one-click “done” action that invents today's date.
 
-**Every point says which kind of date it has.** A tick where the day was
-claimed, a flag where it is still being aimed at. This is not decoration: an
-actual date replaces a planned one *in the same position*, so without the marks
-the line draws "we start on the 12th" and "we started on the 12th" identically.
-
-**The mark sits on the name, before the colon** — `Prototype ✓: 8 Apr`, which
-reads "Prototype reached: 8 Apr". After the date it read as "8 Apr, reached",
-qualifying the wrong word: the day is not the thing that was achieved, the
-milestone is.
-
-The marks are U8 act glyphs — the conventional ones, never invented, on the
-24×24 grid with no fill and a `currentColor` stroke, so they take the theme's
-text colour like everything else. Not emoji, which are full-colour,
-platform-dependent and deaf to `currentColor`. A flag rather than a target:
-concentric rings collapse into a blurred dot at 13px and read as whatever is
-nearby, while a pole and a pennant keep a silhouette no tick can be confused
-with — and a milestone is a flag you plant. The tick is green because U2
-reserves green for "agreed"; the flag takes the muted colour, because a plan is
-not a status.
-
-**One control, and it is a date.** The milestone's `reached_at` is settable
-here — on the next milestone, which is the claim, and on the last one, which is
-correcting or withdrawing a claim already made. Everything else on the line is
-read-only: the planned dates belong to planning, which is the Mandate's act,
-and the Intention is shown so that marking a milestone reached happens in front
-of what it was supposed to change.
-
-**A date and never a one-click button.** "We got there" is a claim about a
-*day*, and the day is usually not today — a milestone noticed on Monday was
-often reached the Thursday before. A `[Mark reached ✓]` button would record the
-moment somebody looked instead of the moment it happened, and would then need a
-second control to correct itself. One date input does both, and clearing it
-undoes the claim, which §3 of the type doc says is a different act from tidying
-a field rather than the same one.
+**Icons qualify the fact that follows.** A target precedes Intention; a flag
+precedes a planned date. `Start` and `End` retain a leading flag for a plan and
+a tick when an actual date replaces it. The glyphs use the shared 24×24,
+outline, `currentColor` convention rather than platform-dependent emoji.
 
 **The initiative's own two actuals are not claimable here.** `actual_start` and
 `actual_end` are shown where they exist and have no control on this line or
@@ -249,11 +218,11 @@ acted on from the other face is what makes the two feel like one initiative.
 
 **Approach is second to last and arrives collapsed.** It is the longest region
 and the least often changed, and S-Team learned in use that leading with the
-long text "buried the team behind its own text". Its four seeded sections —
-Strategy, Plan, Risks, Conditions for success — are ordinary content from the
-moment they exist (§3), so they are renamable, reorderable and deletable, and a
-fifth is added by the same composer. Nothing marks the four as special, because
-nothing about them is.
+long text "buried the team behind its own text". Its two seeded sections —
+Roadmap and Risks & Chances — are ordinary content from the moment they exist
+(§3), so they are renamable, reorderable and deletable, and a third is added by
+the same composer. Nothing marks the two as special, because nothing about them
+is.
 
 **Resources before Approach**, so the two regions about what this costs and who
 is carrying it sit with the milestones and needs above them, and the reference
@@ -324,7 +293,7 @@ absent. A greyed-out control on somebody else's observation says the system
 considered letting you rewrite it.
 
 **Every new decidable type needs adding to `DISPLAYED_DIVERGENCE_TYPES`** in
-`logic.py`, which today holds the three board types and `topic_link`. A
+`logic.py`, which also holds `initiative_relationship`. A
 decidable node with no divergence rendering is one that silently keeps two
 truths — which is the failure the class exists to prevent.
 

@@ -1496,7 +1496,7 @@ class RelayLogicTests(unittest.TestCase):
 
             initiative_logic_a.update_card(card.uuid, "After", "", [], None)
             relay_a.publish_due_topics()
-            waiting = initiative_logic_a.transition_by_node(initiative_logic_a.transition_events(initiative_uuid))
+            waiting = initiative_logic_a.session.group_transition_events(initiative_logic_a.transition_events(initiative_uuid))
             self.assertEqual(waiting[card.uuid]["stage"], "in_flight")
 
             relay_b.poll_and_apply()
@@ -1505,7 +1505,7 @@ class RelayLogicTests(unittest.TestCase):
             self.assertIn(initiative_uuid, relay_b.publish_due_topics())
             self.assertIn((initiative_uuid, "B"), relay_a.poll_and_apply())
 
-            confirmed = initiative_logic_a.transition_by_node(initiative_logic_a.transition_events(initiative_uuid))
+            confirmed = initiative_logic_a.session.group_transition_events(initiative_logic_a.transition_events(initiative_uuid))
             # The acknowledgement confirms B has seen my revision, so my
             # change is now waiting on B rather than still travelling. It is
             # my edit either way - never a two-sided conflict.
@@ -1573,7 +1573,7 @@ class RelayLogicTests(unittest.TestCase):
             self.assertFalse(
                 session_a.peer_observed_node("relay:B", current_card),
             )
-            waiting = initiative_logic_a.transition_by_node(
+            waiting = initiative_logic_a.session.group_transition_events(
                 initiative_logic_a.transition_events(initiative_uuid),
             )
             self.assertEqual(waiting[card.uuid]["stage"], "in_flight")
@@ -1583,7 +1583,7 @@ class RelayLogicTests(unittest.TestCase):
             self.assertTrue(
                 session_a.peer_observed_node("relay:B", current_card),
             )
-            agreed = initiative_logic_a.transition_by_node(
+            agreed = initiative_logic_a.session.group_transition_events(
                 initiative_logic_a.transition_events(initiative_uuid),
             )
             self.assertEqual(agreed[card.uuid]["type"], "in_agreement")
@@ -1608,13 +1608,13 @@ class RelayLogicTests(unittest.TestCase):
         session.bind_peer_topic_channel("relay:B", initiative_uuid, "mailbox")
 
         initiative_logic.update_card(card.uuid, "After", "", [], None)
-        alive = initiative_logic.transition_by_node(
+        alive = initiative_logic.session.group_transition_events(
             initiative_logic.transition_events(initiative_uuid),
         )
         self.assertEqual(alive[card.uuid]["stage"], "in_flight")
 
         liveness["state"] = "stale"
-        stale = initiative_logic.transition_by_node(
+        stale = initiative_logic.session.group_transition_events(
             initiative_logic.transition_events(initiative_uuid),
         )
         self.assertNotIn(card.uuid, stale)
@@ -1624,13 +1624,13 @@ class RelayLogicTests(unittest.TestCase):
             "relay:B",
             {card.uuid: session.node_revision(current_card)},
         )
-        confirmed = initiative_logic.transition_by_node(
+        confirmed = initiative_logic.session.group_transition_events(
             initiative_logic.transition_events(initiative_uuid),
         )
         self.assertEqual(confirmed[card.uuid]["stage"], "awaiting_peer")
 
         liveness["state"] = "alive"
-        online_again = initiative_logic.transition_by_node(
+        online_again = initiative_logic.session.group_transition_events(
             initiative_logic.transition_events(initiative_uuid),
         )
         self.assertEqual(online_again[card.uuid]["stage"], "awaiting_peer")

@@ -285,33 +285,32 @@ class InitiativeNewLogicTests(unittest.TestCase):
 
     # The Approach --------------------------------------------------------
 
-    def test_a_new_initiative_is_seeded_with_four_sections(self):
+    def test_a_new_initiative_is_seeded_with_two_sections(self):
         session = Session("local")
         logic = InitiativeLogic(session)
         initiative = logic.ensure_initiative()
 
         self.assertEqual(
             [section.data["title"] for section in logic.sections(initiative)],
-            ["Strategy", "Plan", "Risks", "Conditions for success"],
+            ["Roadmap", "Risks & Chances"],
         )
 
     def test_the_seeded_sections_are_ordinary_content(self):
-        # Renamable, reorderable, deletable, and a fifth added the same way.
-        # Nothing marks the four as special, because nothing about them is.
+        # Renamable, reorderable, deletable, and a third added the same way.
+        # Nothing marks the two as special, because nothing about them is.
         session = Session("local")
         logic = InitiativeLogic(session)
         logic.ensure_initiative()
-        strategy, plan, risks, conditions = logic.sections()
+        roadmap, risks = logic.sections()
 
-        logic.rename_section(strategy.uuid, "How we will win")
-        logic.delete_section(risks.uuid)
+        logic.rename_section(roadmap.uuid, "How we will win")
         logic.create_section("Open questions")
-        logic.move_section(conditions.uuid, 0)
+        logic.move_section(logic.sections()[-1].uuid, 0)
+        logic.delete_section(risks.uuid)
 
         self.assertEqual(
             [section.data["title"] for section in logic.sections()],
-            ["Conditions for success", "How we will win", "Plan",
-             "Open questions"],
+            ["Open questions", "How we will win"],
         )
 
     def test_a_section_without_a_title_is_refused(self):
@@ -391,7 +390,7 @@ class InitiativeNewLogicTests(unittest.TestCase):
         titles = [section.data["title"] for section in logic.sections(restored)]
         self.assertEqual(
             titles,
-            ["How we will win", "Plan", "Risks", "Conditions for success"],
+            ["How we will win", "Risks & Chances"],
         )
         first = logic.sections(restored)[0]
         self.assertEqual(
@@ -413,7 +412,7 @@ class InitiativeNewLogicTests(unittest.TestCase):
 
         self.assertEqual(
             [section.data["title"] for section in logic.sections(restored)],
-            ["Strategy"],
+            ["Roadmap"],
         )
 
     def test_a_copied_initiative_keeps_its_approach(self):
@@ -508,6 +507,26 @@ class InitiativeNewLogicTests(unittest.TestCase):
         self.assertIn("initiative_reality", OWNED_NODE_TYPES)
         self.assertNotIn("initiative_reality", DISPLAYED_DIVERGENCE_TYPES)
 
+    def test_assessments_join_both_scales_while_content_changes_are_held(self):
+        left = self.runtime(9331)
+        right = self.runtime(9332)
+        initiative = left.logic.ensure_initiative()
+        milestone = left.logic.create_milestone("Pilot").value
+        connect(left, right)
+        connect(left, right, initiative.uuid)
+        right.logic.set_auto_adopt_mode("never")
+
+        initiative_reality = left.logic.create_reality(
+            initiative.uuid, "Support load stayed flat",
+        ).value
+        milestone_reality = left.logic.create_reality(
+            milestone.uuid, "Three teams completed the pilot",
+        ).value
+        sync(left, right)
+
+        self.assertIsNotNone(right.session.get_node(initiative_reality.uuid))
+        self.assertIsNotNone(right.session.get_node(milestone_reality.uuid))
+
     def test_another_actor_cannot_delete_an_assessment(self):
         left = self.runtime(9341)
         right = self.runtime(9342)
@@ -554,6 +573,38 @@ class InitiativeNewLogicTests(unittest.TestCase):
         self.assertEqual(second.data["previous_uuid"], first.uuid)
         self.assertIn("initiative_investment", OWNED_NODE_TYPES)
         self.assertNotIn("initiative_investment", DISPLAYED_DIVERGENCE_TYPES)
+
+    def test_availability_joins_while_team_view_changes_are_held(self):
+        left = self.runtime(9351)
+        right = self.runtime(9352)
+        initiative = left.logic.ensure_initiative()
+        connect(left, right)
+        connect(left, right, initiative.uuid)
+        right.logic.set_auto_adopt_mode("never")
+
+        availability = left.logic.create_investment(
+            left.logic.user_profile().uuid, "Two days a week",
+        ).value
+        sync(left, right)
+
+        self.assertIsNotNone(right.session.get_node(availability.uuid))
+
+    def test_another_actor_cannot_delete_availability(self):
+        left = self.runtime(9353)
+        right = self.runtime(9354)
+        initiative = left.logic.ensure_initiative()
+        connect(left, right)
+        connect(left, right, initiative.uuid)
+        availability = left.logic.create_investment(
+            left.logic.user_profile().uuid, "Two days a week",
+        ).value
+        sync(left, right)
+        right.logic.board_payload()
+
+        result = right.logic.delete_investment(availability.uuid)
+
+        self.assertEqual(result.status, "error")
+        self.assertIsNotNone(right.session.get_node(availability.uuid))
 
     def test_resource_payload_lists_topic_holders_and_their_chain_head(self):
         session = Session("local")
@@ -1213,6 +1264,49 @@ class InitiativeNewLogicTests(unittest.TestCase):
             "Renamed (uninvolved)",
         )
 
+    def test_involvement_is_checked_before_and_after_a_card_change(self):
+        left = self.runtime(8379)
+        right = self.runtime(8380)
+        initiative = left.logic.ensure_initiative()
+        connect(left, right)
+        connect(left, right, initiative.uuid)
+        right.logic.set_auto_adopt_mode("always")
+        column = left.logic.columns(initiative)[0]
+        right_id = right.logic.user_profile().uuid
+        card = left.logic.create_card(
+            column.uuid, "Involving right", "", [right_id],
+        ).value
+        sync(left, right)
+        right.logic.board_payload()
+
+        right.logic.set_auto_adopt_mode("not_member")
+        left.logic.update_card(card.uuid, "Removed right", "", [])
+        sync(left, right)
+        payload = right.logic.board_payload()
+
+        held = right.session.protocol.index[card.uuid]
+        self.assertEqual(held.data["name"], "Involving right")
+        self.assertIn(right_id, held.data["participants"])
+        self.assertTrue(payload["transition_by_node"][card.uuid]["reactable"])
+
+    def test_involving_mode_holds_a_need_that_names_me(self):
+        left = self.runtime(8381)
+        right = self.runtime(8382)
+        initiative = left.logic.ensure_initiative()
+        connect(left, right)
+        connect(left, right, initiative.uuid)
+        right.logic.set_auto_adopt_mode("not_member")
+        right_id = right.logic.user_profile().uuid
+
+        need = left.logic.create_need(
+            "A decision", "Right", right_id,
+        ).value
+        sync(left, right)
+        payload = right.logic.board_payload()
+
+        self.assertNotIn(need.uuid, right.session.protocol.index)
+        self.assertTrue(payload["transition_by_node"][need.uuid]["reactable"])
+
     def test_changing_the_mode_reconsiders_what_the_old_one_held(self):
         """A setting is read when a change arrives, so changing it re-decides.
 
@@ -1468,6 +1562,9 @@ class InitiativeNewLogicTests(unittest.TestCase):
             payload["transition_by_node"][card.uuid]["type"],
             "local_missing_node",
         )
+        self.assertTrue(
+            payload["transition_by_node"][card.uuid]["reactable"],
+        )
         adopt = right.logic.accept_peer_node(left.peer_addr, card.uuid)
         self.assertEqual(adopt.status, "ok")
         self.assertIn(card.uuid, right.session.protocol.index)
@@ -1658,7 +1755,7 @@ class InitiativeNewLogicTests(unittest.TestCase):
         runtime = self.runtime(8311)
         node_uuid = "node-1"
 
-        out = runtime.logic.transition_by_node([
+        out = runtime.session.group_transition_events([
             {
                 "node_uuid": node_uuid,
                 "type": "peer_missing_node",
@@ -1683,7 +1780,7 @@ class InitiativeNewLogicTests(unittest.TestCase):
         local_identity = runtime.logic.user_profile().data["identity_key"]
         node_uuid = "node-1"
 
-        out = runtime.logic.transition_by_node([
+        out = runtime.session.group_transition_events([
             {
                 "node_uuid": node_uuid,
                 "type": "local_made_changes",
@@ -1714,7 +1811,7 @@ class InitiativeNewLogicTests(unittest.TestCase):
             "peer_state_hash": "new",
         }
 
-        out = runtime.logic.transition_by_node([
+        out = runtime.session.group_transition_events([
             {**common, "peer_addr": addr_a},
             {**common, "peer_addr": addr_c},
         ])
@@ -2269,6 +2366,15 @@ class InitiativeNewLogicTests(unittest.TestCase):
         self.assertEqual(runtime.logic.auto_adopt_mode(initiative), "never")
         self.assertEqual(runtime.session.protocol.root.state_hash, root_before)
 
+    def test_team_view_modes_are_presented_from_most_to_least_review(self):
+        runtime = self.runtime(8469)
+        runtime.logic.ensure_initiative()
+
+        self.assertEqual(
+            runtime.logic.board_payload()["auto_adopt_modes"],
+            ["never", "not_member", "not_owner", "always"],
+        )
+
     def test_create_agenda_item_defaults_to_no_priority(self):
         # logic.ensure_initiative() returns a read-only snapshot (Session.protocol
         # is a ReadOnlyProtocolView) - it goes stale the moment a mutation
@@ -2440,7 +2546,7 @@ class InitiativeNewLogicTests(unittest.TestCase):
         runtime = self.runtime(8385)
         logic: InitiativeLogic = runtime.logic
 
-        out = logic.transition_by_node([
+        out = logic.session.group_transition_events([
             {
                 "node_uuid": "node-1",
                 "type": "divergence",

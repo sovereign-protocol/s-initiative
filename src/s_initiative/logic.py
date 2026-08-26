@@ -55,7 +55,7 @@ Contract:
     POST /api/initiative/agenda/create        {text, priority}  # priority optional
     POST /api/initiative/agenda/delete        {item_uuid}
     POST /api/initiative/agenda/set_priority  {item_uuid, priority}  # priority optional, clears if omitted
-    POST /api/initiative/auto_adopt          {mode}  # one of: always, not_owner, not_member, never
+    POST /api/initiative/auto_adopt          {mode}  # one of: never, not_member, not_owner, always
     POST /api/initiative/columns/create      {name}
     POST /api/initiative/columns/rename      {column_uuid, name}
     POST /api/initiative/columns/delete      {column_uuid}
@@ -66,11 +66,9 @@ Contract:
     POST /api/initiative/cards/move          {card_uuid, column_uuid, index}
     POST /api/initiative/cards/comments/create {card_uuid, text}
     POST /api/initiative/cards/comments/delete {comment_uuid}
-    POST /api/initiative/adopt               {source_addr, node_uuid, adopt_absence}
-    POST /api/initiative/rollback            {source_addr, node_uuid}
-    POST /api/initiative/links/create        {initiative_uuid, topic_uuid, application_id, title}
-    POST /api/initiative/links/remove        {link_uuid}
-    POST /api/initiative/links/follow        {link_uuid}
+    POST /api/initiative/react               {source_addr, node_uuid, reaction, absent}
+    POST /api/initiative/relationships/create {initiative_uuid, topic_uuid, application_id}
+    POST /api/initiative/relationships/remove {relationship_uuid}
 
   Naming:
     The route path and the payload-building trio name the *face*; every
@@ -94,10 +92,10 @@ Contract:
   Approach:
     initiative_section {type, title, order} holding initiative_clause
     {type, text, order}, both direct content of the initiative and both
-    decidable. A new initiative is seeded with four sections - Strategy,
-    Plan, Risks, Conditions for success - which are ordinary content from
-    the moment they exist: renamable, reorderable, deletable, and a fifth is
-    added the same way. Nothing marks the four as special. A clause sits
+    decidable. A new initiative is seeded with two sections - Roadmap and
+    Risks & Chances - which are ordinary content from the moment they exist:
+    renamable, reorderable, deletable, and a third is added the same way.
+    Nothing marks the two as special. A clause sits
     under a section and never at the top level; it reorders among its own
     siblings only.
 
@@ -110,11 +108,12 @@ Contract:
     previous_uuid, recorded_at} are immutable authored records: they are
     adopted, never diverged, and never copied or snapshotted.
 
-  Links:
+  Relationships:
     An initiative names the team it belongs to (0-1) and the flows it runs
-    (0-n), through Core's topic_link node as a direct child of the initiative.
-    Removing a link removes the reference and nothing else; the team or flow
-    is the owning application's to delete.
+    (0-n), through an initiative_relationship child owned by this application.
+    It is domain content and appears in the Mandate. Removing the relationship
+    leaves the team or flow untouched. Under-title shortcuts are separate,
+    local Core navigation metadata.
 """
 
 from __future__ import annotations
@@ -135,7 +134,7 @@ INITIATIVE_APP_NAME = "S-Initiative"
 INITIATIVE_APPLICATION_ID = "initiative"
 SNAPSHOT_FORMAT = "s-protocol.item-snapshot"
 SNAPSHOT_FORMAT_VERSION = 1
-AUTO_ADOPT_MODES = ("always", "not_owner", "not_member", "never")
+AUTO_ADOPT_MODES = ("never", "not_member", "not_owner", "always")
 AGENDA_PRIORITIES = ("high", "medium", "low")
 DISPLAYED_DIVERGENCE_TYPES = frozenset({
     "initiative", "kanban_column", "kanban_card",
@@ -152,12 +151,22 @@ DISPLAYED_DIVERGENCE_TYPES = frozenset({
     # disagree about it. A link's data never changes after it is written -
     # a reference is replaced, not edited - so what shows here is a link
     # present on one side and not the other, which is the whole of it.
-    "topic_link",
+    "initiative_relationship",
 })
 OWNED_NODE_TYPES = frozenset({
     *DISPLAYED_DIVERGENCE_TYPES,
     "agenda_item", "card_attachment", "card_comment",
     "initiative_reality", "initiative_investment",
+})
+INDIVIDUAL_VIEW_NODE_TYPES = frozenset({
+    "initiative_reality", "initiative_investment",
+})
+INDIVIDUAL_CONTRIBUTION_NODE_TYPES = frozenset({
+    "card_comment", "card_attachment",
+})
+AUTHOR_SCOPED_NODE_TYPES = frozenset({
+    *INDIVIDUAL_VIEW_NODE_TYPES,
+    *INDIVIDUAL_CONTRIBUTION_NODE_TYPES,
 })
 INITIATIVE_POSITION_POLICY = LastWriteWinsPolicy(
     node_type="kanban_card",
@@ -260,7 +269,7 @@ class InitiativeLogic:
             "identity_uuid": self.session.identity.uuid,
             "known_identities": self.session.known_identities(),
             "transition_events": events,
-            "transition_by_node": self.transition_by_node(events),
+            "transition_by_node": self._transition_groups(events, initiative),
             "agenda_items": (
                 [item.to_dict() for item in self.agenda_items(initiative)]
                 if initiative else []
@@ -269,14 +278,16 @@ class InitiativeLogic:
             "attachments_by_card": (
                 self._attachments_by_card(initiative) if initiative else {}
             ),
-            "links": self.initiative_links(initiative) if initiative else [],
+            "relationships": (
+                self.initiative_relationships(initiative) if initiative else []
+            ),
             "resources": (
                 self.initiative_resources(initiative) if initiative else []
             ),
-            "linkable_topics": (
-                self.linkable_topics(initiative.uuid) if initiative else []
+            "relationship_candidates": (
+                self.relationship_candidates(initiative.uuid) if initiative else []
             ),
-            "link_kinds": self.link_kinds() if initiative else [],
+            "relationship_kinds": self.relationship_kinds() if initiative else [],
         }
 
     def board_snapshot(self) -> dict:
@@ -288,47 +299,80 @@ class InitiativeLogic:
             "topic_uuid": initiative.get("uuid"),
         }
 
-    @classmethod
     def merge_board_observation(
-        cls, snapshot: dict, network: dict,
+        self, snapshot: dict, network: dict,
     ) -> dict:
         """Decorate a detached board snapshot with current channel liveness."""
         payload = snapshot["payload"]
         events = [
             event for event in payload.get("transition_events", [])
-            if cls._transition_visible(event, network)
+            if self._transition_visible(event, network)
         ]
         payload["network"] = network
         payload["transition_events"] = events
-        payload["transition_by_node"] = cls._filter_transition_groups(
-            payload.get("transition_by_node", {}), network,
+        initiative = self._node(
+            (payload.get("initiative") or {}).get("uuid"), "initiative",
+        )
+        payload["transition_by_node"] = self._filter_transition_groups(
+            payload.get("transition_by_node", {}), network, initiative,
         )
         return payload
 
-    @classmethod
     def _filter_transition_groups(
-        cls, grouped: dict, network: dict,
+        self, grouped: dict, network: dict,
+        initiative: ProtocolNode | None,
     ) -> dict:
-        filtered = {}
-        for node_uuid, group in grouped.items():
+        visible_events = []
+        for group in grouped.values():
             candidates = group.get("events") or [group]
-            visible = [
+            visible_events.extend(
                 event for event in candidates
-                if cls._transition_visible(event, network)
-            ]
-            if not visible:
-                continue
-            top = max(
-                visible,
-                key=lambda event: tuple(
-                    event.get("priority") or Session.transition_rank(event),
-                ),
+                if self._transition_visible(event, network)
             )
-            merged = dict(top)
-            if any(event.get("type") != "in_agreement" for event in visible):
-                merged["events"] = visible
-            filtered[node_uuid] = merged
-        return filtered
+        return self._transition_groups(visible_events, initiative)
+
+    def _transition_groups(
+        self, events: list[dict], initiative: ProtocolNode | None,
+    ) -> dict:
+        """Add Initiative policy placement to Core's canonical grouping."""
+        grouped = self.session.group_transition_events(events)
+        mode = self.auto_adopt_mode(initiative) if initiative else "always"
+        for node_uuid, info in grouped.items():
+            pending = info.get("stage") not in {None, "settled", "in_flight"}
+            auto_resolvable = info.get("type") in {
+                "peer_made_changes", "local_missing_node",
+            }
+            policy_nodes = self._transition_policy_nodes(node_uuid, info)
+            automatically_allowed = (
+                all(
+                    self._auto_adopt_allows_node(mode, node)
+                    for node in policy_nodes
+                )
+                if policy_nodes else self._auto_adopt_allows_node(mode, None)
+            )
+            info["reactable"] = bool(
+                pending
+                and (
+                    not auto_resolvable
+                    or not automatically_allowed
+                )
+            )
+        return grouped
+
+    def _transition_policy_nodes(self, node_uuid: str, info: dict) -> list:
+        """Current and proposed copies used by selective review modes."""
+        nodes = []
+        local = self.session.protocol.index.get(node_uuid)
+        if local is not None:
+            nodes.append(local)
+        for event in info.get("events") or [info]:
+            peer_addr = event.get("peer_addr")
+            if not peer_addr:
+                continue
+            peer = self.session.get_cached_peer_subtree(peer_addr, node_uuid)
+            if peer is not None and all(peer is not item for item in nodes):
+                nodes.append(peer)
+        return nodes
 
     @staticmethod
     def _transition_visible(event: dict, network: dict) -> bool:
@@ -419,7 +463,7 @@ class InitiativeLogic:
                 item.to_dict() for item in self.agenda_items(initiative)
             ],
             "transition_events": events,
-            "transition_by_node": self.transition_by_node(events),
+            "transition_by_node": self._transition_groups(events, initiative),
             "identity_uuid": self.session.identity.uuid,
             "known_identities": self.session.known_identities(),
             "auto_adopt_mode": self.auto_adopt_mode(initiative),
@@ -650,200 +694,140 @@ class InitiativeLogic:
             return False
         return True
 
-    # An initiative belongs to a team and may run flows. Both are other
-    # applications' topics, and both are referenced with Core's topic link:
-    # an ordinary child of the initiative that says where the reference is
-    # and nothing about what the topic contains.
-    #
-    # A link is a name for a topic and never a key to it. The uuid on its own
-    # opens nothing - following one reaches only what a peer is already
-    # publishing where this client can see it - so naming the team an
-    # initiative belongs to hands nobody access they did not already have.
-    # Which kinds an initiative may name, and the word it uses for each.
-    # Nothing else: where that application's page is, what one of its topics
-    # starts from and which call makes one are all answered elsewhere - by
-    # the shell for the route, by Core's registry for the making.
-    LINKED_APPLICATIONS = {"team": "Team", "flow": "Flow"}
+    # These are domain claims shown on the Mandate, not Core navigation.
+    # Their target uuid grants no access; it becomes a link only when the
+    # target topic is independently held on this client.
+    RELATED_APPLICATIONS = {"team": "Team", "flow": "Flow"}
+    RELATIONSHIP_TYPE = "initiative_relationship"
 
-    def initiative_links(self, initiative: ProtocolNode) -> list[dict]:
-        """What this initiative references, ready to render.
-
-        The recorded title is what a link says before the topic is held.
-        Once it is held its own name wins, because a copied title is the
-        name something had on the day the link was made.
-        """
-        mine = {
-            link.uuid for link in
-            self.session.topic_links(initiative.uuid, authored_here=True)
-        }
+    def initiative_relationships(self, initiative: ProtocolNode) -> list[dict]:
         out = []
         for child in initiative.children:
-            if child.deleted or child.data.get("type") != "topic_link":
+            if child.deleted or child.data.get("type") != self.RELATIONSHIP_TYPE:
                 continue
             application_id = str(child.data.get("application_id") or "")
-            label = self.LINKED_APPLICATIONS.get(application_id)
+            label = self.RELATED_APPLICATIONS.get(application_id)
             if not label:
                 continue
             topic_uuid = str(child.data.get("topic_uuid") or "")
             held = self.session.get_node(topic_uuid)
+            live_title = str(
+                (held.data.get("title") or held.data.get("name")) if held else ""
+            )
             out.append({
                 "uuid": child.uuid,
                 "topic_uuid": topic_uuid,
                 "application_id": application_id,
                 "label": label,
-                "title": self._link_title(held, child),
+                "title": live_title or str(child.data.get("title") or "Untitled"),
                 "held": held is not None,
-                # A peer's reference is not this client's to take off: it is
-                # adopted same-origin, so a deletion written over it is one
-                # their peers refuse and the next sync brings back.
-                "mine": child.uuid in mine,
             })
-        return sorted(out, key=lambda link: (
-            link["label"], link["title"].lower(),
+        return sorted(out, key=lambda item: (
+            item["label"], item["title"].lower(),
         ))
 
-    @staticmethod
-    def _link_title(held: ProtocolNode | None, link: ProtocolNode) -> str:
-        if held is not None:
-            live = str(held.data.get("title") or held.data.get("name") or "")
-            if live:
-                return live
-        return str(link.data.get("title") or "Untitled")
-
-    def link_topic(
-        self, initiative_uuid: str, topic_uuid: str,
-        application_id: str, title: str = "",
+    def create_relationship(
+        self, initiative_uuid: str, topic_uuid: str, application_id: str,
     ) -> SessionResult:
         initiative = self._node(initiative_uuid, "initiative")
+        target = self.session.get_node(str(topic_uuid or ""))
         if not initiative:
             return SessionResult("error", reason="initiative not found")
-        if application_id not in self.LINKED_APPLICATIONS:
+        handler = self.session.shared_topic_handler_for(target) if target else None
+        if (
+            application_id not in self.RELATED_APPLICATIONS
+            or not handler
+            or handler.application_id != application_id
+        ):
+            return SessionResult("error", reason="related topic is not held here")
+        current = self.initiative_relationships(initiative)
+        if application_id == "team" and any(
+            item["application_id"] == "team" for item in current
+        ):
             return SessionResult(
-                "error", reason="an initiative does not link to that",
+                "error", reason="this initiative already belongs to a team",
             )
-        # One team, as the blueprint has it. A second one is not a second
-        # opinion about whose initiative this is, it is a contradiction, and
-        # the way to change the answer is to remove the first.
-        if application_id == "team" and self.team_link(initiative):
-            return SessionResult(
-                "error",
-                reason="this initiative already names a team",
-            )
-        # Core refuses only what this client has already said, because a
-        # team's list of what it runs is the union of its members' own
-        # references. An initiative is not that: what it belongs to and what
-        # it runs are properties of the initiative, so one reference is the
-        # whole of it whoever wrote it, and a second would draw twice.
-        existing = {link["topic_uuid"] for link in self.initiative_links(initiative)}
-        if topic_uuid in existing:
-            return SessionResult(
-                "error", reason="this initiative already names that",
-            )
-        return self.session.create_topic_link(
-            initiative.uuid, topic_uuid, application_id, title,
-        )
+        if any(item["topic_uuid"] == target.uuid for item in current):
+            return SessionResult("error", reason="that relationship already exists")
+        return self.session.create_child(initiative.uuid, {
+            "type": self.RELATIONSHIP_TYPE,
+            "topic_uuid": target.uuid,
+            "application_id": application_id,
+            "title": str(target.data.get("title") or target.data.get("name") or "Untitled"),
+        }, {})
 
-    # ---- making one, and naming it in the same act ----------------------
-
-    def link_kinds(self) -> list[dict]:
-        """What can be made from here, and what each one starts from.
-
-        Core answers it. This only says which kinds an initiative may name -
-        it does not know what a team or a flow is made of, what one starts
-        from, or which call makes one, and it used to carry a table of
-        exactly that.
-        """
+    def relationship_kinds(self) -> list[dict]:
         return [
             kind for kind in self.session.topic_kinds()
-            if kind["application_id"] in self.LINKED_APPLICATIONS
+            if kind["application_id"] in self.RELATED_APPLICATIONS
         ]
 
-    def create_linked_topic(
+    def create_related_topic(
         self, initiative_uuid: str, application_id: str, title: str,
         template: str = "", snapshot: dict | None = None,
     ) -> SessionResult:
-        """Make a team or a flow and name it here, in one act.
-
-        The making is Core's to route and the owning application's to do.
-        The naming is this one's, and it is the same reference `link_topic`
-        writes, under the same rule: one team, and no topic named twice.
-        """
+        if str(application_id or "").strip() not in self.RELATED_APPLICATIONS:
+            return SessionResult("error", reason="unsupported relationship kind")
         initiative = self._node(initiative_uuid, "initiative")
         if not initiative:
             return SessionResult("error", reason="initiative not found")
-        if str(application_id or "").strip() not in self.LINKED_APPLICATIONS:
+        if application_id == "team" and any(
+            item["application_id"] == "team"
+            for item in self.initiative_relationships(initiative)
+        ):
             return SessionResult(
-                "error", reason="an initiative does not link to that",
+                "error", reason="this initiative already belongs to a team",
             )
         created = self.session.create_application_topic(
             application_id, title, template, snapshot,
         )
         if created.status != "ok":
             return created
-        topic_uuid = str(created.value or "")
-        linked = self.link_topic(
-            initiative.uuid, topic_uuid, application_id, str(title or "").strip(),
+        related = self.create_relationship(
+            initiative_uuid, str(created.value or ""), application_id,
         )
-        if linked.status != "ok":
-            return linked
+        if related.status != "ok":
+            return related
         return SessionResult(
-            "ok", value=topic_uuid,
-            effects=[*created.effects, *linked.effects],
+            "ok", value=str(created.value or ""),
+            effects=[*created.effects, *related.effects],
         )
 
-    def team_link(self, initiative: ProtocolNode) -> dict | None:
-        for link in self.initiative_links(initiative):
-            if link["application_id"] == "team":
-                return link
-        return None
+    def remove_relationship(self, relationship_uuid: str) -> SessionResult:
+        relationship = self._node(relationship_uuid, self.RELATIONSHIP_TYPE)
+        if not relationship:
+            return SessionResult("error", reason="relationship not found")
+        parent = self.session.get_node(relationship.parent_uuid or "")
+        if not parent or parent.data.get("type") != "initiative":
+            return SessionResult("error", reason="relationship is outside an initiative")
+        return self.session.delete(relationship.uuid)
 
-    def unlink_topic(self, link_uuid: str) -> SessionResult:
-        """Remove one reference. The team or flow itself is untouched, and
-        so is everybody else's reference to it."""
-        return self.session.remove_topic_link(link_uuid)
-
-    def follow_link(self, link_uuid: str) -> SessionResult:
-        return self.session.follow_topic_link(link_uuid)
-
-    def linkable_topics(self, initiative_uuid: str | None = None) -> list[dict]:
-        """Teams and flows this client holds that this initiative could name.
-
-        Only what is already here. There is nothing to search: a topic this
-        client has never been told about is not merely unlisted, it is
-        unreachable, and offering to link it would be offering a uuid to
-        type in.
-        """
+    def relationship_candidates(
+        self, initiative_uuid: str | None = None,
+    ) -> list[dict]:
         initiative = (
             self._node(initiative_uuid, "initiative") if initiative_uuid
             else self._selected_initiative(self.initiatives())
         )
-        linked = {
-            link["topic_uuid"] for link in self.initiative_links(initiative)
-        } if initiative else set()
+        current = self.initiative_relationships(initiative) if initiative else []
+        related = {item["topic_uuid"] for item in current}
+        has_team = any(item["application_id"] == "team" for item in current)
         out = []
         for topic_uuid in self.session.shared_topic_uuids():
-            if topic_uuid in linked:
+            if topic_uuid in related:
                 continue
             topic = self.session.get_node(topic_uuid)
-            # Core answers which application owns a root type, so this never
-            # has to know what a team or a process is - and this
-            # application's own topics are left out by the same test.
-            handler = (
-                self.session.shared_topic_handler_for(topic) if topic else None
-            )
-            application_id = str(
-                getattr(handler, "application_id", "") or "",
-            )
-            label = self.LINKED_APPLICATIONS.get(application_id)
-            if not label:
+            handler = self.session.shared_topic_handler_for(topic) if topic else None
+            application_id = str(getattr(handler, "application_id", "") or "")
+            label = self.RELATED_APPLICATIONS.get(application_id)
+            if not label or (application_id == "team" and has_team):
                 continue
             out.append({
                 "topic_uuid": topic_uuid,
                 "application_id": application_id,
                 "label": label,
                 "title": str(
-                    topic.data.get("title") or topic.data.get("name")
-                    or "Untitled",
+                    topic.data.get("title") or topic.data.get("name") or "Untitled"
                 ),
             })
         return sorted(out, key=lambda item: (
@@ -1041,7 +1025,7 @@ class InitiativeLogic:
             if made_need.status != "ok":
                 return made_need
             effects.extend(made_need.effects)
-        # The seeded four are ordinary content, so what a snapshot restores is
+        # The seeded sections are ordinary content, so what a snapshot restores is
         # whatever it recorded - not the seed. An initiative whose Approach
         # was rewritten to two sections comes back with two.
         for order, section in enumerate(content.get("sections") or []):
@@ -1304,15 +1288,15 @@ class InitiativeLogic:
     # Agreement uses. A section holds clauses and a clause holds nothing; the
     # shape permits nesting and this document does not use it.
     #
-    # A new initiative is seeded with four sections, and they are *ordinary
+    # A new initiative is seeded with two sections, and they are *ordinary
     # content from the moment they exist* - renamable, reorderable,
-    # deletable, and a fifth is added by the same composer. Nothing marks the
-    # four as special, because nothing about them is: a risk and a condition
-    # for success read as different things and behave identically. Making
+    # deletable, and a third is added by the same composer. Nothing marks the
+    # two as special, because nothing about them is: roadmap and risk lines
+    # behave identically. Making
     # them separate node types would buy a portfolio view that could ask for
     # every open risk, and would charge every initiative that thinks in some
     # other shape for it.
-    DEFAULT_SECTIONS = ("Strategy", "Plan", "Risks", "Conditions for success")
+    DEFAULT_SECTIONS = ("Roadmap", "Risks & Chances")
     CLAUSE_PARENT_TYPES = frozenset({"initiative_section"})
 
     def sections(self, initiative: ProtocolNode | None = None) -> list[ProtocolNode]:
@@ -1917,6 +1901,16 @@ class InitiativeLogic:
             source_addr, node_uuid, rollback_absence,
         )
 
+    def react_to_node(
+        self, source_addr: str, node_uuid: str, reaction: str,
+        absent: bool = False,
+    ) -> SessionResult:
+        if reaction == "adopt":
+            return self.accept_peer_node(source_addr, node_uuid, absent)
+        if reaction == "rollback":
+            return self.rollback_peer_node(source_addr, node_uuid, absent)
+        return SessionResult("error", reason="unknown reaction")
+
     def publish_adoption_metadata(
         self, initiative: ProtocolNode | None = None,
     ) -> None:
@@ -1924,17 +1918,18 @@ class InitiativeLogic:
 
         Everything written here is derived from the mode alone, so it changes
         only when the mode does - republishing the same values decides nothing
-        and Core treats it as a no-op. Which card the mode protects is *not*
-        written down: ownership moves, including through a peer's edit this
-        client adopts, so it is answered by the resolver at the moment it
-        matters. See Core's DESIGN_ADOPTION_METADATA.md.
+        and Core treats it as a no-op. Which team-view records a selective
+        mode protects is *not* written down: involvement and responsibility
+        can move through the change itself, so the resolver answers from both
+        versions at the moment it matters. See Core's
+        DESIGN_ADOPTION_METADATA.md.
         """
         initiative = initiative or self.ensure_initiative()
         mode = self.auto_adopt_mode(initiative)
-        # "Always" adopts outright. The ownership modes hold each card and let
-        # the resolver decide it, while still admitting comments, which are
-        # additive and author-stamped. "Never" holds everything, comments
-        # included.
+        # "Always" adopts team views outright. Selective modes hold existing
+        # team-view nodes for the resolver and classify new ones individually.
+        # "Never" holds every team-view change. Author-scoped records are
+        # explicitly exempted below in every mode.
         self.session.set_topic_adoption_default(
             initiative.uuid,
             adopt="auto" if mode == "always" else "hold",
@@ -1946,7 +1941,7 @@ class InitiativeLogic:
         self.session.set_adoption_resolver(
             initiative.uuid,
             lambda peer_node, local_node, peer_addr, uuid=initiative.uuid: (
-                self._resolve_held_card(uuid, local_node or peer_node)
+                self._resolve_held_team_view(uuid, peer_node, local_node)
             ),
         )
         # Bound to this initiative: a client can hold several, each with its own
@@ -1966,21 +1961,40 @@ class InitiativeLogic:
             initiative.uuid, adopt="never", additions="never",
             node_type="agenda_item",
         )
+        # Individual views and contributions are author-scoped records, not
+        # candidate values for a shared field. They join the local projection
+        # regardless of the team-view setting and remain writable only by the
+        # author through the domain guards above.
+        for node_type in AUTHOR_SCOPED_NODE_TYPES:
+            self.session.set_adoption_metadata_for_subtree(
+                initiative.uuid, adopt="auto", additions="auto",
+                node_type=node_type,
+            )
 
-    def _resolve_held_card(self, initiative_uuid: str, node) -> str:
+    def _resolve_held_team_view(
+        self, initiative_uuid: str, peer_node, local_node,
+    ) -> str:
         """Whether a held node settles now or waits for this client.
 
         Asked at the moment of decision rather than recorded, because what it
-        reads moves: a card's owner and members change, including through a
-        peer's edit this client adopts, and a verdict written down when the
-        card first appeared would go on being true after it stopped being true.
+        reads moves: responsibility, participation, and beneficiaries can
+        change through the peer edit itself. A verdict written down against
+        only one side could therefore become false because of the act it lets
+        through.
 
-        Nothing is ever refused: the mode says which cards this client wants to
-        look at, not which changes are illegitimate.
+        Nothing is ever refused: the mode says which team-view changes this
+        client wants to look at, not which changes are illegitimate.
         """
         initiative = self.session.protocol.index.get(initiative_uuid)
         mode = self.auto_adopt_mode(initiative) if initiative else "always"
-        return "adopt" if self._auto_adopt_allows_node(mode, node) else "defer"
+        # Test both sides. Otherwise a change that removes me from a card
+        # would cease to "involve me" in the proposed value and adopt itself.
+        allows = all(
+            self._auto_adopt_allows_node(mode, node)
+            for node in (peer_node, local_node)
+            if node is not None
+        )
+        return "adopt" if allows else "defer"
 
     def _classify_incoming_node(self, initiative_uuid, node):
         """How a node this initiative does not yet hold is to be handled.
@@ -1991,14 +2005,17 @@ class InitiativeLogic:
 
         - an agenda item is Session's, projected from its author's perspective
           and never adopted, so a copy of one has no business in this tree;
-        - a card arriving already marked as mine is one this mode protects, and
-          the entry has to say so before it is taken rather than after.
+        - a team-view record arriving already involving me or naming me as
+          responsible is one the corresponding mode protects, and the entry
+          has to say so before it is taken rather than after.
         """
         node_type = node.data.get("type")
         if node_type == "agenda_item":
             return {"adopt": "never", "additions": "never"}
+        if node_type in AUTHOR_SCOPED_NODE_TYPES:
+            return {"adopt": "auto", "additions": "auto"}
         initiative = self.session.protocol.index.get(initiative_uuid)
-        if node_type == "kanban_card" and not self._auto_adopt_allows_node(
+        if not self._auto_adopt_allows_node(
             self.auto_adopt_mode(initiative), node,
         ):
             return {"adopt": "hold", "additions": "auto"}
@@ -2026,14 +2043,32 @@ class InitiativeLogic:
             return True
         if mode == "never":
             return False
-        if not node or node.data.get("type") != "kanban_card":
+        if not node:
             return True
-        my_id = self.user_profile().uuid
         if mode == "not_owner":
-            return node.data.get("owner") != my_id
+            return not self._node_is_my_responsibility(node)
         if mode == "not_member":
-            return my_id not in (node.data.get("participants") or [])
+            return not self._node_involves_me(node)
         return True
+
+    def _node_involves_me(self, node: ProtocolNode) -> bool:
+        data = node.data or {}
+        my_id = self.user_profile().uuid
+        if data.get("type") == "kanban_card":
+            return (
+                data.get("owner") == my_id
+                or my_id in (data.get("participants") or [])
+            )
+        if data.get("type") == "initiative_need":
+            return data.get("beneficiary_actor_uuid") == my_id
+        return False
+
+    def _node_is_my_responsibility(self, node: ProtocolNode) -> bool:
+        data = node.data or {}
+        return (
+            data.get("type") == "kanban_card"
+            and data.get("owner") == self.user_profile().uuid
+        )
 
     def on_peer_update(self) -> SessionResult:
         changed = self.adopt_all_incoming_changes()
@@ -2149,7 +2184,7 @@ class InitiativeLogic:
             "kanban_column": "Column",
             "initiative": "Initiative",
             "agenda_item": "Discussion topic",
-            "topic_link": "Link",
+            "initiative_relationship": "Relationship",
             "initiative_need": "Need",
             "initiative_section": "Section",
             "initiative_clause": "Clause",
@@ -2470,93 +2505,6 @@ class InitiativeLogic:
                 if name and name != "?":
                     return name
         return str(participant)[:8]
-
-    def transition_by_node(self, events: list[dict]) -> dict:
-        out = {}
-        for event in events:
-            node_uuid = event.get("node_uuid")
-            if not node_uuid:
-                continue
-            event_info = {
-                "type": event["type"],
-                "stage": event.get("stage"),
-                "peer_addr": event.get("peer_addr"),
-                "origin_identity": event.get("origin_identity"),
-                "local_revision_origin": event.get(
-                    "local_revision_origin",
-                ),
-                "peer_revision_origin": event.get(
-                    "peer_revision_origin",
-                ),
-                "local_state_hash": event.get("local_state_hash"),
-                "peer_state_hash": event.get("peer_state_hash"),
-                "local_base_hash": event.get("local_base_hash"),
-                "peer_base_hash": event.get("peer_base_hash"),
-                "local_revision": event.get("local_revision"),
-                "peer_revision": event.get("peer_revision"),
-                "changes": event.get("changes") or [],
-                "reaction": self._reaction_for_event(event),
-                "peer_observed_local_revision": event.get(
-                    "peer_observed_local_revision", False,
-                ),
-                "priority": Session.transition_rank(event),
-            }
-            signature = self._transition_event_signature(event_info)
-            current = out.get(node_uuid)
-            if current:
-                if event["type"] != "in_agreement":
-                    existing = next((
-                        item for item in current.setdefault("events", [])
-                        if self._transition_event_signature(item) == signature
-                    ), None)
-                    if existing:
-                        deliveries = existing.setdefault(
-                            "delivery_peer_addrs",
-                            [existing.get("peer_addr")],
-                        )
-                        if event_info.get("peer_addr") not in deliveries:
-                            deliveries.append(event_info.get("peer_addr"))
-                        if (self._peer_is_revision_origin(event_info)
-                                and not self._peer_is_revision_origin(existing)):
-                            existing["peer_addr"] = event_info.get("peer_addr")
-                            if self._transition_event_signature(current) == signature:
-                                current["peer_addr"] = event_info.get("peer_addr")
-                        continue
-                    current.setdefault("events", []).append(dict(event_info))
-                if Session.transition_rank(current) >= Session.transition_rank(event):
-                    continue
-                current.update(event_info)
-                continue
-            out[node_uuid] = dict(event_info)
-            if event["type"] != "in_agreement":
-                out[node_uuid]["events"] = [dict(event_info)]
-        return out
-
-    def _reaction_for_event(self, event: dict) -> str:
-        # Session owns this: it is decided purely from revision origins and
-        # base hashes, and every application needs the same answer.
-        return self.session.reaction_for_event(event)
-
-    @staticmethod
-    def _transition_event_signature(event: dict) -> tuple:
-        # Key on the relation, never on the stage: the same target revision
-        # held by two peers is one situation even when only one of them has
-        # observed our side. Keying on stage as well would split it into two
-        # entries instead of one carrying both delivery_peer_addrs.
-        return (
-            event.get("type"),
-            event.get("origin_identity"),
-            event.get("local_revision") or event.get("local_state_hash"),
-            event.get("peer_revision") or event.get("peer_state_hash"),
-        )
-
-    def _peer_is_revision_origin(self, event: dict) -> bool:
-        origin = event.get("origin_identity")
-        peer_addr = event.get("peer_addr")
-        return bool(
-            origin and peer_addr
-            and self.session.peer_identity_key_for_address(peer_addr) == origin
-        )
 
     def columns(self, initiative: ProtocolNode | None = None) -> list[ProtocolNode]:
         initiative = initiative or self.ensure_initiative()

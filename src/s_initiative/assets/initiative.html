@@ -125,49 +125,32 @@
       // not advance it and the face would freeze.
       let renderedMandateJson = null;
 
-      const AUTO_ADOPT_MODES = ["always", "not_owner", "not_member", "never"];
-      // Only the two modes Core does not know about. The wording for
-      // "always" and "never" is Core's and is inherited, so the same setting
-      // cannot read one way here and another in the Cockpit - which is what
-      // three copies of this table produced (DESIGN_VOCABULARY.md).
+      // The stored values remain compatible with existing clients; the
+      // visible contract is framed around team-view changes. Individual
+      // views and contributions are author-owned and never enter this choice.
+      const AUTO_ADOPT_MODES = ["never", "not_member", "not_owner", "always"];
       const AUTO_ADOPT_LABELS = {
-        not_owner: "Except cards I own",
-        not_member: "Except cards I'm on",
+        never: "Review every change",
+        not_member: "Review changes involving me",
+        not_owner: "Review changes I'm responsible for",
+        always: "Adopt every change automatically",
       };
       const AUTO_ADOPT_FILL = { always: 4, not_owner: 2, not_member: 1, never: 0 };
       const AUTO_ADOPT_DESCRIPTIONS = {
-        not_owner: "Changes from other people are adopted automatically, except on cards you own.",
+        never:
+          "Every team-view change waits for your review. Individual views and contributions are shared without adoption and remain owned by their author.",
         not_member:
-          "Changes from other people are adopted automatically, except on cards you're a member of.",
+          "Team-view changes involving you wait for review; other changes are adopted automatically. Individual views and contributions remain author-owned.",
+        not_owner:
+          "Team-view changes you are responsible for wait for review; other changes are adopted automatically. Individual views and contributions remain author-owned.",
+        always:
+          "Every team-view change is adopted automatically. Individual views and contributions remain author-owned.",
       };
 
       const el = (id) => document.getElementById(id);
 
-      function autoAdoptAllowsNode(node) {
-        const mode = state.auto_adopt_mode;
-        if (mode === "always") return true;
-        if (mode === "never") return false;
-        if (!node || node.data.type !== "kanban_card") return true;
-        const myId = (state.users || [])[0]?.id;
-        if (mode === "not_owner") return node.data.owner !== myId;
-        if (mode === "not_member") return !(node.data.participants || []).includes(myId);
-        return true;
-      }
-
-      function hasPendingDivergence(node) {
-        const info = transitionInfo(node.uuid);
-        return !!info && !["settled", "in_flight"].includes(info.stage);
-      }
-
-      function needsManualAdopt(node) {
-        if (!hasPendingDivergence(node)) return false;
-        const info = transitionInfo(node.uuid);
-        const autoResolvableType = info.type === "peer_made_changes" || info.type === "local_missing_node";
-        return !autoResolvableType || !autoAdoptAllowsNode(node);
-      }
-
       function needsReaction(node) {
-        return needsManualAdopt(node);
+        return Boolean(transitionInfo(node.uuid)?.reactable);
       }
 
       // A ghost is the seat a card has left: the position one side still
@@ -437,8 +420,6 @@
           renderNetwork();
           renderSelfAvatar();
 
-          renderLinks();
-
           renderFaceSwitch();
           // One fetch, and only the face you are looking at is drawn. The
           // two render differently on purpose (DESIGN_INITIATIVE_UI.md 8):
@@ -514,6 +495,7 @@
         renderedMandateJson = encoded;
         article.replaceChildren(
           mandateHead(initiative),
+          relationshipsRegion(initiative),
           milestonesRegion(initiative),
           needsRegion(initiative),
           resourcesRegion(),
@@ -548,6 +530,24 @@
           day: "numeric", month: "short", year: "numeric",
           hour: "2-digit", minute: "2-digit",
         });
+      }
+
+      const AUTHOR_SCOPE_MARK =
+        '<circle cx="12" cy="8" r="3.5"></circle>' +
+        '<path d="M5 21v-2a7 7 0 0 1 14 0v2"></path>';
+
+      function authorScopeMark(author, contribution = false) {
+        const mark = document.createElement("span");
+        mark.className = "author-scope-mark";
+        const kind = contribution ? "Author-owned contribution" : "Individual view";
+        mark.title = `${kind} by ${author || "unknown author"}. Only the author can change or remove it.`;
+        mark.setAttribute("aria-label", mark.title);
+        mark.setAttribute("role", "img");
+        mark.tabIndex = 0;
+        mark.innerHTML =
+          `<svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">` +
+          `${AUTHOR_SCOPE_MARK}</svg>`;
+        return mark;
       }
 
       function mandateRegion(title) {
@@ -601,9 +601,13 @@
         text.textContent = reality.data.text || "";
         const meta = document.createElement("p");
         meta.className = "record-meta";
-        meta.textContent = `${actorName(reality.data.author_actor_uuid) || "Unknown actor"} · ${
-          recordDate(reality.data.recorded_at || reality.created_at)
-        }`;
+        const author = actorName(reality.data.author_actor_uuid) || "Unknown actor";
+        meta.append(
+          authorScopeMark(author),
+          document.createTextNode(`${author} · ${
+            recordDate(reality.data.recorded_at || reality.created_at)
+          }`),
+        );
         row.append(text, meta);
         if (reality.data.author_actor_uuid === state.user_profile?.uuid) {
           const remove = document.createElement("button");
@@ -647,7 +651,10 @@
         body.className = "resource-body";
         const name = document.createElement("strong");
         name.textContent = user.name || "Unknown actor";
-        body.append(name);
+        const identity = document.createElement("div");
+        identity.className = "resource-identity";
+        identity.append(name, authorScopeMark(user.name || "Unknown actor"));
+        body.append(identity);
         if (resource.head) {
           const availability = document.createElement("p");
           availability.className = "resource-availability";
@@ -770,13 +777,14 @@
         planned.className = "milestone-date";
         planned.value = milestone.data.planned_at || "";
         planned.setAttribute("aria-label", "Planned date");
+        planned.title = "Planned date";
         planned.onchange = () => run(
           () => api("/api/initiative/milestones/update", {
             milestone_uuid: milestone.uuid, planned_at: planned.value,
           }),
           "Milestone date saved",
         );
-        head.append(planned, ...reactionTools(milestone));
+        head.append(planned, reachedDate(milestone), ...reactionTools(milestone));
         const remove = document.createElement("button");
         remove.type = "button";
         remove.className = "need-delete";
@@ -789,12 +797,6 @@
         );
         head.append(remove);
         block.append(head);
-        if (milestone.data.reached_at) {
-          const reached = document.createElement("p");
-          reached.className = "milestone-reached";
-          reached.textContent = `Reached ${formatDay(milestone.data.reached_at)}`;
-          block.append(reached);
-        }
         const intention = document.createElement("div");
         intention.className = "milestone-intention";
         const label = document.createElement("h5");
@@ -844,8 +846,8 @@
       // least often changed, and S-Team learned in use that leading with the
       // long text buried the team behind its own text.
       //
-      // The four seeded sections are ordinary content from the moment they
-      // exist - renamable, reorderable, deletable, and a fifth added by the
+      // The seeded sections are ordinary content from the moment they
+      // exist - renamable, reorderable, deletable, and a third added by the
       // same composer. Nothing here marks them as special, because nothing
       // about them is.
       function approachRegion(initiative) {
@@ -1013,6 +1015,9 @@
           state.transition_by_node || {},
           state.users || [],
           state.resources || [],
+          state.relationships || [],
+          state.relationship_candidates || [],
+          state.relationship_kinds || [],
           state.network || {},
         ]);
       }
@@ -1183,6 +1188,134 @@
         return head;
       }
 
+      // A team or flow named here is part of the Initiative's Mandate. It is
+      // shared domain content, unlike the local navigation shortcuts below
+      // the page title, and therefore carries the normal transition language.
+      function relationshipsRegion(initiative) {
+        const section = document.createElement("section");
+        section.className = "mandate-region";
+        const heading = document.createElement("h3");
+        heading.className = "mandate-region-title";
+        heading.textContent = "Relationships";
+        const list = document.createElement("div");
+        list.className = "initiative-relationship-list";
+        const relationships = state.relationships || [];
+        if (!relationships.length) {
+          const empty = document.createElement("p");
+          empty.className = "mandate-empty";
+          empty.textContent = "No team or flow named yet.";
+          list.append(empty);
+        }
+        for (const relationship of relationships) {
+          list.append(relationshipRow(relationship));
+        }
+
+        const add = document.createElement("button");
+        add.type = "button";
+        add.className = "ui-button";
+        add.textContent = "+ Add relationship";
+        const hasTeam = relationships.some(
+          (item) => item.application_id === "team",
+        );
+        const candidates = (state.relationship_candidates || []).filter(
+          (item) => item.application_id !== "team" || !hasTeam,
+        );
+        const kinds = (state.relationship_kinds || []).filter(
+          (kind) => kind.application_id !== "team" || !hasTeam,
+        );
+        SovereignUI.actionMenu({
+          button: add,
+          items: () => {
+            const items = [];
+            if (candidates.length) {
+              items.push({heading: "Held topics"});
+              for (const candidate of candidates) {
+                items.push({
+                  label: `${candidate.label}: ${candidate.title}`,
+                  onSelect: () => run(
+                    () => api("/api/initiative/relationships/create", {
+                      initiative_uuid: initiative.uuid,
+                      topic_uuid: candidate.topic_uuid,
+                      application_id: candidate.application_id,
+                    }),
+                    "Relationship added",
+                  ),
+                });
+              }
+            }
+            if (kinds.length) {
+              if (items.length) items.push({separator: true});
+              items.push({heading: "New topic"});
+              for (const kind of kinds) {
+                items.push({
+                  label: `New ${kind.noun.toLowerCase()}`,
+                  onSelect: () => SovereignShell.openNewTopicDialog({
+                    noun: kind.noun,
+                    templates: (kind.templates || []).map(
+                      (option) => [option.value, option.name],
+                    ),
+                    templateRequired: kind.template_required,
+                    snapshotType: kind.application_id,
+                    onCreate: ({name, template, snapshot}) => run(
+                      () => api("/api/initiative/relationships/make", {
+                        initiative_uuid: initiative.uuid,
+                        application_id: kind.application_id,
+                        title: name,
+                        template,
+                        snapshot,
+                      }),
+                      "Relationship added",
+                    ),
+                  }),
+                });
+              }
+            }
+            return items;
+          },
+        });
+        section.append(heading, list);
+        if (candidates.length || kinds.length) section.append(add);
+        return section;
+      }
+
+      function relationshipRow(relationship) {
+        const row = document.createElement("div");
+        row.className = "initiative-relationship-row";
+        const kind = document.createElement("span");
+        kind.className = "initiative-relationship-kind";
+        kind.textContent = relationship.label || "Topic";
+        const href = relationship.held
+          ? SovereignShell.topicHref(
+            relationship.application_id, relationship.topic_uuid,
+          )
+          : "";
+        const title = document.createElement(href ? "a" : "span");
+        title.className = "initiative-relationship-title";
+        title.textContent = relationship.title || "Untitled";
+        if (href) title.href = href;
+        else title.title = "This related topic is not held on this client.";
+        const actions = document.createElement("span");
+        actions.className = "initiative-relationship-actions";
+        actions.append(...reactionTools({uuid: relationship.uuid}));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "ui-button";
+        remove.innerHTML =
+          `<svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">${ICON_REMOVE}</svg>`;
+        remove.title = "Remove relationship; keep the related topic";
+        remove.setAttribute("aria-label", remove.title);
+        remove.onclick = () => run(
+          () => api("/api/initiative/relationships/remove", {
+            relationship_uuid: relationship.uuid,
+          }),
+          "Relationship removed",
+        );
+        actions.append(remove);
+        row.append(kind, title, actions);
+        applyTransitionClass(row, relationship.uuid, {});
+        return row;
+      }
+
       function mandateDates(initiative) {
         const row = document.createElement("p");
         row.className = "mandate-dates";
@@ -1260,15 +1393,9 @@
         content.className = "milestone-strip-content";
         const milestones = milestoneNodes(initiative);
         const next = milestones.find((item) => !item.data.reached_at) || null;
-        const last = [...milestones]
-          .filter((item) => item.data.reached_at)
-          .sort((left, right) =>
-            String(right.data.reached_at).localeCompare(String(left.data.reached_at)) ||
-            Number(right.data.order || 0) - Number(left.data.order || 0),
-          )[0] || null;
 
         const initiativeSegments = initiativeSummarySegments(initiative);
-        const milestoneSegments = milestoneSummarySegments(last, next);
+        const milestoneSegments = milestoneSummarySegments(next);
         appendSummarySegments(content, initiativeSegments);
         if (initiativeSegments.length && milestoneSegments.length) {
           const divider = document.createElement("span");
@@ -1295,7 +1422,7 @@
           ));
         }
         if (intention) {
-          segments.push(summarySegment("Intention", intention));
+          segments.push(summaryValueSegment(intention, intentionMark()));
         }
         if (initiative.data.actual_end || initiative.data.planned_end) {
           segments.push(summarySegment(
@@ -1309,11 +1436,27 @@
 
       // U8: an act glyph is the conventional one and never invented, drawn on
       // the 24x24 grid with no fill and a currentColor stroke. A tick for a
-      // day somebody claimed; a target for one still being aimed at.
+      // day somebody claimed; a flag for one still being aimed at.
       const DATE_MARKS = {
         reached: '<path d="M5 13l4 4L19 7"/>',
         planned: '<path d="M6 21V4"/><path d="M6 5h12l-3 4 3 4H6"/>',
       };
+      const INTENTION_MARK =
+        '<circle cx="12" cy="12" r="8"></circle>' +
+        '<circle cx="12" cy="12" r="4"></circle>' +
+        '<path d="M12 2v3M22 12h-3M12 22v-3M2 12h3"></path>';
+
+      function intentionMark() {
+        const mark = document.createElement("span");
+        mark.className = "summary-topic-mark";
+        mark.setAttribute("role", "img");
+        mark.setAttribute("aria-label", "Intention");
+        mark.title = "Intention";
+        mark.innerHTML =
+          `<svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">` +
+          `${INTENTION_MARK}</svg>`;
+        return mark;
+      }
 
       function dateMark(reached) {
         const kind = reached ? "reached" : "planned";
@@ -1327,49 +1470,55 @@
         return mark;
       }
 
-      // The milestone's own name is the label. "Last" and "Next" named a
-      // position in a list the reader is not looking at, and spent the label
-      // saying it - so the one word that identifies which milestone this is
-      // ended up after the date, behind a second colon. The name goes where
-      // the label was, and the mark beside the date carries what "Last" and
-      // "Next" were really telling you: whether it has happened.
-      function milestoneSummarySegments(last, next) {
+      // After the divider, only the next milestone remains: its own name,
+      // target-marked Intention, and an editable flag-marked planned date.
+      function milestoneSummarySegments(next) {
         const segments = [];
-        const intention = next?.data.intention || "";
-        if (last) {
-          segments.push(summarySegment(
-            last.data.title || "Milestone", reachedDate(last), dateMark(true),
-          ));
-        }
-        if (intention) segments.push(summarySegment("Intention", intention));
-        if (next) {
-          segments.push(summarySegment(
-            next.data.title || "Milestone",
-            next.data.planned_at ? formatDay(next.data.planned_at) : "",
-            dateMark(false),
-          ));
-          // The one act the strip carries, and the reason it is a seam rather
-          // than a status line: marking a milestone reached happens in front
-          // of what that milestone was supposed to change.
-          segments.push(summarySegment("Reached", reachedDate(next)));
-        }
+        if (!next) return segments;
+        segments.push(summarySegment(
+          next.data.title || "Milestone",
+          next.data.intention || "",
+          null,
+          next.data.intention ? intentionMark() : null,
+        ));
+        segments.push(summaryValueSegment(
+          plannedMilestoneDate(next), dateMark(false),
+        ));
         return segments;
       }
 
-      // A date and never a button. "We got there" is a claim about a day, and
-      // the day is usually not today - a milestone noticed on Monday was
-      // often reached the Thursday before, and a one-click "mark reached"
-      // would record the moment somebody looked instead of the moment it
-      // happened. The planned dates beside it stay read-only: planning is the
-      // Mandate's act, and only the claim belongs here.
+      function plannedMilestoneDate(milestone) {
+        const input = document.createElement("input");
+        input.type = "date";
+        input.className = "summary-planned-input";
+        input.value = milestone.data.planned_at || "";
+        input.setAttribute(
+          "aria-label", `Planned date: ${milestone.data.title || "milestone"}`,
+        );
+        input.title = input.getAttribute("aria-label");
+        input.onchange = () => run(
+          () => api("/api/initiative/milestones/update", {
+            milestone_uuid: milestone.uuid,
+            planned_at: input.value,
+          }),
+          input.value ? "Milestone date saved" : "Milestone date cleared",
+        );
+        return input;
+      }
+
+      // A date and never a one-click "done" button. The milestone may have
+      // been reached before somebody records it, so the actual day remains an
+      // explicit field in the detailed milestone while the summary stays the
+      // compact next-milestone plan.
       function reachedDate(milestone) {
         const input = document.createElement("input");
         input.type = "date";
-        input.className = "summary-reached-input";
+        input.className = "milestone-date milestone-reached-date";
         input.value = milestone.data.reached_at || "";
         input.setAttribute(
           "aria-label", `Date reached: ${milestone.data.title || "milestone"}`,
         );
+        input.title = input.getAttribute("aria-label");
         input.onchange = () => run(
           () => api("/api/initiative/milestones/reach", {
             milestone_uuid: milestone.uuid,
@@ -1380,24 +1529,34 @@
         return input;
       }
 
-      // The mark belongs to the name and not to the date. "Prototype reached:
-      // 8 Apr" is what the line says; putting the tick after the date made it
-      // read as "8 Apr, reached", which qualifies the wrong word - the day is
-      // not the thing that was achieved.
-      function summarySegment(label, value, mark = null) {
+      // A label mark qualifies the label (flag Start); a value mark qualifies
+      // the value (target Intention). The two positions make the icon's scope
+      // explicit without adding another word to the summary.
+      function summarySegment(label, value, mark = null, valueMark = null) {
         const segment = document.createElement("span");
         segment.className = "summary-segment";
         const name = document.createElement("strong");
         name.className = "summary-label";
-        name.append(document.createTextNode(label));
         if (mark) name.append(mark);
+        if (label instanceof Node) name.append(label);
+        else name.append(document.createTextNode(label));
         const hasValue = value instanceof Node || String(value ?? "") !== "";
         if (hasValue) name.append(document.createTextNode(":"));
         segment.append(name);
         // A segment carries either a fact or the one control on this line.
         if (!hasValue) return segment;
+        if (valueMark) segment.append(" ", valueMark);
         if (value instanceof Node) segment.append(" ", value);
         else segment.append(document.createTextNode(` ${value}`));
+        return segment;
+      }
+
+      function summaryValueSegment(value, mark = null) {
+        const segment = document.createElement("span");
+        segment.className = "summary-segment summary-value-segment";
+        if (mark) segment.append(mark);
+        if (mark) segment.append(" ");
+        segment.append(value instanceof Node ? value : document.createTextNode(String(value ?? "")));
         return segment;
       }
 
@@ -1464,56 +1623,6 @@
             await loadBoard();
           },
           onError: error => showToast(error.message, true),
-        });
-      }
-
-      // What this initiative belongs to and runs, beside its name in the
-      // shell's bar. Core draws the chips and carries out taking one up and
-      // removing one; this says what there is and what making one calls.
-      function renderLinks() {
-        SovereignShell.setTopicLinks({
-          links: state.links || [],
-          make: (state.link_kinds || []).map((kind) => ({
-            label: `New ${kind.noun.toLowerCase()}`,
-            onSelect: () => SovereignShell.openNewTopicDialog({
-              noun: kind.noun,
-              templates: (kind.templates || []).map(
-                (option) => [option.value, option.name],
-              ),
-              templateRequired: kind.template_required,
-              snapshotType: kind.application_id,
-              onCreate: ({name, template, snapshot}) => run(
-                () => api("/api/initiative/links/make", {
-                  initiative_uuid: state.initiative.uuid,
-                  application_id: kind.application_id,
-                  title: name,
-                  template,
-                  snapshot,
-                }),
-                `${name} is named here`,
-              ),
-            }),
-          })),
-          link: (state.linkable_topics || []).map((topic) => ({
-            label: `${topic.title} · ${topic.label}`,
-            onSelect: () => run(
-              () => api("/api/initiative/links/create", {
-                initiative_uuid: state.initiative.uuid,
-                topic_uuid: topic.topic_uuid,
-                application_id: topic.application_id,
-                title: topic.title,
-              }),
-              `${topic.title} is named here`,
-            ),
-          })),
-          onFollow: (link) => run(
-            () => api("/api/initiative/links/follow", {link_uuid: link.uuid}),
-            `Joined ${link.title}`,
-          ),
-          onRemove: (link) => run(
-            () => api("/api/initiative/links/remove", {link_uuid: link.uuid}),
-            "Reference removed",
-          ),
         });
       }
 
@@ -1607,7 +1716,7 @@
           const rendered = renderParticipants(participantItems, card.data.owner);
           if (participantsEl) participantsEl.replaceWith(rendered);
           else {
-            const reactionEl = cardEl.querySelector(".react-button");
+            const reactionEl = cardEl.querySelector(".ui-react-button");
             cardEl.insertBefore(rendered, reactionEl || null);
           }
         } else if (participantsEl) {
@@ -1616,7 +1725,7 @@
 
         // P2P Konflikt-Klassen aktualisieren (nutzt deine bestehende Helper-Funktion)
         applyTransitionClass(cardEl, card.uuid);
-        cardEl.querySelectorAll(".react-button, .adopt, .keep-mine-menu").forEach((button) => button.remove());
+        cardEl.querySelectorAll(".ui-react-button, .adopt, .keep-mine-menu").forEach((button) => button.remove());
         cardEl.append(...cardReactionTools(card, card._isGhost));
       }
 
@@ -1706,7 +1815,6 @@
         const node = document.createElement("div");
         node.className = "card";
         if (ghost) node.classList.add("ghost");
-        applyTransitionClass(node, card.uuid);
         node.draggable = false;
         node.dataset.uuid = card.uuid;
         node.replaceChildren();
@@ -1769,10 +1877,8 @@
                 node.classList.add("dragging");
                 document.body.classList.add("card-drag-active");
                 preview = node.cloneNode(true);
-                preview.classList.remove("dragging", "diff");
-                [...preview.classList]
-                  .filter((name) => name.startsWith("stage-"))
-                  .forEach((name) => preview.classList.remove(name));
+                preview.classList.remove("dragging");
+                SovereignUI.decorateTransition(preview, null);
                 preview.classList.add("card-drag-preview");
                 preview.setAttribute("aria-hidden", "true");
                 preview.style.width = `${startRect.width}px`;
@@ -1807,6 +1913,7 @@
             document.addEventListener("mouseup", up);
           };
         }
+        applyTransitionClass(node, card.uuid);
         return node;
       }
 
@@ -1876,18 +1983,23 @@
         // The initiative root inherits every descendant hash difference. Only
         // offer a root-level decision when the initiative's own fields differ.
         if (isContainerOnlyDivergence(initiative)) return;
-        tools.append(...reactionTools(initiative));
+        const marker = SovereignUI.transitionMarker(
+          transitionInfo(initiative.uuid),
+        );
+        if (marker) tools.append(marker);
+        tools.append(...reactionTools(initiative, "review"));
       }
 
       // The control itself is Core's - one available act reads as a button
       // naming it, several become a menu - so a divergence looks the same
       // here, in the Cockpit and in the collaboration pane. S-Initiative
       // decides only which nodes are offered one.
-      function reactionTools(node) {
+      function reactionTools(node, density = "inline") {
         if (!needsReaction(node)) return [];
         const control = SovereignUI.reactionControl({
           info: transitionInfo(node.uuid),
-          className: "react-button",
+          density,
+          className: "initiative-react",
           onReact: (choice) => applyReaction(node.uuid, choice),
         });
         return control ? [control] : [];
@@ -1908,15 +2020,12 @@
       }
 
       async function applyReaction(uuid, choice) {
-        const endpoint = choice.action === "rollback"
-          ? "/api/initiative/rollback"
-          : "/api/initiative/adopt";
-        await run(() => api(endpoint, {
+        await run(() => api("/api/initiative/react", {
           node_uuid: uuid,
           source_addr: choice.peerAddr,
-          adopt_absence: choice.action === "adopt" && choice.absent,
-          rollback_absence: choice.action === "rollback" && choice.absent,
-        }), choice.action === "rollback" ? "Rolled back" : "Adopted");
+          reaction: choice.action,
+          absent: choice.absent,
+        }), choice.action === "rollback" ? "Taken back" : "Adopted");
       }
 
       function openCard(card, columnUuid) {
@@ -2062,6 +2171,7 @@
           const author = document.createElement("span");
           author.className = "comment-author";
           author.textContent = comment.author_label || "Unknown";
+          author.append(authorScopeMark(comment.author_label || "Unknown", true));
           const when = document.createElement("span");
           when.className = "comment-time";
           when.textContent = formatCommentTime(comment.created_at);
@@ -2152,8 +2262,11 @@
           link.title = `${file.name} (${file.mime})`;
           const meta = document.createElement("span");
           meta.className = "attachment-meta";
-          meta.textContent = formatFileSize(file.size)
-            + (file.author_label ? " · " + file.author_label : "");
+          meta.append(document.createTextNode(
+            formatFileSize(file.size)
+              + (file.author_label ? " · " + file.author_label : ""),
+          ));
+          meta.append(authorScopeMark(file.author_label || "Unknown", true));
           row.append(link, meta);
           if (file.author && file.author === myId) {
             const remove = document.createElement("button");
@@ -2354,11 +2467,11 @@
           await run(
             async () => {
               if (info?.stage === "awaiting_me") {
-                await api("/api/initiative/adopt", {
+                await api("/api/initiative/react", {
                   node_uuid: cardUuid,
                   source_addr: info.peer_addr,
-                  adopt_absence: false,
-                  rollback_absence: false,
+                  reaction: "adopt",
+                  absent: false,
                 });
               }
               return api("/api/initiative/cards/move", {
@@ -2481,20 +2594,13 @@
         return (state.transition_by_node || {})[uuid] || null;
       }
       function applyTransitionClass(element, uuid, options = {}) {
-        element.classList.remove("diff");
-        [...element.classList]
-          .filter((name) => name.startsWith("stage-"))
-          .forEach((name) => element.classList.remove(name));
-        element.removeAttribute("title");
         delete element.dataset.transitionLabel;
         const info = transitionInfo(uuid);
-        if (!info || info.stage === "settled" || options.suppress) return;
-        // One border colour per stage, and nothing else. The badge said what
-        // relation the difference was, which is the one thing a person does
-        // not need at a glance - and it said "+" for a deletion, because it
-        // was keyed on the relation rather than on what actually changed.
-        element.classList.add("diff", `stage-${info.stage}`);
-        element.title = transitionLabel(info);
+        const visible = options.suppress ? null : info;
+        SovereignUI.decorateTransition(element, visible, {
+          perspective: element.classList.contains("ghost") ? "ghost" : "",
+        });
+        if (!visible || visible.stage === "settled") return;
         element.dataset.transitionLabel = transitionLabel(info);
       }
       function peerLabel(address) {
@@ -2629,9 +2735,9 @@
         applicationId: "initiative",
         topicUuid: () => state?.initiative?.uuid || "",
         state: () => state || {},
-        // The pane is the shell's; S-Initiative supplies where its routes
-        // live and the two extra modes judged against card ownership, which
-        // Core stores without interpreting.
+        // The pane is the shell's; S-Initiative supplies the team-view
+        // vocabulary and the two selective modes, which Core stores without
+        // interpreting.
         agendaRoutes: {
           topicKey: 'initiative_uuid',
           create: '/api/initiative/agenda/create',
@@ -2641,6 +2747,7 @@
           move: '/api/initiative/agenda/move',
         },
         autoAdoptRoute: {path: '/api/initiative/auto_adopt', topicKey: 'initiative_uuid'},
+        autoAdoptHeading: "Team-view changes",
         autoAdoptLabels: AUTO_ADOPT_LABELS,
         autoAdoptDescriptions: AUTO_ADOPT_DESCRIPTIONS,
         renderAutoAdoptIndicator: (container, mode) => {

@@ -24,7 +24,7 @@ initiative_app "S-Initiative"          local folder, never shared
 └── initiative                         ← THE TOPIC
     ├── kanban_column → kanban_card → card_comment / card_attachment
     ├── agenda_item
-    ├── topic_link                     the team it belongs to, the flows it runs
+    ├── initiative_relationship        the team it belongs to, the flows it runs
     ├── initiative_need
     ├── initiative_section → initiative_clause          the Approach
     ├── initiative_milestone
@@ -102,25 +102,20 @@ disagree about when it started have a divergence worth seeing rather than two
 private truths. They are fields rather than nodes because an initiative has
 dates before it has a roadmap.
 
-### `topic_link` — the team, and the flows
+### `initiative_relationship` — the team, and the flows
 
-**Built.** Core's node type, described in `s-core/DESIGN_TOPIC_LINKS.md` and
-`PUBLIC_API.md`; this application owns only where the links live, which is as
-direct children of the initiative. It carries `topic_uuid`, `application_id`
-and a `title`.
+**Built.** S-Initiative owns this domain node and renders it in the Mandate.
+It is a direct child carrying `topic_uuid`, `application_id`, and a last-known
+`title`. Core's under-title links are separate local navigation metadata.
 
 **One team, 0-n flows.** The cardinality is this application's rule and not
 Core's: a second team is not a second opinion about whose initiative this is,
 it is a contradiction, and the way to change the answer is to remove the first
 link. Flows are uncounted because an initiative may well run several.
 
-**A link is a name for a topic and never a key to it.** This is the answer to
-the objection that recording the team hands everybody holding the initiative a
-coordinate into it. Following a link reaches only what a peer is *already
-publishing where this client can see it* — the uuid on its own opens nothing,
-mounts nothing, and grants nothing. A link this client cannot resolve is not
-broken and is not an error; it is an invitation that nobody here can honour
-yet, and it renders as one.
+**A relationship is never a key.** Recording it grants and mounts nothing. A
+client can navigate to the target only when it independently holds that topic;
+otherwise the last-known title remains visible as domain information.
 
 **The recorded title is what the link says before the topic is held.** Once it
 is held, the topic's own name wins, because a copied title is the name
@@ -165,9 +160,9 @@ section holds clauses and a clause holds nothing.
 | `text`              | required                 |
 | `order`             | required                 |
 
-A new initiative is **seeded** with four sections — Strategy, Plan, Risks,
-Conditions for success — which are ordinary content from the moment they exist:
-renamable, reorderable, deletable, and a fifth can be added.
+A new initiative is **seeded** with two sections — Roadmap and Risks & Chances
+— which are ordinary content from the moment they exist: renamable,
+reorderable, deletable, and a third can be added.
 
 **Seeded and not fixed.** A risk and a condition for success read as different
 things and behave identically: a line of text somebody wrote, in an order, that
@@ -196,6 +191,21 @@ actually went. That is why "a roadmap with milestones", "expected impact at
 certain milestones" and "actual impact at certain milestones" are one type here
 and not three.
 
+### Team views and author-scoped records
+
+A team view has one canonical value and peer changes may therefore require a
+reaction. An individual view or contribution is a separate record keyed by its
+author: it is visible to the team, joins automatically, and only its author can
+write or remove it. `initiative_reality` and `initiative_investment` are
+individual views; comments and attachments are author-owned contributions.
+
+The local **Team-view changes** setting offers, in order: review every change;
+review changes involving me; review changes I am responsible for; adopt every
+change automatically. “Involving” currently means a card participant/owner or
+the named beneficiary of a need. “Responsible” currently means the owner of a
+card. Both the current and proposed values are checked so adding or removing
+the local actor is itself reviewable.
+
 ### `initiative_reality` — Assessed Impact
 
 One actor's observation of how it went. 0-n under the initiative, 0-n under
@@ -211,6 +221,10 @@ each milestone. Appended, never edited by anybody but its author, never merged.
 achieved are not a conflict to resolve; the blueprint files this under
 Subjective Reality, and calls them fuel for organisational learning. Intention
 is one and contested. Assessed impact is many and kept.
+
+That remains true under a local review-first adoption policy: an assessment is
+added to the authored record automatically at both the initiative and milestone
+scales, because there is no shared value for the recipient to accept or reject.
 
 This is the same pair as S-Team's `team_trustee_action` and
 `team_trustee_reality`, and takes the same name for the second half of it
@@ -241,7 +255,9 @@ way the comment guard already does.
 
 **Appended, not edited**, so that "I had two days a week and now I have one" is
 legible as a change rather than as a correction of a mistake. The chain is per
-actor; the current commitment is the head of it.
+actor; the current commitment is the head of it. Like assessed impact, each
+record joins automatically under every team-view review mode because no peer
+can adopt, reject, or replace another actor's availability.
 
 **No `kind` field yet.** Money and assets are coming, and a field with one
 possible value is a comment. It is added when there is a second kind and not
@@ -284,7 +300,7 @@ both; everything else is observed.
 | Node type                | M   | S   | Class          | Storage    |
 | ------------------------ | --- | --- | -------------- | ---------- |
 | `initiative`             | yes | yes | **decidable**  | —          |
-| `topic_link`             | yes | yes | **decidable**  | —          |
+| `initiative_relationship` | yes | yes | **decidable** | —          |
 | `initiative_need`        | yes | yes | **decidable**  | —          |
 | `initiative_section`     | yes | yes | **decidable**  | —          |
 | `initiative_clause`      | yes | yes | **decidable**  | —          |
@@ -297,7 +313,7 @@ both; everything else is observed.
 | `card_attachment`        | no (the author)   | — | observed | persisted |
 | `agenda_item`            | no (the author)   | — | observed | read through |
 
-`topic_link` is decidable on both axes and by the same reasoning as the rest:
+`initiative_relationship` is decidable on both axes and by the same reasoning as the rest:
 anybody holding the initiative may add or remove one, and which team an
 initiative belongs to is worth a human noticing when two clients disagree. Its
 data never changes once written — a reference is replaced, not edited — so what
@@ -317,8 +333,8 @@ evaporated as people drifted off would have no history at all.
 
 | Blueprint (`Domain-Driven-Design.md`)      | Here                                                    |
 | ------------------------------------------- | -------------------------------------------------------- |
-| `Initiative: 1 Team`                        | `topic_link` with `application_id` `team`, at most one — **built** |
-| *(nothing)*                                 | `topic_link` to a flow — the blueprint has no way to say an initiative runs one |
+| `Initiative: 1 Team`                        | `initiative_relationship` with `application_id` `team`, at most one — **built** |
+| *(nothing)*                                 | `initiative_relationship` to a flow — the blueprint has no way to say an initiative runs one |
 | `0-n Investments`                           | `initiative_investment`, availability only               |
 | `1 Expected Impact [C-Text]`                | `initiative.objective`, displayed as **Intention**         |
 | `0-n Assessed Impact [C-Text]`              | `initiative_reality`, one per observation, per author    |
@@ -345,13 +361,10 @@ at their own scale, as one `intention` text field each.
 
 ## 7. What this deliberately does not do
 
-**No second record of what a team runs.** The initiative names its team, and
-the team names its initiatives — both as `topic_link` now, in the topic that
-holds each end. These are two different edges and not two truths: the one here
-is a property of the initiative and there is one of it whoever wrote it, while
-the one on the team is a member's own word and there is one per member, which
-is how the team's list is a union and how removing yours leaves everybody
-else's standing.
+**No duplicated edge.** The Initiative's `initiative_relationship` says what
+it belongs to or runs. A Team's separate `team_item_relationship` says one
+member considers a topic part of that Team's work. They are different domain
+claims, each owned and displayed by the application that gives it meaning.
 
 **One Kanban, not 0-n.** The blueprint allows several boards per initiative;
 nothing yet wants one. Adding the level later means inserting a `kanban_board`
