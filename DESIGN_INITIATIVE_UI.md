@@ -68,7 +68,6 @@ three fields do not:
 | `actual_start`, `actual_end`                                                                           | shown on the board, claimable nowhere yet                  | the same act, no surface decided                             |
 | `initiative_reality`                                                                                   | both — written on the board, read on the mandate           | observing what just happened, reading what was observed      |
 | `initiative_investment`                                                                                | the mandate                                                | committing what you have                                     |
-| `initiative_relationship`                                                                              | the mandate                                                | domain content: team and flows                               |
 
 All three dates are content by class, and §3 is right about why: two people who
 disagree about when it started have a divergence worth seeing rather than two
@@ -293,9 +292,12 @@ absent. A greyed-out control on somebody else's observation says the system
 considered letting you rewrite it.
 
 **Every new decidable type needs adding to `DISPLAYED_DIVERGENCE_TYPES`** in
-`logic.py`, which also holds `initiative_relationship`. A
-decidable node with no divergence rendering is one that silently keeps two
-truths — which is the failure the class exists to prevent.
+`logic.py`. A decidable node with no divergence rendering is one that
+silently keeps two truths — which is the failure the class exists to
+prevent. Connected work (the team and the flows an initiative runs) is the
+one exception on purpose: it is Core-owned and reactable through
+`OWNED_NODE_TYPES`, but drawn in the shared header rather than this face, so
+it carries no row in this face's own divergence table.
 
 ---
 

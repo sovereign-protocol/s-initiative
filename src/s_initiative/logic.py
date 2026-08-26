@@ -67,8 +67,6 @@ Contract:
     POST /api/initiative/cards/comments/create {card_uuid, text}
     POST /api/initiative/cards/comments/delete {comment_uuid}
     POST /api/initiative/react               {source_addr, node_uuid, reaction, absent}
-    POST /api/initiative/relationships/create {initiative_uuid, topic_uuid, application_id}
-    POST /api/initiative/relationships/remove {relationship_uuid}
 
   Naming:
     The route path and the payload-building trio name the *face*; every
@@ -108,12 +106,12 @@ Contract:
     previous_uuid, recorded_at} are immutable authored records: they are
     adopted, never diverged, and never copied or snapshotted.
 
-  Relationships:
-    An initiative names the team it belongs to (0-1) and the flows it runs
-    (0-n), through an initiative_relationship child owned by this application.
-    It is domain content and appears in the Mandate. Removing the relationship
-    leaves the team or flow untouched. Under-title shortcuts are separate,
-    local Core navigation metadata.
+  Connected work:
+    An initiative's team (0-1) and the flows it runs (0-n) are Core's own
+    sovereign_relationship, reached from the shared header rather than a
+    route or payload key here. This application's one domain rule -
+    at most one team - is validate_team_relationship, a hook Core calls
+    before writing a new connection.
 """
 
 from __future__ import annotations
@@ -128,6 +126,10 @@ from sovereign import (
     avatar_attachment, canonical_attachments,
 )
 
+# Core's `sovereign_relationship` (s-core/src/sovereign/relationships.py).
+# Matched by literal name, the way this application already matches every
+# node type it does not own, rather than importing a Core submodule.
+RELATIONSHIP_TYPE = "sovereign_relationship"
 
 DEFAULT_COLUMNS = ["To Do", "Doing", "Done"]
 INITIATIVE_APP_NAME = "S-Initiative"
@@ -146,17 +148,14 @@ DISPLAYED_DIVERGENCE_TYPES = frozenset({
     # how this will be gone about is exactly what the lamp is for.
     "initiative_section", "initiative_clause",
     "initiative_milestone",
-    # Anybody on the initiative may add or remove one, and which team an
-    # initiative belongs to is worth a human noticing when two clients
-    # disagree about it. A link's data never changes after it is written -
-    # a reference is replaced, not edited - so what shows here is a link
-    # present on one side and not the other, which is the whole of it.
-    "initiative_relationship",
 })
 OWNED_NODE_TYPES = frozenset({
     *DISPLAYED_DIVERGENCE_TYPES,
     "agenda_item", "card_attachment", "card_comment",
     "initiative_reality", "initiative_investment",
+    # Connected work lives in the header now, not the Mandate, so it is
+    # reactable but not one of the content-area divergence types above.
+    RELATIONSHIP_TYPE,
 })
 INDIVIDUAL_VIEW_NODE_TYPES = frozenset({
     "initiative_reality", "initiative_investment",
@@ -202,6 +201,7 @@ class InitiativeLogic:
             # template here is that it is one of this client's own initiatives.
             list_templates=self.initiative_templates,
             create_topic=self.make_initiative,
+            validate_relationship=self.validate_team_relationship,
         )
 
     def initiative_templates(self) -> list[dict]:
@@ -278,16 +278,9 @@ class InitiativeLogic:
             "attachments_by_card": (
                 self._attachments_by_card(initiative) if initiative else {}
             ),
-            "relationships": (
-                self.initiative_relationships(initiative) if initiative else []
-            ),
             "resources": (
                 self.initiative_resources(initiative) if initiative else []
             ),
-            "relationship_candidates": (
-                self.relationship_candidates(initiative.uuid) if initiative else []
-            ),
-            "relationship_kinds": self.relationship_kinds() if initiative else [],
         }
 
     def board_snapshot(self) -> dict:
@@ -694,145 +687,29 @@ class InitiativeLogic:
             return False
         return True
 
-    # These are domain claims shown on the Mandate, not Core navigation.
-    # Their target uuid grants no access; it becomes a link only when the
-    # target topic is independently held on this client.
-    RELATED_APPLICATIONS = {"team": "Team", "flow": "Flow"}
-    RELATIONSHIP_TYPE = "initiative_relationship"
-
-    def initiative_relationships(self, initiative: ProtocolNode) -> list[dict]:
-        out = []
-        for child in initiative.children:
-            if child.deleted or child.data.get("type") != self.RELATIONSHIP_TYPE:
-                continue
-            application_id = str(child.data.get("application_id") or "")
-            label = self.RELATED_APPLICATIONS.get(application_id)
-            if not label:
-                continue
-            topic_uuid = str(child.data.get("topic_uuid") or "")
-            held = self.session.get_node(topic_uuid)
-            live_title = str(
-                (held.data.get("title") or held.data.get("name")) if held else ""
-            )
-            out.append({
-                "uuid": child.uuid,
-                "topic_uuid": topic_uuid,
-                "application_id": application_id,
-                "label": label,
-                "title": live_title or str(child.data.get("title") or "Untitled"),
-                "held": held is not None,
-            })
-        return sorted(out, key=lambda item: (
-            item["label"], item["title"].lower(),
-        ))
-
-    def create_relationship(
-        self, initiative_uuid: str, topic_uuid: str, application_id: str,
-    ) -> SessionResult:
-        initiative = self._node(initiative_uuid, "initiative")
-        target = self.session.get_node(str(topic_uuid or ""))
-        if not initiative:
-            return SessionResult("error", reason="initiative not found")
-        handler = self.session.shared_topic_handler_for(target) if target else None
-        if (
-            application_id not in self.RELATED_APPLICATIONS
-            or not handler
-            or handler.application_id != application_id
-        ):
-            return SessionResult("error", reason="related topic is not held here")
-        current = self.initiative_relationships(initiative)
-        if application_id == "team" and any(
-            item["application_id"] == "team" for item in current
-        ):
+    # An initiative's team and the flows it runs are Core's own connected
+    # work now (s-core/DESIGN_NAVIGATION_LINKS.md, sovereign_relationship),
+    # reached from the header rather than the Mandate. The one domain rule
+    # only this application knows - an initiative belongs to at most one
+    # team - is the validate_relationship hook Core asks before writing a
+    # new connection; a flow carries no such limit.
+    def validate_team_relationship(
+        self, initiative: ProtocolNode, target: ProtocolNode,
+    ) -> SessionResult | None:
+        handler = self.session.shared_topic_handler_for(target)
+        if not handler or handler.application_id != "team":
+            return None
+        has_team = any(
+            not child.deleted
+            and child.data.get("type") == RELATIONSHIP_TYPE
+            and str(child.data.get("application_id") or "") == "team"
+            for child in initiative.children
+        )
+        if has_team:
             return SessionResult(
                 "error", reason="this initiative already belongs to a team",
             )
-        if any(item["topic_uuid"] == target.uuid for item in current):
-            return SessionResult("error", reason="that relationship already exists")
-        return self.session.create_child(initiative.uuid, {
-            "type": self.RELATIONSHIP_TYPE,
-            "topic_uuid": target.uuid,
-            "application_id": application_id,
-            "title": str(target.data.get("title") or target.data.get("name") or "Untitled"),
-        }, {})
-
-    def relationship_kinds(self) -> list[dict]:
-        return [
-            kind for kind in self.session.topic_kinds()
-            if kind["application_id"] in self.RELATED_APPLICATIONS
-        ]
-
-    def create_related_topic(
-        self, initiative_uuid: str, application_id: str, title: str,
-        template: str = "", snapshot: dict | None = None,
-    ) -> SessionResult:
-        if str(application_id or "").strip() not in self.RELATED_APPLICATIONS:
-            return SessionResult("error", reason="unsupported relationship kind")
-        initiative = self._node(initiative_uuid, "initiative")
-        if not initiative:
-            return SessionResult("error", reason="initiative not found")
-        if application_id == "team" and any(
-            item["application_id"] == "team"
-            for item in self.initiative_relationships(initiative)
-        ):
-            return SessionResult(
-                "error", reason="this initiative already belongs to a team",
-            )
-        created = self.session.create_application_topic(
-            application_id, title, template, snapshot,
-        )
-        if created.status != "ok":
-            return created
-        related = self.create_relationship(
-            initiative_uuid, str(created.value or ""), application_id,
-        )
-        if related.status != "ok":
-            return related
-        return SessionResult(
-            "ok", value=str(created.value or ""),
-            effects=[*created.effects, *related.effects],
-        )
-
-    def remove_relationship(self, relationship_uuid: str) -> SessionResult:
-        relationship = self._node(relationship_uuid, self.RELATIONSHIP_TYPE)
-        if not relationship:
-            return SessionResult("error", reason="relationship not found")
-        parent = self.session.get_node(relationship.parent_uuid or "")
-        if not parent or parent.data.get("type") != "initiative":
-            return SessionResult("error", reason="relationship is outside an initiative")
-        return self.session.delete(relationship.uuid)
-
-    def relationship_candidates(
-        self, initiative_uuid: str | None = None,
-    ) -> list[dict]:
-        initiative = (
-            self._node(initiative_uuid, "initiative") if initiative_uuid
-            else self._selected_initiative(self.initiatives())
-        )
-        current = self.initiative_relationships(initiative) if initiative else []
-        related = {item["topic_uuid"] for item in current}
-        has_team = any(item["application_id"] == "team" for item in current)
-        out = []
-        for topic_uuid in self.session.shared_topic_uuids():
-            if topic_uuid in related:
-                continue
-            topic = self.session.get_node(topic_uuid)
-            handler = self.session.shared_topic_handler_for(topic) if topic else None
-            application_id = str(getattr(handler, "application_id", "") or "")
-            label = self.RELATED_APPLICATIONS.get(application_id)
-            if not label or (application_id == "team" and has_team):
-                continue
-            out.append({
-                "topic_uuid": topic_uuid,
-                "application_id": application_id,
-                "label": label,
-                "title": str(
-                    topic.data.get("title") or topic.data.get("name") or "Untitled"
-                ),
-            })
-        return sorted(out, key=lambda item: (
-            item["label"], item["title"].lower(),
-        ))
+        return None
 
     def copy_initiative(self, initiative_uuid: str) -> SessionResult:
         initiative = self._node(initiative_uuid, "initiative")
@@ -2184,7 +2061,7 @@ class InitiativeLogic:
             "kanban_column": "Column",
             "initiative": "Initiative",
             "agenda_item": "Discussion topic",
-            "initiative_relationship": "Relationship",
+            RELATIONSHIP_TYPE: "Connection",
             "initiative_need": "Need",
             "initiative_section": "Section",
             "initiative_clause": "Clause",

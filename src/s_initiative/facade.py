@@ -7,7 +7,7 @@ from sovereign import ProtocolNode
 from .logic import InitiativeLogic
 
 
-INITIATIVE_FACADE_API_VERSION = 3
+INITIATIVE_FACADE_API_VERSION = 4
 
 
 class InitiativeFacade:

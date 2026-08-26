@@ -959,42 +959,6 @@ menu button {
   margin: 0 0 8px;
 }
 
-.initiative-relationship-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-.initiative-relationship-row {
-  align-items: center;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  display: flex;
-  gap: 10px;
-  min-height: 38px;
-  padding: 6px 8px 6px 10px;
-}
-
-.initiative-relationship-kind {
-  color: var(--muted);
-  flex: 0 0 48px;
-  font-size: 0.78rem;
-  text-transform: uppercase;
-}
-
-.initiative-relationship-title {
-  flex: 1;
-  min-width: 0;
-}
-
-.initiative-relationship-actions {
-  align-items: center;
-  display: flex;
-  gap: 4px;
-}
-
 /* Content: edited in place, reordered, and lamped. */
 .need-row {
   align-items: flex-start;

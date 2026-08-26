@@ -24,7 +24,7 @@ initiative_app "S-Initiative"          local folder, never shared
 └── initiative                         ← THE TOPIC
     ├── kanban_column → kanban_card → card_comment / card_attachment
     ├── agenda_item
-    ├── initiative_relationship        the team it belongs to, the flows it runs
+    ├── sovereign_relationship         the team it belongs to, the flows it runs (Core's)
     ├── initiative_need
     ├── initiative_section → initiative_clause          the Approach
     ├── initiative_milestone
@@ -102,28 +102,31 @@ disagree about when it started have a divergence worth seeing rather than two
 private truths. They are fields rather than nodes because an initiative has
 dates before it has a roadmap.
 
-### `initiative_relationship` — the team, and the flows
+### The team, and the flows
 
-**Built.** S-Initiative owns this domain node and renders it in the Mandate.
-It is a direct child carrying `topic_uuid`, `application_id`, and a last-known
-`title`. Core's under-title links are separate local navigation metadata.
+**Built, Core-owned.** The team an initiative belongs to and the flows it
+runs are `sovereign_relationship` (s-core/DESIGN_NAVIGATION_LINKS.md), a
+Core node type shared by every application, connected from the header
+rather than a Mandate region. This application's own domain node,
+`initiative_relationship`, did the same job until it was retired in favor
+of the mechanism every application now shares.
 
 **One team, 0-n flows.** The cardinality is this application's rule and not
-Core's: a second team is not a second opinion about whose initiative this is,
-it is a contradiction, and the way to change the answer is to remove the first
-link. Flows are uncounted because an initiative may well run several.
+Core's: a second team is not a second opinion about whose initiative this
+is, it is a contradiction, and the way to change the answer is to remove
+the first connection. Flows are uncounted because an initiative may well
+run several. Enforced by `validate_team_relationship`, the one hook Core
+calls before writing a new connection from an initiative.
 
-**A relationship is never a key.** Recording it grants and mounts nothing. A
-client can navigate to the target only when it independently holds that topic;
-otherwise the last-known title remains visible as domain information.
+**A connection is never a key.** Recording it grants and mounts nothing. A
+client can navigate to the target only when it independently holds that
+topic; otherwise the last-known title remains visible as domain
+information.
 
-**The recorded title is what the link says before the topic is held.** Once it
-is held, the topic's own name wins, because a copied title is the name
-something had on the day the link was made.
-
-**Removing a link removes a reference and nothing else.** The team or flow is
-untouched, and so is everybody else's reference to it. Destroying it stays with
-the application that owns it, which is the only one that knows who may.
+**Removing a connection removes a reference and nothing else.** The team or
+flow is untouched, and so is everybody else's reference to it. Destroying it
+stays with the application that owns it, which is the only one that knows
+who may.
 
 ### `initiative_need`
 
@@ -300,7 +303,6 @@ both; everything else is observed.
 | Node type                | M   | S   | Class          | Storage    |
 | ------------------------ | --- | --- | -------------- | ---------- |
 | `initiative`             | yes | yes | **decidable**  | —          |
-| `initiative_relationship` | yes | yes | **decidable** | —          |
 | `initiative_need`        | yes | yes | **decidable**  | —          |
 | `initiative_section`     | yes | yes | **decidable**  | —          |
 | `initiative_clause`      | yes | yes | **decidable**  | —          |
@@ -313,12 +315,9 @@ both; everything else is observed.
 | `card_attachment`        | no (the author)   | — | observed | persisted |
 | `agenda_item`            | no (the author)   | — | observed | read through |
 
-`initiative_relationship` is decidable on both axes and by the same reasoning as the rest:
-anybody holding the initiative may add or remove one, and which team an
-initiative belongs to is worth a human noticing when two clients disagree. Its
-data never changes once written — a reference is replaced, not edited — so what
-a divergence shows is a link present on one side and absent on the other, which
-is the whole of what there is to decide about it.
+The team and flows are absent from this table on purpose: `sovereign_relationship`
+is Core's node type, not this application's content, and its governance is
+Core's to state (s-core/DESIGN_NAVIGATION_LINKS.md).
 
 Both new observed types are persisted rather than read through, and that is a
 departure from `agenda_item`, which is read through because there is no point
@@ -333,8 +332,8 @@ evaporated as people drifted off would have no history at all.
 
 | Blueprint (`Domain-Driven-Design.md`)      | Here                                                    |
 | ------------------------------------------- | -------------------------------------------------------- |
-| `Initiative: 1 Team`                        | `initiative_relationship` with `application_id` `team`, at most one — **built** |
-| *(nothing)*                                 | `initiative_relationship` to a flow — the blueprint has no way to say an initiative runs one |
+| `Initiative: 1 Team`                        | a `sovereign_relationship` with `application_id` `team`, at most one, enforced by `validate_team_relationship` — **built** |
+| *(nothing)*                                 | a `sovereign_relationship` to a flow — the blueprint has no way to say an initiative runs one |
 | `0-n Investments`                           | `initiative_investment`, availability only               |
 | `1 Expected Impact [C-Text]`                | `initiative.objective`, displayed as **Intention**         |
 | `0-n Assessed Impact [C-Text]`              | `initiative_reality`, one per observation, per author    |
@@ -361,10 +360,13 @@ at their own scale, as one `intention` text field each.
 
 ## 7. What this deliberately does not do
 
-**No duplicated edge.** The Initiative's `initiative_relationship` says what
-it belongs to or runs. A Team's separate `team_item_relationship` says one
-member considers a topic part of that Team's work. They are different domain
-claims, each owned and displayed by the application that gives it meaning.
+**No duplicated edge, and now no duplicated type either.** The Initiative's
+own connection says what it belongs to or runs; a Team's separate connection
+says one member considers a topic part of that Team's work. Different claims,
+each still made from its own side — but both are the same Core-owned
+`sovereign_relationship` now (s-core/DESIGN_NAVIGATION_LINKS.md), reached
+from the header on both applications, rather than each maintaining its own
+node type to say the same kind of thing.
 
 **One Kanban, not 0-n.** The blueprint allows several boards per initiative;
 nothing yet wants one. Adding the level later means inserting a `kanban_board`

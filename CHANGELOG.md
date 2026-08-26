@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **The team and flows an initiative runs move to the header, and start
+  actually sharing.** `initiative_relationship`, this application's own
+  domain node, is retired for Core's `sovereign_relationship` — the same
+  mechanism S-Team now uses too, reached from the shared header rather than
+  a Mandate region. This closes a real gap: the old relationship required
+  both ends to already be held and never bridged a newly-made team or flow
+  onto the initiative's channel, so a team named from here was never
+  actually shared with anyone. Creating or connecting one now publishes it
+  the way S-Team's own connections always did. The one rule only this
+  application still enforces — at most one team — is
+  `validate_team_relationship`, a hook Core calls before writing a new
+  connection. `/api/initiative/relationships/*` and the Mandate's
+  Relationships region are gone; `INITIATIVE_FACADE_API_VERSION` is 4.
+
 - **Adoption settings now govern team-view changes only.** The four visible
   choices are review every change, review changes involving me, review changes
   I am responsible for, and adopt every change automatically. Involvement and

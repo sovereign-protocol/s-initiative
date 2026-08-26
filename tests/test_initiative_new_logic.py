@@ -3,8 +3,10 @@ import time
 import unittest
 
 from s_initiative.logic import (
-    DISPLAYED_DIVERGENCE_TYPES, OWNED_NODE_TYPES, InitiativeLogic,
+    DISPLAYED_DIVERGENCE_TYPES, OWNED_NODE_TYPES, RELATIONSHIP_TYPE,
+    InitiativeLogic,
 )
+from sovereign import ApplicationRegistration
 from sovereign.protocol import ProtocolNode
 from sovereign.session import Session
 from tests.relay_clients import (
@@ -2653,6 +2655,78 @@ class InitiativeNewLogicTests(unittest.TestCase):
             and event["type"] != "in_agreement"
         ]
         self.assertTrue(unsettled)
+
+    # ---- connected work: the one domain rule Core cannot know -----------
+    # Core's own mechanics (bridging, candidates, union authorship) are
+    # tested generically in s-core/tests/test_relationships.py. This is
+    # only the validate_relationship hook, S-Initiative's own contribution.
+
+    @staticmethod
+    def register_app(session, application_id, root_type, topics):
+        session.register_application(ApplicationRegistration(
+            application_id=application_id,
+            root_types=frozenset({root_type}),
+            list_topics=lambda: list(topics),
+            accept_invitation=session.accept_topic_invitation,
+            assignment_scoped=True,
+            mount_invitation=True,
+            topic_noun=root_type.title(),
+        ))
+
+    def test_an_initiative_may_belong_to_at_most_one_team(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+        teams: list = []
+        self.register_app(session, "team", "team", teams)
+        first = session.create_child(
+            session.root_uuid(), {"type": "team", "title": "Alpha"}, {},
+        ).value
+        teams.append(first)
+        second = session.create_child(
+            session.root_uuid(), {"type": "team", "title": "Beta"}, {},
+        ).value
+        teams.append(second)
+
+        self.assertIsNone(logic.validate_team_relationship(initiative, first))
+
+        session.create_child(initiative.uuid, {
+            "type": RELATIONSHIP_TYPE,
+            "topic_uuid": first.uuid,
+            "application_id": "team",
+            "title": "Alpha",
+            "actor_uuid": session.identity.uuid,
+        }, {})
+        initiative = session.protocol.index[initiative.uuid]
+
+        refused = logic.validate_team_relationship(initiative, second)
+        self.assertEqual(refused.status, "error")
+        self.assertIn("already belongs", refused.reason)
+
+    def test_a_flow_relationship_carries_no_such_limit(self):
+        session = Session("local")
+        logic = InitiativeLogic(session)
+        initiative = logic.ensure_initiative()
+        flows: list = []
+        self.register_app(session, "flow", "flow", flows)
+        first = session.create_child(
+            session.root_uuid(), {"type": "flow", "title": "Onboarding"}, {},
+        ).value
+        flows.append(first)
+        second = session.create_child(
+            session.root_uuid(), {"type": "flow", "title": "Renewal"}, {},
+        ).value
+        flows.append(second)
+        session.create_child(initiative.uuid, {
+            "type": RELATIONSHIP_TYPE,
+            "topic_uuid": first.uuid,
+            "application_id": "flow",
+            "title": "Onboarding",
+            "actor_uuid": session.identity.uuid,
+        }, {})
+        initiative = session.protocol.index[initiative.uuid]
+
+        self.assertIsNone(logic.validate_team_relationship(initiative, second))
 
     def runtime(self, port: int):
         return relay_runtime(self, port, self._relay_root)

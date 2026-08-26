@@ -315,29 +315,6 @@ def build_routes(logic, runtime) -> list[Route]:
             data["item_uuid"], data.get("priority"),
         ))
 
-    async def api_create_relationship(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.create_relationship(
-            data["initiative_uuid"],
-            data["topic_uuid"],
-            data.get("application_id", ""),
-        ))
-
-    async def api_make_related_topic(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.create_related_topic(
-            data["initiative_uuid"],
-            data.get("application_id", ""),
-            data.get("title", ""),
-            data.get("template", ""),
-            data.get("snapshot"),
-        ))
-
-    async def api_remove_relationship(request: Request):
-        data = await request.json()
-        return await _json_result(
-            runtime, logic.remove_relationship(data["relationship_uuid"]),
-        )
 
     async def api_move_agenda_item(request: Request):
         data = await request.json()
@@ -403,18 +380,6 @@ def build_routes(logic, runtime) -> list[Route]:
         Route("/api/initiative/agenda/update", api_update_agenda_item, methods=["POST"]),
         Route("/api/initiative/agenda/set_priority", api_set_agenda_item_priority, methods=["POST"]),
         Route("/api/initiative/agenda/move", api_move_agenda_item, methods=["POST"]),
-        Route(
-            "/api/initiative/relationships/create",
-            api_create_relationship, methods=["POST"],
-        ),
-        Route(
-            "/api/initiative/relationships/make",
-            api_make_related_topic, methods=["POST"],
-        ),
-        Route(
-            "/api/initiative/relationships/remove",
-            api_remove_relationship, methods=["POST"],
-        ),
     ]
 
 

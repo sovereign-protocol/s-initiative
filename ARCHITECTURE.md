@@ -5,9 +5,10 @@ browser UI. It imports only the documented `sovereign` package root. Sovereign
 Core owns protocol, Session, channels, hosting, identity, and blob mechanics and
 contains no Kanban node-type knowledge.
 
-Relationships to other applications' topics are S-Initiative domain content.
-`initiative_relationship` nodes live directly under the initiative and are
-rendered in its Mandate; this application owns their schema and the rule that
-there is at most one team. They do not grant access. Core separately owns only
-the local navigation shortcuts below a title. See `DESIGN_INITIATIVE.md` and
-Core's `DESIGN_NAVIGATION_LINKS.md`.
+Connections to other applications' topics — the team an initiative belongs
+to, the flows it runs — are Core's own `sovereign_relationship`, reached
+from the shared header rather than rendered here. This application owns
+only the one domain rule Core cannot know, that there is at most one team,
+enforced through the `validate_relationship` hook it registers. They do not
+grant access. See `DESIGN_INITIATIVE.md` and Core's
+`DESIGN_NAVIGATION_LINKS.md`.
