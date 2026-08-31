@@ -79,14 +79,14 @@ def add_relay(port: int, relay_root: str) -> str:
     return f"mailbox:{created['value']}"
 
 
-def connect_over_relay(host_port: int, guest_port: int, board_uuid: str,
+def connect_over_relay(host_port: int, guest_port: int, initiative_uuid: str,
                        host_channel: str) -> dict:
     """Connect two live servers through Core's collaboration API: the host
-    uses its relay for the board, composes an invitation, the guest accepts.
+    uses its relay for the initiative, composes an invitation, the guest accepts.
     """
     used = request_json(
         "POST",
-        f"http://127.0.0.1:{host_port}/api/core/topics/{board_uuid}/channels",
+        f"http://127.0.0.1:{host_port}/api/core/topics/{initiative_uuid}/channels",
         {"channel_ref": host_channel, "action": "use"},
         timeout=20,
     )
@@ -94,7 +94,7 @@ def connect_over_relay(host_port: int, guest_port: int, board_uuid: str,
     token = request_json(
         "POST",
         f"http://127.0.0.1:{host_port}/api/core/invitations",
-        {"topic_uuid": board_uuid, "channel_ref": host_channel},
+        {"topic_uuid": initiative_uuid, "channel_ref": host_channel},
         timeout=20,
     )
     return request_json(
@@ -105,20 +105,20 @@ def connect_over_relay(host_port: int, guest_port: int, board_uuid: str,
     )
 
 
-def card_names(board: dict) -> list[str]:
+def card_names(initiative: dict) -> list[str]:
     names = []
-    for column in board["children"]:
+    for column in initiative["children"]:
         for card in column["children"]:
             names.append(card["data"]["name"])
     return names
 
 
-def find_card_parent(board: dict, card_name: str) -> str | None:
-    if board.get("data", {}).get("type") == "kanban_column":
-        for card in board["children"]:
+def find_card_parent(initiative: dict, card_name: str) -> str | None:
+    if initiative.get("data", {}).get("type") == "kanban_column":
+        for card in initiative["children"]:
             if card.get("data", {}).get("name") == card_name:
-                return board["uuid"]
-    for child in board.get("children", []):
+                return initiative["uuid"]
+    for child in initiative.get("children", []):
         found = find_card_parent(child, card_name)
         if found:
             return found
@@ -126,7 +126,7 @@ def find_card_parent(board: dict, card_name: str) -> str | None:
 
 
 class ServerIntegrationTests(unittest.TestCase):
-    def test_kanban_invite_and_sync(self):
+    def test_initiative_invite_and_sync(self):
         port_a = free_port()
         port_b = free_port()
         processes = []
@@ -138,7 +138,7 @@ class ServerIntegrationTests(unittest.TestCase):
                     "app_module": "s_initiative.application",
                     "ui_file": "initiative.html",
                     "css_file": "initiative.css",
-                    "storage_file": str(tmp_path / f"kanban_{port}.json"),
+                    "storage_file": str(tmp_path / f"initiative_{port}.json"),
                     "debug": True,
                 }
                 config_path = tmp_path / f"config_{port}.json"
@@ -164,7 +164,7 @@ class ServerIntegrationTests(unittest.TestCase):
 
                 board_a = request_json(
                     "GET", f"http://127.0.0.1:{port_a}/api/initiative/board"
-                )["board"]
+                )["initiative"]
                 column_uuid = board_a["children"][0]["uuid"]
                 request_json(
                     "POST",
@@ -191,12 +191,12 @@ class ServerIntegrationTests(unittest.TestCase):
                     final_b = request_json(
                         "GET", f"http://127.0.0.1:{port_b}/api/initiative/board"
                     )
-                    if "Synced Card" in card_names(final_b["board"]):
+                    if "Synced Card" in card_names(final_b["initiative"]):
                         break
                     time.sleep(0.2)
 
-                self.assertIn("Synced Card", card_names(final_a["board"]))
-                self.assertIn("Synced Card", card_names(final_b["board"]))
+                self.assertIn("Synced Card", card_names(final_a["initiative"]))
+                self.assertIn("Synced Card", card_names(final_b["initiative"]))
                 deadline = time.monotonic() + 20
                 while time.monotonic() < deadline:
                     final_a = request_json(
@@ -239,7 +239,7 @@ class ServerIntegrationTests(unittest.TestCase):
                     "app_module": "s_initiative.application",
                     "ui_file": "initiative.html",
                     "css_file": "initiative.css",
-                    "storage_file": str(tmp_path / f"kanban_{port}.json"),
+                    "storage_file": str(tmp_path / f"initiative_{port}.json"),
                     "debug": True,
                 }
                 config_path = tmp_path / f"config_{port}.json"
@@ -264,7 +264,7 @@ class ServerIntegrationTests(unittest.TestCase):
                 add_relay(port_b, relay_root)
                 board_a = request_json(
                     "GET", f"http://127.0.0.1:{port_a}/api/initiative/board"
-                )["board"]
+                )["initiative"]
                 share = connect_over_relay(
                     port_a, port_b, board_a["uuid"], channel_a,
                 )
@@ -295,12 +295,12 @@ class ServerIntegrationTests(unittest.TestCase):
                     final_b = request_json(
                         "GET", f"http://127.0.0.1:{port_b}/api/initiative/board"
                     )
-                    if "Local Card" in card_names(final_b["board"]):
+                    if "Local Card" in card_names(final_b["initiative"]):
                         break
                     time.sleep(0.2)
 
-                self.assertIn("Local Card", card_names(final_a["board"]))
-                self.assertIn("Local Card", card_names(final_b["board"]))
+                self.assertIn("Local Card", card_names(final_a["initiative"]))
+                self.assertIn("Local Card", card_names(final_b["initiative"]))
             finally:
                 for process in processes:
                     process.terminate()
@@ -327,7 +327,7 @@ class ServerIntegrationTests(unittest.TestCase):
                     "app_module": "s_initiative.application",
                     "ui_file": "initiative.html",
                     "css_file": "initiative.css",
-                    "storage_file": str(tmp_path / f"kanban_{port}.json"),
+                    "storage_file": str(tmp_path / f"initiative_{port}.json"),
                     "debug": True,
                 }
                 config_path = tmp_path / f"config_{port}.json"
@@ -352,7 +352,7 @@ class ServerIntegrationTests(unittest.TestCase):
                 add_relay(port_b, relay_root)
                 board_a = request_json(
                     "GET", f"http://127.0.0.1:{port_a}/api/initiative/board"
-                )["board"]
+                )["initiative"]
                 share = connect_over_relay(
                     port_a, port_b, board_a["uuid"], channel_a,
                 )
@@ -412,12 +412,12 @@ class ServerIntegrationTests(unittest.TestCase):
                     final_b = request_json(
                         "GET", f"http://127.0.0.1:{port_b}/api/initiative/board"
                     )
-                    if find_card_parent(final_b["board"], "Moved Card") == target_uuid:
+                    if find_card_parent(final_b["initiative"], "Moved Card") == target_uuid:
                         break
                     time.sleep(0.2)
 
                 self.assertEqual(
-                    find_card_parent(final_b["board"], "Moved Card"),
+                    find_card_parent(final_b["initiative"], "Moved Card"),
                     target_uuid,
                 )
 
@@ -458,7 +458,7 @@ class ServerIntegrationTests(unittest.TestCase):
 
     def test_hub_joining_two_unrelated_boards_does_not_cross_introduce_peers(self):
         # Reproduces a real reported bug: A and C each have their own,
-        # unrelated board, on their own relay. B accepts an invitation from
+        # unrelated initiative, on their own relay. B accepts an invitation from
         # each, as two separate actions. A and C never share a relay and
         # never share a topic - so neither should ever learn about the
         # other, even though B legitimately knows both.
@@ -474,7 +474,7 @@ class ServerIntegrationTests(unittest.TestCase):
                     "app_module": "s_initiative.application",
                     "ui_file": "initiative.html",
                     "css_file": "initiative.css",
-                    "storage_file": str(tmp_path / f"kanban_{port}.json"),
+                    "storage_file": str(tmp_path / f"initiative_{port}.json"),
                     "debug": True,
                 }
                 config_path = tmp_path / f"config_{port}.json"
@@ -503,10 +503,10 @@ class ServerIntegrationTests(unittest.TestCase):
 
                 board_a = request_json(
                     "GET", f"http://127.0.0.1:{port_a}/api/initiative/board"
-                )["board"]
+                )["initiative"]
                 board_c = request_json(
                     "GET", f"http://127.0.0.1:{port_c}/api/initiative/board"
-                )["board"]
+                )["initiative"]
 
                 join_a = connect_over_relay(
                     port_a, port_b, board_a["uuid"], channel_a,
@@ -546,7 +546,7 @@ class ServerIntegrationTests(unittest.TestCase):
                 self.assertEqual(len(final_a["network"]["peer_addresses"]), 1)
                 self.assertEqual(len(final_c["network"]["peer_addresses"]), 1)
                 self.assertNotIn(
-                    board_c["uuid"], final_a["board"].get("children", []),
+                    board_c["uuid"], final_a["initiative"].get("children", []),
                 )
                 self.assertEqual(
                     final_a["network"]["peer_addresses"],

@@ -17,13 +17,14 @@
   --warning: #c68200;
   --blue: #0b63b6;
   --blue-dark: #84bbff;
+  --reached: #63b968;
 }
 
 /* Light theme. Only these tokens move - the rest of this file already reads
    every colour through them, which is what makes a second palette a block
    rather than a rewrite. The warm gray identity is kept: the same hue family
-   as the dark palette, lightened, so Kanban still does not look like the
-   Cockpit (U2). */
+   as the dark palette, lightened, so S-Initiative still does not look like
+   the Cockpit (U2). */
 :root[data-theme="light"] {
   color-scheme: light;
   --bg: #f3f2ef;
@@ -39,6 +40,7 @@
   --warning: #8a5a00;
   --blue: #0b63b6;
   --blue-dark: #0a4d8c;
+  --reached: #1f7a34;
 }
 
 * { box-sizing: border-box; }
@@ -152,26 +154,6 @@ button:hover { background: rgba(255, 255, 255, 0.08); border-color: var(--border
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.auto-adopt-header-control {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  border-radius: 6px;
-  padding: 4px 6px;
-}
-
-.auto-adopt-header-control:hover {
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.auto-adopt-header-label {
-  max-width: 90px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.2;
 }
 
 .brand-mark {
@@ -523,11 +505,20 @@ button.auto-adopt-square {
 .board {
   flex: 1;
   display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.board-columns {
   align-items: flex-start;
+  display: flex;
+  flex: 1;
   gap: 12px;
-  padding: 12px;
+  min-height: 0;
   overflow-x: auto;
   overflow-y: hidden;
+  padding: 12px;
 }
 
 .column {
@@ -541,25 +532,9 @@ button.auto-adopt-square {
   box-shadow: none;
 }
 
-.column.diff {
-  outline: 2px solid var(--warning);
-  position: relative;
-}
-
 .column.ghost {
   opacity: 0.78;
-  border: 1px dashed var(--border-strong);
 }
-
-/* One colour per stage of the exchange, not per relation: what a person
-   needs at a glance is whose turn it is, and the same situation must look
-   the same on both screens. Grey is still travelling, purple is mine and
-   waiting on them, amber is theirs and waiting on me, red is a real
-   two-sided conflict - the only one of the four to act on immediately. */
-.column.stage-in_flight { outline-color: #8c9bab; }
-.column.stage-awaiting_peer { outline-color: #6554c0; }
-.column.stage-awaiting_me { outline-color: #f59e0b; }
-.column.stage-conflict { outline-color: #de350b; }
 
 body.card-drag-pending,
 body.card-drag-pending * {
@@ -622,37 +597,6 @@ body.card-drag-active * {
   justify-content: flex-end;
 }
 
-.adopt {
-  border-color: var(--border-strong) !important;
-  color: var(--text) !important;
-  background: transparent !important;
-  cursor: pointer;
-  font-weight: 700;
-  width: auto;
-}
-
-/* Core draws the reaction control; these rules only lift it clear of the
-   generic ".card button" muting, which is more specific than Core's own
-   class and would otherwise grey out the one control a diverged card has. */
-.react-button {
-  color: var(--text);
-  cursor: pointer;
-  font-weight: 700;
-  width: auto;
-}
-
-.card button.react-button { color: var(--text); }
-
-.card button.react-button:hover,
-.card button.react-button:focus-visible {
-  border-color: var(--teal);
-  background: var(--teal-soft);
-  color: var(--text);
-}
-
-/* The menu itself is Core's (.ui-reaction-menu in shared.css) - only the
-   board's own trigger styling stays here. */
-
 .card-list {
   min-height: 18px;
   overflow-y: auto;
@@ -670,38 +614,8 @@ body.card-drag-active * {
   cursor: pointer;
 }
 
-.card.diff {
-  border-left: 4px solid var(--warning);
-}
-
 .card.ghost {
   background: rgba(255, 255, 255, 0.02);
-  border: 2px dashed rgba(255, 255, 255, 0.12);
-}
-/* In flight needs to be visible, not tasteful: this is the window where a
-   change has left but nobody has answered, and grey-on-grey made it look as
-   though nothing was happening at all. The pulse says "in progress" without
-   bringing back a badge that has to be decoded. */
-.card.stage-in_flight,
-.card.stage-awaiting_peer {
-  position: relative;
-}
-
-.card.stage-in_flight::after {
-  content: "";
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #4c9aff;
-  animation: stage-pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes stage-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.25; }
 }
 
 /* A ghost is only drawn once the other side has been seen still holding the
@@ -717,15 +631,9 @@ body.card-drag-active * {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .card.stage-in_flight::after { animation: none; }
   .card.ghost,
   .column.ghost { animation: none; }
 }
-
-.card.stage-in_flight { border-left-color: #4c9aff; }
-.card.stage-awaiting_peer { border-left-color: #6554c0; }
-.card.stage-awaiting_me { border-left-color: #f59e0b; }
-.card.stage-conflict { border-left-color: #de350b; }
 
 .card:hover {
   border-color: var(--border-strong);
@@ -913,3 +821,531 @@ menu button {
 }
 .attachment-delete:hover { color: var(--text); background: none; }
 .attachment-empty { color: var(--muted); font-size: 13px; margin: 0; }
+
+/* The two faces ------------------------------------------------------- */
+
+/* The board is display:flex, so [hidden] has to be said louder than the
+   rule that lays it out. */
+.board[hidden],
+.mandate-face[hidden] {
+  display: none;
+}
+
+/* In the content area, at its top left, beside the board's one-line
+   initiative summary. Not the shell bar: that row is destinations among
+   topics (U7). */
+.face-summary-row {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 12px;
+  padding: 8px 12px 0;
+}
+
+.face-switch {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 0;
+}
+
+.face-switch-item {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  padding: 4px 8px 6px;
+}
+
+.face-switch-item:hover {
+  color: var(--text);
+}
+
+.face-switch-item[aria-current="page"] {
+  border-bottom-color: var(--teal);
+  color: var(--text);
+}
+
+.mandate-face {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+/* Always open, directly under the page's own rule: the intention is the
+   answer to "what is this" and is the first thing said. */
+.mandate-head {
+  border-bottom: 1px solid var(--border);
+  margin: 0 auto;
+  max-width: 760px;
+  padding-bottom: 16px;
+}
+
+.mandate-intention-label {
+  font-size: 0.85rem;
+  margin: 0 0 6px;
+}
+
+.mandate-intention {
+  font-size: 1.15rem;
+  line-height: 1.5;
+  margin: 0 0 12px;
+}
+
+/* Planned, and claimed where claimed - one line, so the two faces do not
+   describe the same four fields in two vocabularies. */
+.mandate-dates {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0;
+}
+
+.mandate-date {
+  align-items: baseline;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.mandate-date-label {
+  font-size: 0.85rem;
+}
+
+.mandate-date-input {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  padding: 3px 6px;
+}
+
+.mandate-date-input:focus {
+  border-color: var(--teal);
+  outline: none;
+}
+
+.mandate-date-arrow {
+  color: var(--muted);
+}
+
+/* A claim, said and not offered for correction. */
+.mandate-claims {
+  color: var(--text);
+}
+
+/* Regions on the mandate ---------------------------------------------- */
+
+.mandate-region {
+  margin: 0 auto;
+  max-width: 760px;
+  padding-top: 20px;
+}
+
+.mandate-region-title {
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+.mandate-empty {
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+/* Content: edited in place, reordered, and lamped. */
+.need-row {
+  align-items: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+  padding: 8px 10px;
+}
+
+.need-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.need-text {
+  margin: 0;
+}
+
+.need-beneficiary {
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.88rem;
+  gap: 8px;
+  margin: 2px 0 0;
+}
+
+/* The live name sits beside the recorded label, never instead of it: the
+   two disagreeing is information. */
+.need-beneficiary-actor {
+  font-style: italic;
+  opacity: 0.85;
+}
+
+.need-actions {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.need-delete {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  padding: 2px 4px;
+}
+
+.need-delete:hover {
+  color: var(--warning);
+}
+
+/* The Approach -------------------------------------------------------- */
+
+.section-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.approach-section {
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+
+.approach-section-head {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.approach-section-title {
+  flex: 1;
+  font-size: 0.95rem;
+  margin: 0;
+  min-width: 0;
+}
+
+.approach-section-actions {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.clause-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0;
+}
+
+.clause-row {
+  align-items: baseline;
+  border-radius: 6px;
+  display: flex;
+  gap: 6px;
+  padding: 3px 4px;
+}
+
+.clause-row:hover {
+  background: var(--card-hover);
+}
+
+.clause-text {
+  flex: 1;
+  margin: 0;
+  min-width: 0;
+}
+
+.clause-actions {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
+/* Assessed impact ----------------------------------------------------- */
+
+.record-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.record-row {
+  background: var(--surface);
+  border-left: 2px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 8px 10px;
+  position: relative;
+}
+
+.record-text,
+.resource-availability {
+  margin: 0;
+}
+
+.record-meta {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 3px 0 0;
+}
+
+.record-delete {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  position: absolute;
+  right: 6px;
+  top: 6px;
+}
+
+/* Resources ----------------------------------------------------------- */
+
+.resource-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.resource-row {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 10px;
+}
+
+.resource-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 9px;
+}
+
+.resource-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.investment-record {
+  color: var(--muted);
+  font-size: 0.86rem;
+  margin: 4px 0;
+}
+
+/* Milestones on the mandate ------------------------------------------ */
+
+.milestone-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.milestone-block {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.milestone-head {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.milestone-title {
+  flex: 1;
+  font-size: 1rem;
+  margin: 0;
+  min-width: 0;
+}
+
+.milestone-date {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 3px 5px;
+}
+
+.milestone-reached {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 4px 0;
+}
+
+.milestone-intention {
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.milestone-intention h5 {
+  margin: 0;
+}
+
+.milestone-intention-text {
+  margin: 6px 0 0;
+}
+
+.milestone-assessments {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+/* The board/mandate seam --------------------------------------------- */
+
+.milestone-strip {
+  border-left: 1px solid var(--border-strong);
+  flex: 1;
+  margin-left: auto;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 0 0 4px 14px;
+}
+
+.milestone-strip[hidden] {
+  display: none;
+}
+
+.milestone-strip-content {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  min-width: 100%;
+  white-space: nowrap;
+  width: max-content;
+}
+
+.summary-segment {
+  font-size: 0.86rem;
+}
+
+.summary-segment strong {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.summary-separator,
+.summary-divider {
+  color: var(--muted);
+}
+
+/* The one control on the strip. Sized to sit inside a line of text rather
+   than to stand out from it. */
+
+.summary-planned-input {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+  padding: 1px 4px;
+}
+
+.summary-planned-input:hover {
+  border-color: var(--border-strong);
+}
+
+.summary-planned-input:focus {
+  border-color: var(--teal);
+  outline: none;
+}
+
+/* Which kind of date this is, beside the date itself. U8: the conventional
+   glyph and never an invented one, on the 24x24 grid, no fill, currentColor.
+   A tick reads as done anywhere, and a flag reads as something aimed at -
+   neither has to be learned.
+
+   The green is local. U2 reserves green for "agreed"/success across every
+   application, and Core defines no token for it; one caller is not enough to
+   guess what a shared one should be, so this moves to Core when a second
+   application marks something as done. */
+/* Inside the label, before the colon: it qualifies the name, not the date. */
+.date-mark,
+.summary-topic-mark {
+  align-items: center;
+  display: inline-flex;
+  margin-right: 3px;
+  vertical-align: -1px;
+}
+
+.author-scope-mark {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-right: 5px;
+  vertical-align: -2px;
+}
+
+.author-scope-mark .icon-svg {
+  height: 14px;
+  width: 14px;
+}
+
+.resource-identity {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+}
+
+.resource-identity .author-scope-mark,
+.comment-author .author-scope-mark,
+.attachment-meta .author-scope-mark {
+  margin-left: 5px;
+  margin-right: 0;
+}
+
+.summary-label {
+  align-items: center;
+  display: inline-flex;
+}
+
+.date-mark .icon-svg,
+.summary-topic-mark .icon-svg {
+  height: 13px;
+  width: 13px;
+}
+
+.date-mark.is-reached {
+  color: var(--reached);
+}
+
+.date-mark.is-planned {
+  color: var(--muted);
+}
+
+
+/* Empty means no claim yet, and should read as an invitation rather than as
+   a date somebody deleted. */
+.summary-planned-input:not([value]):not(:focus),
+.summary-planned-input[value=""]:not(:focus) {
+  border-style: dashed;
+}
+
+.summary-divider {
+  padding: 0 2px;
+}
+
+@media (max-width: 760px) {
+  .face-summary-row { gap: 8px; padding-left: 8px; padding-right: 8px; }
+  .milestone-head { align-items: flex-start; flex-wrap: wrap; }
+}

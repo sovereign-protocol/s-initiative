@@ -8,6 +8,7 @@ in the pull request that breaks it. Core and S-Cockpit hold theirs.
 
 import ast
 import importlib.metadata
+import re
 import unittest
 from importlib.resources import files
 from pathlib import Path
@@ -145,7 +146,7 @@ class BoundaryTests(unittest.TestCase):
             self.assertFalse(used & forbidden, str(path))
 
     def test_reads_the_transition_ranking_rather_than_copying_it(self):
-        # Kanban and Agreement had each copied Session's ranking and the
+        # S-Initiative and Agreement had each copied Session's ranking and the
         # copies drifted: one ranked divergence 6, the other 5, so the same
         # conflict surfaced differently in each. Session owns the ranking.
         for path in SOURCES:
@@ -193,54 +194,442 @@ class BoundaryTests(unittest.TestCase):
 
 class AssetTests(unittest.TestCase):
     def setUp(self):
-        self.kanban = files("s_initiative.assets").joinpath("initiative.html").read_text(
+        self.initiative = files("s_initiative.assets").joinpath("initiative.html").read_text(
             encoding="utf-8",
         )
         self.css = files("s_initiative.assets").joinpath("initiative.css").read_text(
             encoding="utf-8",
         )
 
+    # The two faces ------------------------------------------------------
+
+    def _function_body(self, name: str) -> str:
+        after = self.initiative.split(f"function {name}(", 1)[1]
+        return after.split("\n      function ", 1)[0]
+
+    def test_the_mandate_face_rebuilds_and_the_board_face_patches(self):
+        # DESIGN_INITIATIVE_UI.md 8. reconcileDOM needs a create/update pair
+        # per node type; the mandate face will have seven, and a pair
+        # falling out of step draws the old thing until something forces a
+        # rebuild - a silent bug class this codebase has already met. The
+        # board keeps the helper because drag-and-drop needs stable element
+        # identity across renders.
+        self.assertNotIn("reconcileDOM", self._function_body("renderMandate"))
+        self.assertIn("replaceChildren", self._function_body("renderMandate"))
+        self.assertIn("reconcileDOM", self._function_body("renderBoard"))
+
+    def test_the_mandate_face_does_not_rebuild_under_the_caret(self):
+        # The 1500ms poll empties the box mid-word otherwise.
+        body = self._function_body("renderMandate")
+        self.assertIn("document.activeElement", body)
+        self.assertIn("isContentEditable", body)
+
+    def test_the_mandate_face_skips_an_unchanged_payload_but_not_on_revision(self):
+        body = self._function_body("renderMandate")
+        self.assertIn("renderedMandateJson", body)
+        self.assertIn("mandateFingerprint(initiative)", body)
+        # Peer liveness is merged into the snapshot after it is read, so a
+        # transport change may not advance `revision` and the face would
+        # freeze. The JSON string is the honest comparison.
+        self.assertNotIn("revision", body)
+
+    def test_the_skip_covers_everything_the_mandate_draws_from(self):
+        # The regions below the head are built from the initiative's
+        # *children*, and the lamp and the beneficiary's live name come from
+        # peer state that never touches this tree. A fingerprint taken from
+        # `initiative.data` alone leaves a need somebody just added invisible
+        # until an unrelated edit moves the objective - which is what this
+        # was, until Needs arrived and made it wrong.
+        body = self._function_body("mandateFingerprint")
+        self.assertIn("initiative,", body)
+        self.assertIn("state.transition_by_node", body)
+        self.assertIn("state.users", body)
+        self.assertNotIn("initiative.data", body)
+
+    def test_needs_use_the_shared_composer_reorder_and_editor(self):
+        region = self._function_body("needsRegion")
+        self.assertIn("SovereignUI.reorderableList", region)
+        row = self._function_body("needRow")
+        self.assertIn("SovereignUI.reorderHandle", row)
+        self.assertIn("SovereignUI.editableText", row)
+        self.assertIn("SovereignUI.addComposer", self._function_body("needComposer"))
+
+    def test_a_need_carries_a_divergence_lamp(self):
+        # Content gets a lamp and a reaction control; the absence of one on a
+        # record is what tells the two apart, so this half has to be present.
+        row = self._function_body("needRow")
+        self.assertIn("reactionTools(need)", row)
+        self.assertIn("applyTransitionClass", row)
+
+    def test_reactable_nodes_are_decided_by_the_server(self):
+        body = self._function_body("needsReaction")
+        self.assertIn("reactable", body)
+        self.assertNotIn("auto_adopt_mode", body)
+        self.assertNotIn("autoAdoptAllowsNode", self.initiative)
+
+    def test_the_beneficiary_label_is_drawn_beside_the_live_name_not_replaced(self):
+        # S-Team's rule inverted: the beneficiary of a need is very often not
+        # an actor in this system at all, so the label is the primary fact.
+        # Where the uuid does resolve, both are drawn - the two disagreeing is
+        # information, and hiding one throws it away.
+        line = self._function_body("beneficiaryLine")
+        self.assertIn("beneficiary_label", line)
+        self.assertIn("actorName(need.data.beneficiary_actor_uuid)", line)
+        self.assertIn("line.append(label)", line)
+        self.assertIn("known here as", line)
+
+    def test_the_approach_arrives_collapsed_and_remembers_in_js(self):
+        # The longest region and the least often changed; S-Team learned in
+        # use that leading with the long text buried the team behind its own
+        # text. What is open lives in JS, because the poll rebuilds the face.
+        region = self._function_body("approachRegion")
+        self.assertIn("SovereignUI.disclosure", region)
+        self.assertIn("ephemeral.disclosures.approach", region)
+        self.assertNotIn("localStorage", region)
+
+    def test_a_clause_reorders_among_its_own_siblings_only(self):
+        # A drag that rewrote which section a line belongs to would be the
+        # interface deciding something the headings say.
+        block = self._function_body("sectionBlock")
+        self.assertIn('itemSelector: ".clause-row"', block)
+        self.assertIn("/api/initiative/clauses/move", block)
+        self.assertNotIn("parent_uuid", block.split("clauses/move", 1)[1][:400])
+
+    def test_nothing_marks_the_seeded_sections_as_special(self):
+        # They are ordinary content from the moment they exist, so the page
+        # must not know their names or treat them differently.
+        approach = self._function_body("approachRegion")
+        block = self._function_body("sectionBlock")
+        for seeded in ("Roadmap", "Risks & Chances"):
+            self.assertNotIn(seeded, approach)
+            self.assertNotIn(seeded, block)
+        self.assertIn("/api/initiative/sections/delete", block)
+        self.assertIn("SovereignUI.addComposer", approach)
+
+    def test_a_section_and_a_clause_carry_a_divergence_lamp(self):
+        block = self._function_body("sectionBlock")
+        row = self._function_body("clauseRow")
+        self.assertIn("reactionTools(section)", block)
+        self.assertIn("reactionTools(clause)", row)
+        self.assertIn("applyTransitionClass", block)
+        self.assertIn("applyTransitionClass", row)
+
+    def test_intention_is_one_field_at_both_scales(self):
+        head = self._function_body("mandateHead")
+        milestone = self._function_body("milestoneBlock")
+        self.assertIn('label.textContent = "Intention"', head)
+        self.assertIn("What is this initiative meant to change and for whom?", head)
+        self.assertIn('value: milestone.data.intention || ""', milestone)
+        self.assertNotIn("intendedImpactRegion", self.initiative)
+        self.assertNotIn("initiative_intent", self.initiative)
+
+    def test_records_show_author_and_date_without_content_affordances(self):
+        row = self._function_body("realityRow")
+        self.assertIn("author_actor_uuid", row)
+        self.assertIn("recordDate", row)
+        self.assertNotIn("editableText", row)
+        self.assertNotIn("reorder", row.lower())
+        self.assertNotIn("reactionTools", row)
+        self.assertIn("state.user_profile", row)
+        self.assertIn("authorScopeMark(author)", row)
+
+    def test_only_your_resource_line_has_a_composer_and_offline_is_last_seen(self):
+        row = self._function_body("resourceRow")
+        self.assertIn("if (mine)", row)
+        self.assertIn("SovereignUI.addComposer", row)
+        self.assertIn('"Last seen"', row)
+        self.assertIn("Earlier commitments", row)
+        self.assertIn("authorScopeMark", row)
+
+    def test_team_view_setting_uses_the_agreed_wording(self):
+        for label in (
+            "Review every change",
+            "Review changes involving me",
+            "Review changes I'm responsible for",
+            "Adopt every change automatically",
+            'autoAdoptHeading: "Team-view changes"',
+        ):
+            self.assertIn(label, self.initiative)
+        self.assertIn("Individual views and contributions", self.initiative)
+
+    def test_milestones_are_first_and_both_dates_are_editable_in_detail(self):
+        mandate = self._function_body("renderMandate")
+        self.assertLess(
+            mandate.index("milestonesRegion"), mandate.index("needsRegion"),
+        )
+        block = self._function_body("milestoneBlock")
+        self.assertIn("planned_at", block)
+        self.assertIn("reachedDate(milestone)", block)
+        strip = self._function_body("milestoneStripContent")
+        self.assertNotIn("/api/", strip)
+        self.assertNotIn("createElement(\"button\")", strip)
+
+    def test_the_board_summary_is_one_line_and_omits_missing_information(self):
+        strip = self._function_body("milestoneStripContent")
+        self.assertIn("milestoneNodes(initiative)", strip)
+        self.assertIn("next = milestones.find", strip)
+        self.assertNotIn("/api/", strip)
+        for placeholder in (
+            "No milestones", "All milestones", "not planned", "not dated",
+            "not stated",
+        ):
+            self.assertNotIn(placeholder, strip)
+        summary_css = self.css.split(".milestone-strip-content", 1)[1].split("}", 1)[0]
+        self.assertIn("white-space: nowrap", summary_css)
+        self.assertIn("justify-content: flex-end", summary_css)
+
+    def test_summary_prefers_actual_dates_and_uses_single_intention_fields(self):
+        initiative = self._function_body("initiativeSummarySegments")
+        self.assertIn("actual_start || initiative.data.planned_start", initiative)
+        self.assertIn("actual_end || initiative.data.planned_end", initiative)
+        self.assertIn("initiative.data.objective", initiative)
+        self.assertIn("summaryValueSegment(intention, intentionMark())", initiative)
+        milestone = self._function_body("milestoneSummarySegments")
+        self.assertIn("next.data.intention", milestone)
+        self.assertIn('next.data.title || "Milestone"', milestone)
+        self.assertIn("plannedMilestoneDate(next)", milestone)
+        strip = self._function_body("milestoneStripContent")
+        self.assertIn("item.data.reached_at", strip)
+        self.assertNotIn("const last", strip)
+        self.assertIn("milestone.data.reached_at", self._function_body("reachedDate"))
+
+    def test_summary_uses_the_same_three_part_grammar_for_both_scales(self):
+        initiative = self._function_body("initiativeSummarySegments")
+        milestone = self._function_body("milestoneSummarySegments")
+        # The Initiative reads start => intention => end. After the divider,
+        # only the next milestone remains: name/intention => planned date.
+        for label in ('"Start"', '"End"', "intentionMark()"):
+            self.assertIn(label, initiative)
+        self.assertNotIn('summarySegment("Intention"', milestone)
+        self.assertIn('next.data.title', milestone)
+        self.assertNotIn("last", milestone)
+        for retired in ('"Last"', '"Next"'):
+            self.assertNotIn(retired, milestone)
+        append = self._function_body("appendSummarySegments")
+        self.assertIn('separator.textContent = "⇒"', append)
+
+    def test_every_date_on_the_strip_says_which_kind_it_is(self):
+        # An actual replaces a planned date in the same position, so without
+        # a mark the line shows "we start on the 12th" and "we started on the
+        # 12th" identically.
+        initiative = self._function_body("initiativeSummarySegments")
+        self.assertIn("Boolean(initiative.data.actual_start)", initiative)
+        self.assertIn("Boolean(initiative.data.actual_end)", initiative)
+        milestone = self._function_body("milestoneSummarySegments")
+        self.assertIn("dateMark(false)", milestone)
+        segment = self._function_body("summarySegment")
+        self.assertLess(
+            segment.index("if (mark) name.append(mark)"),
+            segment.index("if (label instanceof Node)"),
+        )
+
+    def test_the_root_reaction_names_the_fields_it_will_take_back(self):
+        header = self._function_body("renderBoardAdoptTools")
+        self.assertIn('reactionTools(initiative, "review")', header)
+
+    def test_the_date_marks_are_conventional_glyphs_built_u8_s_way(self):
+        # U8: an act glyph is the conventional one and never invented, on the
+        # 24x24 grid with no fill and a currentColor stroke. Emoji would be
+        # none of those - full colour, platform-dependent, and deaf to
+        # currentColor.
+        marks = self.initiative.split("const DATE_MARKS", 1)[1].split("};", 1)[0]
+        self.assertIn("path", marks)
+        builder = self._function_body("dateMark")
+        self.assertIn('viewBox="0 0 24 24"', builder)
+        for emoji in ("🎯", "✅", "✓", "✔"):
+            self.assertNotIn(emoji, marks + builder)
+        # U2 reserves green for agreed/success; it is a token, not a literal.
+        self.assertIn("color: var(--reached)", self.css)
+        self.assertIn("--reached:", self.css)
+
+    def test_switching_to_the_mandate_actually_unhides_it(self):
+        switch = self._function_body("showFace")
+        self.assertIn('face !== "mandate"', switch)
+        self.assertNotIn('face !== "initiative"', switch)
+
+    def test_the_strip_carries_only_the_editable_next_planned_date(self):
+        segments = self._function_body("milestoneSummarySegments")
+        self.assertIn("plannedMilestoneDate(next)", segments)
+        self.assertNotIn("reachedDate", segments)
+        planned = self._function_body("plannedMilestoneDate")
+        self.assertIn("/api/initiative/milestones/update", planned)
+        self.assertIn('input.type = "date"', planned)
+
+        claim = self._function_body("reachedDate")
+        self.assertIn("/api/initiative/milestones/reach", claim)
+        # Planning is the Mandate's act and must not be reachable from here.
+        self.assertNotIn("/api/initiative/milestones/update", claim)
+        self.assertNotIn("set_dates", claim)
+
+    def test_the_claim_is_a_date_and_never_a_one_click_button(self):
+        # "We got there" is a claim about a day, and the day is usually not
+        # today. A one-click control would record the moment somebody looked
+        # instead of the moment it happened.
+        claim = self._function_body("reachedDate")
+        self.assertIn('input.type = "date"', claim)
+        self.assertIn("milestone.data.reached_at", claim)
+        self.assertNotIn("createElement(\"button\")", claim)
+        self.assertNotIn("Date.now", claim)
+        self.assertNotIn("new Date()", claim)
+
+    def test_a_reached_milestone_keeps_its_claim_editable_in_detail(self):
+        # Clearing one is undoing a claim rather than tidying a field, so the
+        # detailed control stays rather than hardening into text.
+        block = self._function_body("milestoneBlock")
+        self.assertIn("reachedDate(milestone)", block)
+        self.assertNotIn("reachedDate", self._function_body("milestoneSummarySegments"))
+
+    def test_the_mark_qualifies_the_name_and_not_the_date(self):
+        # "Prototype reached: 8 Apr" is what the line says. After the date it
+        # read as "8 Apr, reached", which qualifies the wrong word - the day
+        # is not the thing that was achieved.
+        segment = self._function_body("summarySegment")
+        mark = segment.index("name.append(mark)")
+        colon = segment.index('name.append(document.createTextNode(":"))')
+        self.assertLess(mark, colon, "the mark must sit before the colon")
+        self.assertIn("segment.append(name)", segment)
+        self.assertLess(colon, segment.index("segment.append(name)"))
+        # And it belongs to the label element, not to the value beside it.
+        self.assertIn("summary-label", segment)
+
+    def test_the_initiative_bookends_stay_read_only_on_the_strip(self):
+        # Only milestones are claimable here. The initiative's own two
+        # actuals are shown and not offered for editing on this line.
+        initiative_segments = self._function_body("initiativeSummarySegments")
+        self.assertIn("actual_start", initiative_segments)
+        self.assertIn("actual_end", initiative_segments)
+        self.assertNotIn("input", initiative_segments)
+        self.assertNotIn("claim_date", self.initiative)
+
+    def test_the_strip_does_not_rebuild_under_an_open_date_picker(self):
+        body = self._function_body("renderMilestoneStrip")
+        self.assertIn("document.activeElement", body)
+        self.assertIn("input, textarea, select", body)
+
+    def test_the_second_face_is_not_named_after_the_whole_topic(self):
+        # The topic is the initiative. A face called Initiative would give one
+        # word to a part and to the whole, which is the stutter 9 avoids
+        # elsewhere - and it is why the face's own identifiers say mandate
+        # while `state.initiative` stays what the face is showing.
+        self.assertIn('["mandate", "Mandate"]', self.initiative)
+        self.assertNotIn('"Initiative"]', self.initiative)
+
+    def test_the_face_switch_is_in_the_content_area_and_not_the_bar(self):
+        # U7: the bar's navigation row is destinations among topics, and a
+        # row where some items change topic and some change view teaches
+        # nothing about either. `setAppActions` is gone besides.
+        self.assertNotIn("setAppActions", self.initiative)
+        main = self.initiative.split("<main>", 1)[1].split("</main>", 1)[0]
+        self.assertIn('id="faceSwitch"', main)
+        self.assertIn('id="board"', main)
+        self.assertIn('id="mandate"', main)
+
+    def test_opening_lands_on_the_board_and_the_face_is_never_remembered(self):
+        # A remembered face means one link opens two different pages for two
+        # people, and the board is where the work is.
+        self.assertIn('face: "board"', self.initiative)
+        self.assertNotIn("localStorage", self.initiative)
+        self.assertNotIn("sessionStorage", self.initiative)
+        # And no second route parameter: `?topic=` is the only one Core
+        # composes routes from.
+        self.assertNotIn("?face=", self.initiative)
+        self.assertNotIn('params.get("face")', self.initiative)
+
+    def test_the_faces_are_hidden_by_a_rule_that_outranks_their_layout(self):
+        # .board is display:flex, so [hidden] has to be said louder.
+        self.assertIn(".board[hidden]", self.css)
+        self.assertIn(".mandate-face[hidden]", self.css)
+
+    def test_the_objective_is_edited_on_the_face_with_the_shared_editor(self):
+        head = self._function_body("mandateHead")
+        self.assertIn("SovereignUI.editableText", head)
+        self.assertIn("/api/initiative/initiatives/set_objective", head)
+
+    def test_a_claimed_date_is_said_and_never_offered_for_correction(self):
+        # Claiming happens on the day it is true, from the board. Clearing
+        # one is undoing a claim rather than tidying a field, so the
+        # mandate face must not draw it as another box to correct.
+        dates = self._function_body("mandateDates")
+        self.assertIn("actual_start", dates)
+        self.assertNotIn("claim_date", dates)
+        planned = self._function_body("plannedDate")
+        self.assertIn("/api/initiative/initiatives/set_dates", planned)
+        self.assertNotIn("actual_", planned)
+
     def test_topic_header_delegates_navigation_and_creation_to_the_shell(self):
-        self.assertNotIn("onCreateTopic", self.kanban)
-        self.assertIn("SovereignShell.setTopicSelector", self.kanban)
+        self.assertNotIn("onCreateTopic", self.initiative)
+        self.assertIn("SovereignShell.setTopicName", self.initiative)
+        # No list of this client's other initiatives in this application's bar.
+        # Reaching another initiative is the Cockpit's.
+        self.assertNotIn("initiatives.map", self.initiative)
+        self.assertNotIn("/api/initiative/initiatives/select", self.initiative.split(
+            "async function selectInitiativeFromUrl", 1,
+        )[0])
+
+    def test_the_page_only_reads_payload_keys_the_logic_writes(self):
+        # DESIGN_INITIATIVE_UI.md 8: the payload keys are a contract with the
+        # page and are not the node types. S-Team renamed both together once,
+        # in lockstep with its tests, and nothing failed while the page read
+        # `undefined` and drew an empty document beside a team that was there
+        # the whole time. Asserting it from the page's side is what makes half
+        # a rename fail here rather than in front of somebody.
+        source = (ROOT / "src" / "s_initiative" / "logic.py").read_text(
+            encoding="utf-8",
+        )
+        written = set()
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if node.name != "board_payload":
+                continue
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Return) and isinstance(inner.value, ast.Dict):
+                    written |= {
+                        key.value for key in inner.value.keys
+                        if isinstance(key, ast.Constant)
+                    }
+        self.assertIn("initiative", written)
+        read = set(re.findall(r"state\??\.([a-z_]+)", self.initiative))
+        self.assertTrue(read)
+        self.assertEqual(read - written, set())
 
     def test_people_and_add_actions_use_the_shared_ui_primitives(self):
-        self.assertIn("SovereignUI.avatar", self.kanban)
-        self.assertIn('add.textContent = "+ Add card"', self.kanban)
-        self.assertIn('addBtn.textContent = "+ Add column"', self.kanban)
+        self.assertIn("SovereignUI.avatar", self.initiative)
+        self.assertIn('add.textContent = "+ Add card"', self.initiative)
+        self.assertIn('addBtn.textContent = "+ Add column"', self.initiative)
 
     def test_column_and_agenda_text_use_the_shared_editor(self):
-        self.assertIn("SovereignUI.editableText", self.kanban)
-        self.assertIn('className = "column-name"', self.kanban)
-        self.assertNotIn('document.createElement("input")', self.kanban.split(
+        self.assertIn("SovereignUI.editableText", self.initiative)
+        self.assertIn('className = "column-name"', self.initiative)
+        self.assertNotIn('document.createElement("input")', self.initiative.split(
             "function renderColumn", 1,
         )[1].split("function renderCard", 1)[0])
-        self.assertIn("update: '/api/initiative/agenda/update'", self.kanban)
+        self.assertIn("update: '/api/initiative/agenda/update'", self.initiative)
 
     def test_columns_use_the_shared_horizontal_reorder_control(self):
-        self.assertIn("SovereignUI.reorderHandle", self.kanban)
-        self.assertIn("SovereignUI.reorderableList", self.kanban)
-        self.assertIn('axis: "horizontal"', self.kanban)
-        self.assertNotIn("draggedColumn", self.kanban)
-        self.assertNotIn("async function dropColumn", self.kanban)
+        self.assertIn("SovereignUI.reorderHandle", self.initiative)
+        self.assertIn("SovereignUI.reorderableList", self.initiative)
+        self.assertIn('axis: "horizontal"', self.initiative)
+        self.assertNotIn("draggedColumn", self.initiative)
+        self.assertNotIn("async function dropColumn", self.initiative)
 
     def test_assets_never_navigate_to_the_bare_root_with_a_query(self):
         # "/" serves whichever application is primary, so a root-relative link
         # lands somewhere that depends on host configuration. Cross-application
         # navigation must name the target's asset prefix.
-        for number, line in enumerate(self.kanban.splitlines(), start=1):
+        for number, line in enumerate(self.initiative.splitlines(), start=1):
             for pattern in ('href = `/?', 'href="/?', "href='/?"):
                 self.assertNotIn(pattern, line, f"initiative.html:{number}")
 
     def test_card_drop_always_clears_drag_styling(self):
-        drop = self.kanban.split(
+        drop = self.initiative.split(
             "async function commitCardDrop", 1,
         )[1].split("function onCardDragOver", 1)[0]
         self.assertIn('querySelector(".card.dragging")', drop)
         self.assertIn('classList.remove("dragging")', drop)
 
     def test_card_drag_has_preview_and_suppresses_text_selection(self):
-        card = self.kanban.split(
+        card = self.initiative.split(
             "function renderCard", 1,
         )[1].split("function isInteractiveCardTarget", 1)[0]
         self.assertIn("event.preventDefault()", card)

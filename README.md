@@ -1,9 +1,10 @@
 # S-Initiative
 
-S-Initiative is a local-first Kanban application built on Sovereign Core. Every
-participant keeps an explicit local perspective; differences are visible and
-resolved by human-controlled adopt or rollback reactions rather than silent
-central overwrites.
+S-Initiative is a local-first application for running initiatives, each
+organised as a Kanban board, built on Sovereign Core. Every participant keeps
+an explicit local perspective; differences are visible and resolved by
+human-controlled adopt or rollback reactions rather than silent central
+overwrites.
 
 ## Quickstart
 

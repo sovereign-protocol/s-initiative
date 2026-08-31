@@ -3,28 +3,37 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Kanban Board</title>
+    <title>S-Initiative</title>
     <link rel="stylesheet" href="/shared.css" />
     <link rel="stylesheet" href="/apps/initiative/styles.css" />
   </head>
   <body>
     <div id="toast" class="toast"></div>
-    <!-- The shell owns the bar. Kanban's own controls are handed to it:
-         the board title goes in the topic region, the auto-adopt indicator
-         and adopt tools in the application-actions slot. -->
+    <!-- The shell owns the bar and holds nothing of an application's (U7).
+         The initiative title goes in the topic region, and the adopt tools
+         beside it, because that is the thing they decide about. -->
     <header class="topbar"><div id="shell"></div></header>
 
-    <template id="kanbanHeaderControls">
+    <template id="initiativeHeaderControls">
       <div id="boardAdoptTools" class="adopt-tools"></div>
-      <div id="autoAdoptHeaderControl" class="auto-adopt-header-control">
-        <span id="autoAdoptIndicator" class="auto-adopt-square" title="Auto-adopt"></span>
-        <span id="autoAdoptHeaderLabel" class="auto-adopt-header-label"></span>
-      </div>
     </template>
 
 
     <main>
-      <section id="board" class="board"></section>
+      <!-- Two faces: the board is the next few days, the mandate is what
+           was agreed. Named Mandate and not Initiative because the topic is
+           already called the initiative, and one word for a part and for the
+           whole tells a reader nothing about either. The switch is in the
+           content area and not in the shell bar (U7) - the bar's navigation
+           row is destinations among topics. -->
+      <div class="face-summary-row">
+        <nav id="faceSwitch" class="face-switch"></nav>
+        <div id="milestoneStrip" class="milestone-strip"></div>
+      </div>
+      <section id="board" class="board">
+        <div id="boardColumns" class="board-columns"></div>
+      </section>
+      <section id="mandate" class="mandate-face" hidden></section>
     </main>
 
     <dialog id="cardModal">
@@ -96,48 +105,52 @@
       let modalLocalDraft = null;
       let modalReadOnlyPerspective = false;
 
-      const AUTO_ADOPT_MODES = ["always", "not_owner", "not_member", "never"];
+      // Which face is showing, and anything the mandate face is
+      // remembering about itself. In JS and never in the DOM: that face
+      // re-renders wholesale on every payload, so a surface trusted to hold
+      // its own open/closed state loses it every 1500ms, and DOM patching is
+      // not the fix for that.
+      //
+      // The face is not remembered across a reload. Opening lands on the
+      // board, every time - a remembered face means one link opens two
+      // different pages for two people.
+      const ephemeral = {
+        face: "board",
+        disclosures: {},
+        drafts: {},
+      };
+      // What the mandate face last drew, so an unchanged payload does not
+      // rebuild it. Deliberately not the node's `revision`: peer liveness is
+      // merged into the snapshot after it is read, so a transport change may
+      // not advance it and the face would freeze.
+      let renderedMandateJson = null;
+
+      // The stored values remain compatible with existing clients; the
+      // visible contract is framed around team-view changes. Individual
+      // views and contributions are author-owned and never enter this choice.
+      const AUTO_ADOPT_MODES = ["never", "not_member", "not_owner", "always"];
       const AUTO_ADOPT_LABELS = {
-        always: "Always",
-        not_owner: "Except cards I own",
-        not_member: "Except cards I'm on",
-        never: "Never",
+        never: "Review every change",
+        not_member: "Review changes involving me",
+        not_owner: "Review changes I'm responsible for",
+        always: "Adopt every change automatically",
       };
       const AUTO_ADOPT_FILL = { always: 4, not_owner: 2, not_member: 1, never: 0 };
       const AUTO_ADOPT_DESCRIPTIONS = {
-        always: "Peer changes are automatically adopted into every card.",
-        not_owner: "Peer changes are automatically adopted, except on cards you own.",
-        not_member: "Peer changes are automatically adopted, except on cards you're a member of.",
-        never: "Peer changes are never auto-adopted - you review and adopt each one yourself.",
+        never:
+          "Every team-view change waits for your review. Individual views and contributions are shared without adoption and remain owned by their author.",
+        not_member:
+          "Team-view changes involving you wait for review; other changes are adopted automatically. Individual views and contributions remain author-owned.",
+        not_owner:
+          "Team-view changes you are responsible for wait for review; other changes are adopted automatically. Individual views and contributions remain author-owned.",
+        always:
+          "Every team-view change is adopted automatically. Individual views and contributions remain author-owned.",
       };
 
       const el = (id) => document.getElementById(id);
 
-      function autoAdoptAllowsNode(node) {
-        const mode = state.auto_adopt_mode;
-        if (mode === "always") return true;
-        if (mode === "never") return false;
-        if (!node || node.data.type !== "kanban_card") return true;
-        const myId = (state.users || [])[0]?.id;
-        if (mode === "not_owner") return node.data.owner !== myId;
-        if (mode === "not_member") return !(node.data.participants || []).includes(myId);
-        return true;
-      }
-
-      function hasPendingDivergence(node) {
-        const info = transitionInfo(node.uuid);
-        return !!info && !["settled", "in_flight"].includes(info.stage);
-      }
-
-      function needsManualAdopt(node) {
-        if (!hasPendingDivergence(node)) return false;
-        const info = transitionInfo(node.uuid);
-        const autoResolvableType = info.type === "peer_made_changes" || info.type === "local_missing_node";
-        return !autoResolvableType || !autoAdoptAllowsNode(node);
-      }
-
       function needsReaction(node) {
-        return needsManualAdopt(node);
+        return Boolean(transitionInfo(node.uuid)?.reactable);
       }
 
       // A ghost is the seat a card has left: the position one side still
@@ -187,7 +200,7 @@
         if (!info || !["awaiting_peer", "conflict"].includes(info.stage)) {
           return false;
         }
-        const localNode = findNode(state.board, peerNode.uuid);
+        const localNode = findNode(state.initiative, peerNode.uuid);
         if (!localNode || localNode.deleted) return true;
         return localNode.parent_uuid !== peerNode.parent_uuid;
       }
@@ -198,13 +211,13 @@
         // node itself, as it always has.
         const info = transitionInfo(peerNode.uuid);
         if (!info || info.stage !== "awaiting_me") return false;
-        return !findNode(state.board, peerNode.uuid);
+        return !findNode(state.initiative, peerNode.uuid);
       }
 
       function currentSeatOf(node) {
         // The copy drawn solid for this uuid, or null when every side that
         // had it has let it go - a deletion nobody has answered yet.
-        const local = findNode(state.board, node.uuid);
+        const local = findNode(state.initiative, node.uuid);
         if (!local || local.deleted) return null;
         if (!movedByPeer(local)) return local;
         const peerNode = peerCopyOf(local);
@@ -215,7 +228,7 @@
         // A card drawn at the seat the peer moved it to is their copy. The
         // dialog compares versions and writes to ours, so it must be opened
         // on the local node even when the tile came from their tree.
-        const local = findNode(state.board, node.uuid);
+        const local = findNode(state.initiative, node.uuid);
         return local && !local.deleted ? local : node;
       }
 
@@ -230,7 +243,7 @@
         return (
           JSON.stringify(node.data) === JSON.stringify(peerNode.data) &&
           JSON.stringify(node.weights || {}) === JSON.stringify(peerNode.weights || {}) &&
-          (node.data.type === "kanban_board" || node.parent_uuid === peerNode.parent_uuid)
+          (node.data.type === "initiative" || node.parent_uuid === peerNode.parent_uuid)
         );
       }
 
@@ -248,27 +261,14 @@
       const api = SovereignApi.request;
 
       function renderNetwork() {
-        // The shell draws the cluster; Kanban only says which peers belong
-        // to this board and what each of them looks like.
+        // The shell draws the cluster; S-Initiative only says which peers
+        // belong to this initiative and what each of them looks like.
         SovereignShell.refresh();
       }
 
       function renderSelfAvatar() {
         // Core owns the profile, so the shell draws and edits the avatar.
         SovereignShell.refreshAvatar();
-      }
-
-      function renderAutoAdoptIndicator() {
-        const peers = boardPeerAddresses();
-        const control = el("autoAdoptHeaderControl");
-        control.style.display = peers.length ? "flex" : "none";
-        if (!peers.length) return;
-        const label = AUTO_ADOPT_LABELS[state.auto_adopt_mode] || "Always";
-        const indicator = el("autoAdoptIndicator");
-        renderAutoAdoptSquare(indicator);
-        indicator.title = `Auto-adopt: ${label} - click to change`;
-        el("autoAdoptHeaderLabel").textContent = `Auto-adopt: ${label}`;
-        control.title = `Auto-adopt: ${label} - click to change`;
       }
 
       function avatarElement(user, online) {
@@ -318,14 +318,6 @@
         return `${Math.floor(seconds / 86400)}d ago`;
       }
 
-      function selectBoard(boardUuid) {
-        if (!boardUuid || boardUuid === state.board.uuid) return;
-        run(
-          () => api("/api/initiative/boards/select", { board_uuid: boardUuid }),
-          "Board selected",
-        );
-      }
-
       const AGENDA_PRIORITY_LABELS = { "": "No priority", high: "High", medium: "Medium", low: "Low" };
 
       function highlightCard(uuid) {
@@ -337,24 +329,25 @@
         setTimeout(() => target.classList.remove("highlight-flash"), 1500);
       }
 
-      function boardUsers() {
-        const boardPeers = new Set(boardPeerAddresses());
+      function initiativeUsers() {
+        const initiativePeers = new Set(initiativePeerAddresses());
         return (state.users || []).filter(
-          (user) => user.address === state.address || boardPeers.has(user.address),
+          (user) => user.address === state.address || initiativePeers.has(user.address),
         );
       }
 
       function pickerCandidates() {
-        // New assignments are restricted to current board members, but
-        // someone already assigned before they (or we) left the board must
-        // stay visible here too - otherwise there's no way to ever remove
-        // that stale assignment again, since they'd never appear in the list.
-        const board = boardUsers();
-        const boardIds = new Set(board.map((user) => user.id));
+        // New assignments are restricted to current initiative members,
+        // but someone already assigned before they (or we) left the
+        // initiative must stay visible here too - otherwise there's no way to
+        // ever remove that stale assignment again, since they'd never appear
+        // in the list.
+        const members = initiativeUsers();
+        const memberIds = new Set(members.map((user) => user.id));
         const already = modalParticipants
-          .filter((id) => !boardIds.has(id))
+          .filter((id) => !memberIds.has(id))
           .map((id) => userForParticipant(id));
-        return [...board, ...already];
+        return [...members, ...already];
       }
 
       function renderUserPicker(containerId) {
@@ -403,50 +396,1064 @@
       }
 
       async function loadBoard() {
-        if (dragActive || el("board")?.dataset.reordering === "true") return;
+        if (dragActive || el("boardColumns")?.dataset.reordering === "true") return;
         try {
           state = await api("/api/initiative/board");
 
-          // Core owns the same title-plus-switcher control for every topic app.
-          SovereignShell.setTopicSelector({
-            label: "Board",
-            topics: (state.boards || []).map((board) => ({
-              uuid: board.uuid,
-              title: board.data.name || "Kanban Board",
-            })),
-            selectedUuid: state.board.uuid,
-            onSelect: selectBoard,
+          // Core owns the name of the topic in every application's bar.
+          // Reaching another initiative is the Cockpit's, not a list of
+          // this client's initiatives hidden in this one's header.
+          SovereignShell.setTopicName({
+            label: "Initiative",
+            title: state.initiative.data.name || "Initiative",
             onRename: (name) => run(
-              () => api("/api/initiative/boards/rename", {
-                board_uuid: state.board.uuid,
+              () => api("/api/initiative/initiatives/rename", {
+                initiative_uuid: state.initiative.uuid,
                 name,
               }),
-              "Board renamed",
+              "Initiative renamed",
             ),
           });
 
-          renderAutoAdoptIndicator();
           renderBoardAdoptTools();
 
           renderNetwork();
           renderSelfAvatar();
 
-          // Neues Rendering via Diffing
-          renderBoard();
+          renderFaceSwitch();
+          // One fetch, and only the face you are looking at is drawn. The
+          // two render differently on purpose (DESIGN_INITIATIVE_UI.md 8):
+          // the board patches because drag-and-drop needs stable element
+          // identity across renders, the mandate face rebuilds because a
+          // create/update pair per node type is a silent bug class this
+          // codebase has already met. This is the one place they meet.
+          if (ephemeral.face === "mandate") renderMandate();
+          else renderBoard();
         } catch (error) {
           showToast(error.message, true);
         }
       }
 
+      function showFace(face) {
+        ephemeral.face = face;
+        el("board").hidden = face !== "board";
+        el("mandate").hidden = face !== "mandate";
+        el("milestoneStrip").hidden = face !== "board";
+        // The face was hidden while the payload moved on, so the skip check
+        // below has nothing useful to compare against.
+        renderedMandateJson = null;
+        renderFaceSwitch();
+        if (face === "mandate") renderMandate();
+        else renderBoard();
+      }
+
+      // Two items, the current one marked. Named after the two objects the
+      // domain already has, so naming a face after the thing it shows needs
+      // no explanation (U8).
+      const FACES = [
+        ["board", "Board"],
+        ["mandate", "Mandate"],
+      ];
+
+      function renderFaceSwitch() {
+        const nav = el("faceSwitch");
+        nav.replaceChildren();
+        for (const [face, label] of FACES) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "face-switch-item";
+          button.textContent = label;
+          const current = ephemeral.face === face;
+          button.setAttribute("aria-current", current ? "page" : "false");
+          button.onclick = () => showFace(face);
+          nav.append(button);
+        }
+      }
+
+      // The mandate face rebuilds itself whole, and does not use
+      // reconcileDOM. DESIGN_INITIATIVE_UI.md 8 gives the reason: the helper
+      // needs a create/update pair per node type, this face will have seven,
+      // and a pair falling out of step draws the old thing until something
+      // forces a rebuild.
+      function renderMandate() {
+        const article = el("mandate");
+        // Never rebuild it while it is being typed into, or the 1500ms poll
+        // empties the box mid-word.
+        if (
+          article.contains(document.activeElement) &&
+          (document.activeElement.isContentEditable ||
+            document.activeElement.matches("input, textarea, select"))
+        ) return;
+        const initiative = state.initiative;
+        if (!initiative) {
+          article.replaceChildren();
+          renderedMandateJson = null;
+          return;
+        }
+        const encoded = mandateFingerprint(initiative);
+        if (encoded === renderedMandateJson) return;
+        renderedMandateJson = encoded;
+        article.replaceChildren(
+          mandateHead(initiative),
+          milestonesRegion(initiative),
+          needsRegion(initiative),
+          resourcesRegion(),
+          approachRegion(initiative),
+          assessedImpactRegion(initiative),
+        );
+      }
+
+      function milestoneNodes(initiative) {
+        return sortNodes(
+          (initiative?.children || []).filter(
+            (child) => !child.deleted && child.data.type === "initiative_milestone",
+          ),
+        );
+      }
+
+      function realityNodes(parent) {
+        return (parent?.children || [])
+          .filter((child) => !child.deleted && child.data.type === "initiative_reality")
+          .sort((left, right) =>
+            String(left.data.recorded_at || left.created_at || "").localeCompare(
+              String(right.data.recorded_at || right.created_at || ""),
+            ),
+          );
+      }
+
+      function recordDate(value) {
+        if (!value) return "";
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return value;
+        return date.toLocaleString(undefined, {
+          day: "numeric", month: "short", year: "numeric",
+          hour: "2-digit", minute: "2-digit",
+        });
+      }
+
+      const AUTHOR_SCOPE_MARK =
+        '<circle cx="12" cy="8" r="3.5"></circle>' +
+        '<path d="M5 21v-2a7 7 0 0 1 14 0v2"></path>';
+
+      function authorScopeMark(author, contribution = false) {
+        const mark = document.createElement("span");
+        mark.className = "author-scope-mark";
+        const kind = contribution ? "Author-owned contribution" : "Individual view";
+        mark.title = `${kind} by ${author || "unknown author"}. Only the author can change or remove it.`;
+        mark.setAttribute("aria-label", mark.title);
+        mark.setAttribute("role", "img");
+        mark.tabIndex = 0;
+        mark.innerHTML =
+          `<svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">` +
+          `${AUTHOR_SCOPE_MARK}</svg>`;
+        return mark;
+      }
+
+      function mandateRegion(title) {
+        const section = document.createElement("section");
+        section.className = "mandate-region";
+        const heading = document.createElement("h3");
+        heading.className = "mandate-region-title";
+        heading.textContent = title;
+        section.append(heading);
+        return section;
+      }
+
+      // Region 6. These are authored observations: appended in time, never
+      // edited or reordered, and never given a divergence lamp.
+      function assessedImpactRegion(initiative) {
+        const section = mandateRegion("Assessed Impact");
+        const list = document.createElement("div");
+        list.className = "record-list";
+        const records = realityNodes(initiative);
+        if (!records.length) {
+          const empty = document.createElement("p");
+          empty.className = "mandate-empty";
+          empty.textContent = "No assessments recorded yet.";
+          list.append(empty);
+        }
+        for (const reality of records) list.append(realityRow(reality));
+        section.append(list, realityComposer(initiative.uuid));
+        return section;
+      }
+
+      function realityComposer(parentUuid) {
+        return SovereignUI.addComposer({
+          noun: "assessment",
+          placeholder: "What happened?",
+          onSubmit: async (text) => {
+            await api("/api/initiative/realities/create", {
+              parent_uuid: parentUuid, text,
+            });
+            showToast("Assessment recorded");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        });
+      }
+
+      function realityRow(reality) {
+        const row = document.createElement("article");
+        row.className = "record-row";
+        const text = document.createElement("p");
+        text.className = "record-text";
+        text.textContent = reality.data.text || "";
+        const meta = document.createElement("p");
+        meta.className = "record-meta";
+        const author = actorName(reality.data.author_actor_uuid) || "Unknown actor";
+        meta.append(
+          authorScopeMark(author),
+          document.createTextNode(`${author} · ${
+            recordDate(reality.data.recorded_at || reality.created_at)
+          }`),
+        );
+        row.append(text, meta);
+        if (reality.data.author_actor_uuid === state.user_profile?.uuid) {
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.className = "record-delete";
+          remove.textContent = "Remove";
+          remove.onclick = () => run(
+            () => api("/api/initiative/realities/delete", {
+              reality_uuid: reality.uuid,
+            }),
+            "Assessment removed",
+          );
+          row.append(remove);
+        }
+        return row;
+      }
+
+      // Region 4. Membership comes from holding the topic. Each line shows
+      // the head of an immutable availability chain; only your line can append.
+      function resourcesRegion() {
+        const section = mandateRegion("Resources");
+        const list = document.createElement("div");
+        list.className = "resource-list";
+        for (const resource of state.resources || []) {
+          list.append(resourceRow(resource));
+        }
+        section.append(list);
+        return section;
+      }
+
+      function resourceRow(resource) {
+        const row = document.createElement("article");
+        row.className = "resource-row";
+        const user = resource.user || {};
+        const mine = resource.actor_uuid === state.user_profile?.uuid;
+        const presence = mine ? {online: true} : peerPresence(user.address);
+        const head = document.createElement("div");
+        head.className = "resource-head";
+        head.append(SovereignUI.avatar(user, {self: mine}));
+        const body = document.createElement("div");
+        body.className = "resource-body";
+        const name = document.createElement("strong");
+        name.textContent = user.name || "Unknown actor";
+        const identity = document.createElement("div");
+        identity.className = "resource-identity";
+        identity.append(name, authorScopeMark(user.name || "Unknown actor"));
+        body.append(identity);
+        if (resource.head) {
+          const availability = document.createElement("p");
+          availability.className = "resource-availability";
+          availability.textContent = resource.head.data.availability || "";
+          const meta = document.createElement("p");
+          meta.className = "record-meta";
+          meta.textContent = `${presence.online ? "Recorded" : "Last seen"} ${
+            recordDate(resource.head.data.recorded_at || resource.head.created_at)
+          }`;
+          body.append(availability, meta);
+        } else {
+          const empty = document.createElement("p");
+          empty.className = "record-meta";
+          empty.textContent = "No availability recorded";
+          body.append(empty);
+        }
+        head.append(body);
+        row.append(head);
+        if (mine && (resource.history || []).length) {
+          const disclosure = SovereignUI.disclosure("Earlier commitments", {
+            expanded: Boolean(ephemeral.disclosures[`resource-${resource.actor_uuid}`]),
+            onToggle: (open) => {
+              ephemeral.disclosures[`resource-${resource.actor_uuid}`] = open;
+            },
+          });
+          for (const item of resource.history) {
+            disclosure.content.append(investmentRecord(item));
+          }
+          row.append(disclosure.section);
+        }
+        if (mine) {
+          row.append(SovereignUI.addComposer({
+            noun: "availability",
+            placeholder: "What can you commit?",
+            onSubmit: async (availability) => {
+              await api("/api/initiative/investments/create", {
+                actor_uuid: resource.actor_uuid, availability,
+              });
+              showToast("Availability recorded");
+              await loadBoard();
+            },
+            onError: (error) => showToast(error.message, true),
+          }));
+        }
+        return row;
+      }
+
+      function investmentRecord(investment) {
+        const item = document.createElement("p");
+        item.className = "investment-record";
+        item.textContent = `${investment.data.availability || ""} · ${
+          recordDate(investment.data.recorded_at || investment.created_at)
+        }`;
+        return item;
+      }
+
+      // Region 1. Milestones and their single Intention are planned here;
+      // reached_at is shown here as a claim rather than an editable date.
+      function milestonesRegion(initiative) {
+        const section = mandateRegion("Milestones");
+        const list = document.createElement("div");
+        list.className = "milestone-list";
+        const milestones = milestoneNodes(initiative);
+        if (!milestones.length) {
+          const empty = document.createElement("p");
+          empty.className = "mandate-empty";
+          empty.textContent = "No milestones yet.";
+          list.append(empty);
+        }
+        for (const milestone of milestones) list.append(milestoneBlock(milestone));
+        SovereignUI.reorderableList({
+          container: list,
+          itemSelector: ".milestone-block",
+          getId: (block) => block.dataset.uuid,
+          onMove: ({id, index}) => api("/api/initiative/milestones/move", {
+            milestone_uuid: id, index,
+          }),
+          onChanged: async () => {
+            showToast("Milestone moved");
+            await loadBoard();
+          },
+          onError: error => showToast(error.message, true),
+        });
+        section.append(list, SovereignUI.addComposer({
+          noun: "milestone",
+          placeholder: "Milestone title",
+          onSubmit: async (title) => {
+            await api("/api/initiative/milestones/create", {title});
+            showToast("Milestone added");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }));
+        return section;
+      }
+
+      function milestoneBlock(milestone) {
+        const block = document.createElement("article");
+        block.className = "milestone-block";
+        block.dataset.uuid = milestone.uuid;
+        const head = document.createElement("header");
+        head.className = "milestone-head";
+        head.append(SovereignUI.reorderHandle({label: "Reorder milestone"}));
+        head.append(SovereignUI.editableText({
+          tag: "h4",
+          className: "milestone-title",
+          value: milestone.data.title || "",
+          placeholder: "Milestone title",
+          onCommit: (title) => api("/api/initiative/milestones/update", {
+            milestone_uuid: milestone.uuid, title,
+          }),
+          onChanged: async () => {
+            showToast("Milestone saved");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }));
+        const planned = document.createElement("input");
+        planned.type = "date";
+        planned.className = "milestone-date";
+        planned.value = milestone.data.planned_at || "";
+        planned.setAttribute("aria-label", "Planned date");
+        planned.title = "Planned date";
+        planned.onchange = () => run(
+          () => api("/api/initiative/milestones/update", {
+            milestone_uuid: milestone.uuid, planned_at: planned.value,
+          }),
+          "Milestone date saved",
+        );
+        head.append(planned, reachedDate(milestone), ...reactionTools(milestone));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "need-delete";
+        remove.textContent = "Remove";
+        remove.onclick = () => run(
+          () => api("/api/initiative/milestones/delete", {
+            milestone_uuid: milestone.uuid,
+          }),
+          "Milestone removed",
+        );
+        head.append(remove);
+        block.append(head);
+        const intention = document.createElement("div");
+        intention.className = "milestone-intention";
+        const label = document.createElement("h5");
+        label.textContent = "Intention";
+        intention.append(label, SovereignUI.editableText({
+          tag: "p",
+          className: "milestone-intention-text",
+          value: milestone.data.intention || "",
+          placeholder: "What should this milestone change and for whom?",
+          onCommit: (value) => api("/api/initiative/milestones/update", {
+            milestone_uuid: milestone.uuid, intention: value,
+          }),
+          onChanged: async () => {
+            showToast("Intention saved");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }));
+        const assessments = document.createElement("div");
+        assessments.className = "milestone-assessments";
+        for (const reality of realityNodes(milestone)) {
+          assessments.append(realityRow(reality));
+        }
+        assessments.append(realityComposer(milestone.uuid));
+        block.append(intention, assessments);
+        applyTransitionClass(block, milestone.uuid, {});
+        return block;
+      }
+
+      function sections(initiative) {
+        return sortNodes(
+          (initiative?.children || []).filter(
+            (child) => !child.deleted && child.data.type === "initiative_section",
+          ),
+        );
+      }
+
+      function clauses(parent) {
+        return sortNodes(
+          (parent?.children || []).filter(
+            (child) => !child.deleted && child.data.type === "initiative_clause",
+          ),
+        );
+      }
+
+      // Region 5, and it arrives collapsed. It is the longest region and the
+      // least often changed, and S-Team learned in use that leading with the
+      // long text buried the team behind its own text.
+      //
+      // The seeded sections are ordinary content from the moment they
+      // exist - renamable, reorderable, deletable, and a third added by the
+      // same composer. Nothing here marks them as special, because nothing
+      // about them is.
+      function approachRegion(initiative) {
+        const disclosure = SovereignUI.disclosure("Approach", {
+          className: "mandate-region",
+          expanded: Boolean(ephemeral.disclosures.approach),
+          onToggle: (open) => {
+            ephemeral.disclosures.approach = open;
+          },
+        });
+        const list = document.createElement("div");
+        list.className = "section-list";
+        for (const section of sections(initiative)) {
+          list.append(sectionBlock(section));
+        }
+        SovereignUI.reorderableList({
+          container: list,
+          itemSelector: ".approach-section",
+          getId: (block) => block.dataset.uuid,
+          onMove: ({id, index}) => api("/api/initiative/sections/move", {
+            section_uuid: id, index,
+          }),
+          onChanged: async () => {
+            showToast("Section moved");
+            await loadBoard();
+          },
+          onError: error => showToast(error.message, true),
+        });
+        disclosure.content.append(list, SovereignUI.addComposer({
+          noun: "section",
+          placeholder: "Section title",
+          onSubmit: async (title) => {
+            await api("/api/initiative/sections/create", {title});
+            showToast("Section added");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }));
+        return disclosure.section;
+      }
+
+      function sectionBlock(section) {
+        const block = document.createElement("article");
+        block.className = "approach-section";
+        block.dataset.uuid = section.uuid;
+
+        const head = document.createElement("header");
+        head.className = "approach-section-head";
+        head.append(SovereignUI.reorderHandle({label: "Reorder section"}));
+        head.append(SovereignUI.editableText({
+          tag: "h4",
+          className: "approach-section-title",
+          value: section.data.title || "",
+          placeholder: "Section title",
+          onCommit: (value) => api("/api/initiative/sections/rename", {
+            section_uuid: section.uuid,
+            title: value,
+          }),
+          onChanged: async () => {
+            showToast("Section renamed");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }));
+        const actions = document.createElement("div");
+        actions.className = "approach-section-actions";
+        actions.append(...reactionTools(section));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "need-delete";
+        remove.textContent = "Remove";
+        remove.onclick = () => run(
+          () => api("/api/initiative/sections/delete", {
+            section_uuid: section.uuid,
+          }),
+          "Section removed",
+        );
+        actions.append(remove);
+        head.append(actions);
+
+        const list = document.createElement("div");
+        list.className = "clause-list";
+        for (const clause of clauses(section)) list.append(clauseRow(clause));
+        // Within its own section and never across one: moving a line into a
+        // different section is deleting it there and writing it here, and a
+        // drag that quietly rewrote which section a line belongs to would be
+        // the interface deciding something the headings say.
+        SovereignUI.reorderableList({
+          container: list,
+          itemSelector: ".clause-row",
+          getId: (row) => row.dataset.uuid,
+          onMove: ({id, index}) => api("/api/initiative/clauses/move", {
+            clause_uuid: id, index,
+          }),
+          onChanged: async () => {
+            showToast("Clause moved");
+            await loadBoard();
+          },
+          onError: error => showToast(error.message, true),
+        });
+
+        block.append(head, list, SovereignUI.addComposer({
+          noun: "clause",
+          placeholder: "Add a line",
+          onSubmit: async (text) => {
+            await api("/api/initiative/clauses/create", {
+              parent_uuid: section.uuid, text,
+            });
+            showToast("Clause added");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }));
+        applyTransitionClass(block, section.uuid, {});
+        return block;
+      }
+
+      function clauseRow(clause) {
+        const row = document.createElement("div");
+        row.className = "clause-row";
+        row.dataset.uuid = clause.uuid;
+        row.append(SovereignUI.reorderHandle({label: "Reorder clause"}));
+        row.append(SovereignUI.editableText({
+          tag: "p",
+          className: "clause-text",
+          value: clause.data.text || "",
+          placeholder: "Say what is meant",
+          onCommit: (value) => api("/api/initiative/clauses/update", {
+            clause_uuid: clause.uuid,
+            text: value,
+          }),
+          onChanged: async () => {
+            showToast("Clause saved");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }));
+        const actions = document.createElement("div");
+        actions.className = "clause-actions";
+        actions.append(...reactionTools(clause));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "need-delete";
+        remove.textContent = "Remove";
+        remove.onclick = () => run(
+          () => api("/api/initiative/clauses/delete", {clause_uuid: clause.uuid}),
+          "Clause removed",
+        );
+        actions.append(remove);
+        row.append(actions);
+        applyTransitionClass(row, clause.uuid, {});
+        return row;
+      }
+
+      // Everything the face draws from, and nothing else. It has to be the
+      // whole node and not `initiative.data`: the regions below the head are
+      // built from its *children*, so keying the skip on the topic's own
+      // fields would leave a need somebody just added invisible until an
+      // unrelated edit happened to move the objective. Peer state counts too
+      // - the lamp comes from transition_by_node and the beneficiary's live
+      // name from users, and neither of those touches this tree at all.
+      function mandateFingerprint(initiative) {
+        return JSON.stringify([
+          initiative,
+          state.transition_by_node || {},
+          state.users || [],
+          state.resources || [],
+          state.network || {},
+        ]);
+      }
+
+      function needs(initiative) {
+        return sortNodes(
+          (initiative?.children || []).filter(
+            (child) => !child.deleted && child.data.type === "initiative_need",
+          ),
+        );
+      }
+
+      // Region 2. Content, so it is edited in place, reordered, and carries a
+      // divergence lamp - which is the half that tells it apart from a record
+      // further down the page.
+      function needsRegion(initiative) {
+        const section = document.createElement("section");
+        section.className = "mandate-region";
+        const heading = document.createElement("h3");
+        heading.className = "mandate-region-title";
+        heading.textContent = "Needs";
+        const list = document.createElement("div");
+        list.className = "need-list";
+        const items = needs(initiative);
+        if (!items.length) {
+          const empty = document.createElement("p");
+          empty.className = "mandate-empty";
+          empty.textContent = "No needs recorded yet.";
+          list.append(empty);
+        }
+        for (const need of items) list.append(needRow(need));
+        SovereignUI.reorderableList({
+          container: list,
+          itemSelector: ".need-row",
+          getId: (row) => row.dataset.uuid,
+          onMove: ({id, index}) => api("/api/initiative/needs/move", {
+            need_uuid: id, index,
+          }),
+          onChanged: async () => {
+            showToast("Need moved");
+            await loadBoard();
+          },
+          onError: error => showToast(error.message, true),
+        });
+        section.append(heading, list, needComposer());
+        return section;
+      }
+
+      function needRow(need) {
+        const row = document.createElement("div");
+        row.className = "need-row";
+        row.dataset.uuid = need.uuid;
+        row.append(SovereignUI.reorderHandle({label: "Reorder need"}));
+
+        const body = document.createElement("div");
+        body.className = "need-body";
+        body.append(SovereignUI.editableText({
+          tag: "p",
+          className: "need-text",
+          value: need.data.text || "",
+          placeholder: "What is being addressed?",
+          onCommit: (value) => api("/api/initiative/needs/update", {
+            need_uuid: need.uuid,
+            text: value,
+          }),
+          onChanged: async () => {
+            showToast("Need saved");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        }), beneficiaryLine(need));
+
+        const actions = document.createElement("div");
+        actions.className = "need-actions";
+        actions.append(...reactionTools(need));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "need-delete";
+        remove.textContent = "Remove";
+        remove.onclick = () => run(
+          () => api("/api/initiative/needs/delete", {need_uuid: need.uuid}),
+          "Need removed",
+        );
+        actions.append(remove);
+
+        row.append(body, actions);
+        applyTransitionClass(row, need.uuid, {});
+        return row;
+      }
+
+      // The label is the primary fact, because the beneficiary of a need is
+      // very often not an actor in this system at all. Where the uuid does
+      // resolve to somebody this client holds, the live name is drawn
+      // *beside* the label and not instead of it - the two disagreeing is
+      // information, so hiding one of them would throw it away.
+      function beneficiaryLine(need) {
+        const line = document.createElement("p");
+        line.className = "need-beneficiary";
+        const label = SovereignUI.editableText({
+          tag: "span",
+          className: "need-beneficiary-label",
+          value: need.data.beneficiary_label || "",
+          placeholder: "Whose need is it?",
+          onCommit: (value) => api("/api/initiative/needs/update", {
+            need_uuid: need.uuid,
+            beneficiary_label: value,
+          }),
+          onChanged: async () => {
+            showToast("Beneficiary saved");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        });
+        line.append(label);
+        const live = actorName(need.data.beneficiary_actor_uuid);
+        if (live && live !== (need.data.beneficiary_label || "")) {
+          const known = document.createElement("span");
+          known.className = "need-beneficiary-actor";
+          known.textContent = `known here as ${live}`;
+          line.append(known);
+        }
+        return line;
+      }
+
+      function actorName(actorUuid) {
+        if (!actorUuid) return "";
+        const user = (state.users || []).find((item) => item.id === actorUuid);
+        return user?.name || "";
+      }
+
+      function needComposer() {
+        return SovereignUI.addComposer({
+          noun: "need",
+          placeholder: "What is being addressed?",
+          onSubmit: async (text) => {
+            await api("/api/initiative/needs/create", {text});
+            showToast("Need added");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        });
+      }
+
+      // The head is not a disclosure. Intention and dates are always open:
+      // they are the answer to "what is this", and belong first on the face.
+      function mandateHead(initiative) {
+        const head = document.createElement("header");
+        head.className = "mandate-head";
+        const label = document.createElement("h2");
+        label.className = "mandate-intention-label";
+        label.textContent = "Intention";
+        const intention = SovereignUI.editableText({
+          tag: "p",
+          className: "mandate-intention",
+          value: initiative.data.objective || "",
+          placeholder: "What is this initiative meant to change and for whom?",
+          onCommit: (value) => api("/api/initiative/initiatives/set_objective", {
+            initiative_uuid: initiative.uuid,
+            objective: value,
+          }),
+          onChanged: async () => {
+            showToast("Intention saved");
+            await loadBoard();
+          },
+          onError: (error) => showToast(error.message, true),
+        });
+        head.append(label, intention, mandateDates(initiative));
+        return head;
+      }
+
+      // A team or flow named here is part of the Initiative's Mandate. It is
+      // shared domain content, unlike the local navigation shortcuts below
+      // the page title, and therefore carries the normal transition language.
+
+      function mandateDates(initiative) {
+        const row = document.createElement("p");
+        row.className = "mandate-dates";
+        const data = initiative.data || {};
+        const arrow = document.createElement("span");
+        arrow.className = "mandate-date-arrow";
+        arrow.textContent = "→";
+        row.append(
+          plannedDate(initiative, "planned_start", "Planned start"),
+          arrow,
+          plannedDate(initiative, "planned_end", "Planned end"),
+        );
+        // A claim is said here and never edited here. Claiming happens on
+        // the day it is true, from the board, and clearing one is undoing a
+        // claim rather than tidying a field - so the face must not draw it
+        // as another box to correct.
+        const claimed = [["actual_start", "Started"], ["actual_end", "Ended"]]
+          .filter(([field]) => data[field])
+          .map(([field, label]) => `${label} ${formatDay(data[field])}`);
+        if (claimed.length) {
+          const said = document.createElement("span");
+          said.className = "mandate-claims";
+          said.textContent = claimed.join(" · ");
+          row.append(said);
+        }
+        return row;
+      }
+
+      // Core's SovereignUI has no date primitive and one caller is not
+      // enough to guess the second one's needs, so this stays local until
+      // there is a second (PLAN_INITIATIVE_FACE.md 3).
+      function plannedDate(initiative, field, label) {
+        const wrap = document.createElement("label");
+        wrap.className = "mandate-date";
+        const caption = document.createElement("span");
+        caption.className = "mandate-date-label";
+        caption.textContent = label;
+        const input = document.createElement("input");
+        input.type = "date";
+        input.className = "mandate-date-input";
+        input.value = initiative.data?.[field] || "";
+        input.onchange = () => run(
+          () => api("/api/initiative/initiatives/set_dates", {
+            initiative_uuid: initiative.uuid,
+            [field]: input.value,
+          }),
+          input.value ? "Date planned" : "Date cleared",
+        );
+        wrap.append(caption, input);
+        return wrap;
+      }
+
+      function formatDay(iso) {
+        if (!iso) return "";
+        const day = new Date(`${iso}T00:00:00`);
+        if (Number.isNaN(day.getTime())) return iso;
+        return day.toLocaleDateString(undefined, {
+          day: "numeric", month: "short", year: "numeric",
+        });
+      }
+
+      function renderMilestoneStrip(initiative) {
+        const container = el("milestoneStrip");
+        if (
+          container.contains(document.activeElement) &&
+          document.activeElement.matches("input, textarea, select")
+        ) return;
+        const content = milestoneStripContent(initiative);
+        container.replaceChildren(content);
+        container.hidden = ephemeral.face !== "board" || !content.childElementCount;
+      }
+
+      function milestoneStripContent(initiative) {
+        const content = document.createElement("div");
+        content.className = "milestone-strip-content";
+        const milestones = milestoneNodes(initiative);
+        const next = milestones.find((item) => !item.data.reached_at) || null;
+
+        const initiativeSegments = initiativeSummarySegments(initiative);
+        const milestoneSegments = milestoneSummarySegments(next);
+        appendSummarySegments(content, initiativeSegments);
+        if (initiativeSegments.length && milestoneSegments.length) {
+          const divider = document.createElement("span");
+          divider.className = "summary-divider";
+          divider.textContent = "|";
+          content.append(divider);
+        }
+        appendSummarySegments(content, milestoneSegments);
+        return content;
+      }
+
+      function initiativeSummarySegments(initiative) {
+        const segments = [];
+        const intention = initiative.data.objective || "";
+        // An actual replaces a planned date in the same position, so without
+        // a mark beside it the line shows two different facts identically -
+        // "we start on the 12th" and "we started on the 12th" are not the
+        // same statement, and the strip was making them look the same.
+        if (initiative.data.actual_start || initiative.data.planned_start) {
+          segments.push(summarySegment(
+            "Start",
+            formatDay(initiative.data.actual_start || initiative.data.planned_start),
+            dateMark(Boolean(initiative.data.actual_start)),
+          ));
+        }
+        if (intention) {
+          segments.push(summaryValueSegment(intention, intentionMark()));
+        }
+        if (initiative.data.actual_end || initiative.data.planned_end) {
+          segments.push(summarySegment(
+            "End",
+            formatDay(initiative.data.actual_end || initiative.data.planned_end),
+            dateMark(Boolean(initiative.data.actual_end)),
+          ));
+        }
+        return segments;
+      }
+
+      // U8: an act glyph is the conventional one and never invented, drawn on
+      // the 24x24 grid with no fill and a currentColor stroke. A tick for a
+      // day somebody claimed; a flag for one still being aimed at.
+      const DATE_MARKS = {
+        reached: '<path d="M5 13l4 4L19 7"/>',
+        planned: '<path d="M6 21V4"/><path d="M6 5h12l-3 4 3 4H6"/>',
+      };
+      const INTENTION_MARK =
+        '<circle cx="12" cy="12" r="8"></circle>' +
+        '<circle cx="12" cy="12" r="4"></circle>' +
+        '<path d="M12 2v3M22 12h-3M12 22v-3M2 12h3"></path>';
+
+      function intentionMark() {
+        const mark = document.createElement("span");
+        mark.className = "summary-topic-mark";
+        mark.setAttribute("role", "img");
+        mark.setAttribute("aria-label", "Intention");
+        mark.title = "Intention";
+        mark.innerHTML =
+          `<svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">` +
+          `${INTENTION_MARK}</svg>`;
+        return mark;
+      }
+
+      function dateMark(reached) {
+        const kind = reached ? "reached" : "planned";
+        const mark = document.createElement("span");
+        mark.className = `date-mark is-${kind}`;
+        mark.setAttribute("role", "img");
+        mark.setAttribute("aria-label", reached ? "reached" : "planned");
+        mark.innerHTML =
+          `<svg viewBox="0 0 24 24" aria-hidden="true" class="icon-svg">` +
+          `${DATE_MARKS[kind]}</svg>`;
+        return mark;
+      }
+
+      // After the divider, only the next milestone remains: its own name,
+      // target-marked Intention, and an editable flag-marked planned date.
+      function milestoneSummarySegments(next) {
+        const segments = [];
+        if (!next) return segments;
+        segments.push(summarySegment(
+          next.data.title || "Milestone",
+          next.data.intention || "",
+          null,
+          next.data.intention ? intentionMark() : null,
+        ));
+        segments.push(summaryValueSegment(
+          plannedMilestoneDate(next), dateMark(false),
+        ));
+        return segments;
+      }
+
+      function plannedMilestoneDate(milestone) {
+        const input = document.createElement("input");
+        input.type = "date";
+        input.className = "summary-planned-input";
+        input.value = milestone.data.planned_at || "";
+        input.setAttribute(
+          "aria-label", `Planned date: ${milestone.data.title || "milestone"}`,
+        );
+        input.title = input.getAttribute("aria-label");
+        input.onchange = () => run(
+          () => api("/api/initiative/milestones/update", {
+            milestone_uuid: milestone.uuid,
+            planned_at: input.value,
+          }),
+          input.value ? "Milestone date saved" : "Milestone date cleared",
+        );
+        return input;
+      }
+
+      // A date and never a one-click "done" button. The milestone may have
+      // been reached before somebody records it, so the actual day remains an
+      // explicit field in the detailed milestone while the summary stays the
+      // compact next-milestone plan.
+      function reachedDate(milestone) {
+        const input = document.createElement("input");
+        input.type = "date";
+        input.className = "milestone-date milestone-reached-date";
+        input.value = milestone.data.reached_at || "";
+        input.setAttribute(
+          "aria-label", `Date reached: ${milestone.data.title || "milestone"}`,
+        );
+        input.title = input.getAttribute("aria-label");
+        input.onchange = () => run(
+          () => api("/api/initiative/milestones/reach", {
+            milestone_uuid: milestone.uuid,
+            value: input.value,
+          }),
+          input.value ? "Milestone reached" : "Claim taken back",
+        );
+        return input;
+      }
+
+      // A label mark qualifies the label (flag Start); a value mark qualifies
+      // the value (target Intention). The two positions make the icon's scope
+      // explicit without adding another word to the summary.
+      function summarySegment(label, value, mark = null, valueMark = null) {
+        const segment = document.createElement("span");
+        segment.className = "summary-segment";
+        const name = document.createElement("strong");
+        name.className = "summary-label";
+        if (mark) name.append(mark);
+        if (label instanceof Node) name.append(label);
+        else name.append(document.createTextNode(label));
+        const hasValue = value instanceof Node || String(value ?? "") !== "";
+        if (hasValue) name.append(document.createTextNode(":"));
+        segment.append(name);
+        // A segment carries either a fact or the one control on this line.
+        if (!hasValue) return segment;
+        if (valueMark) segment.append(" ", valueMark);
+        if (value instanceof Node) segment.append(" ", value);
+        else segment.append(document.createTextNode(` ${value}`));
+        return segment;
+      }
+
+      function summaryValueSegment(value, mark = null) {
+        const segment = document.createElement("span");
+        segment.className = "summary-segment summary-value-segment";
+        if (mark) segment.append(mark);
+        if (mark) segment.append(" ");
+        segment.append(value instanceof Node ? value : document.createTextNode(String(value ?? "")));
+        return segment;
+      }
+
+      function appendSummarySegments(container, segments) {
+        for (const segment of segments) {
+          if (container.lastElementChild?.classList.contains("summary-segment")) {
+            const separator = document.createElement("span");
+            separator.className = "summary-separator";
+            separator.textContent = "⇒";
+            container.append(separator);
+          }
+          container.append(segment);
+        }
+      }
+
       function renderBoard() {
-        const board = el("board");
+        renderMilestoneStrip(state.initiative);
+        const board = el("boardColumns");
 
         // Alle Spalten (regulär + ghost) aus dem State holen und markieren.
         // A column the peer has deleted stops being live here at once and is
         // left as a ghost, and ghosts sort in among the live columns rather
         // than after them - a ghost stands for a seat, so it belongs where
         // that seat was.
-        const activeCols = columns(state.board)
+        const activeCols = columns(state.initiative)
           .filter((column) => !movedByPeer(column))
           .map((c) => ({ ...c, _isGhost: false }));
         const ghostCols = ghostColumns().map((c) => ({ ...c, _isGhost: true }));
@@ -581,7 +1588,7 @@
           const rendered = renderParticipants(participantItems, card.data.owner);
           if (participantsEl) participantsEl.replaceWith(rendered);
           else {
-            const reactionEl = cardEl.querySelector(".react-button");
+            const reactionEl = cardEl.querySelector(".ui-react-button");
             cardEl.insertBefore(rendered, reactionEl || null);
           }
         } else if (participantsEl) {
@@ -590,7 +1597,7 @@
 
         // P2P Konflikt-Klassen aktualisieren (nutzt deine bestehende Helper-Funktion)
         applyTransitionClass(cardEl, card.uuid);
-        cardEl.querySelectorAll(".react-button, .adopt, .keep-mine-menu").forEach((button) => button.remove());
+        cardEl.querySelectorAll(".ui-react-button, .adopt, .keep-mine-menu").forEach((button) => button.remove());
         cardEl.append(...cardReactionTools(card, card._isGhost));
       }
 
@@ -680,7 +1687,6 @@
         const node = document.createElement("div");
         node.className = "card";
         if (ghost) node.classList.add("ghost");
-        applyTransitionClass(node, card.uuid);
         node.draggable = false;
         node.dataset.uuid = card.uuid;
         node.replaceChildren();
@@ -743,10 +1749,8 @@
                 node.classList.add("dragging");
                 document.body.classList.add("card-drag-active");
                 preview = node.cloneNode(true);
-                preview.classList.remove("dragging", "diff");
-                [...preview.classList]
-                  .filter((name) => name.startsWith("stage-"))
-                  .forEach((name) => preview.classList.remove(name));
+                preview.classList.remove("dragging");
+                SovereignUI.decorateTransition(preview, null);
                 preview.classList.add("card-drag-preview");
                 preview.setAttribute("aria-hidden", "true");
                 preview.style.width = `${startRect.width}px`;
@@ -781,6 +1785,7 @@
             document.addEventListener("mouseup", up);
           };
         }
+        applyTransitionClass(node, card.uuid);
         return node;
       }
 
@@ -845,23 +1850,28 @@
       function renderBoardAdoptTools() {
         const tools = el("boardAdoptTools");
         tools.replaceChildren();
-        const board = state.board;
-        if (!board) return;
-        // The board root inherits every descendant hash difference. Only
-        // offer a board-level decision when the board's own fields differ.
-        if (isContainerOnlyDivergence(board)) return;
-        tools.append(...reactionTools(board));
+        const initiative = state.initiative;
+        if (!initiative) return;
+        // The initiative root inherits every descendant hash difference. Only
+        // offer a root-level decision when the initiative's own fields differ.
+        if (isContainerOnlyDivergence(initiative)) return;
+        const marker = SovereignUI.transitionMarker(
+          transitionInfo(initiative.uuid),
+        );
+        if (marker) tools.append(marker);
+        tools.append(...reactionTools(initiative, "review"));
       }
 
       // The control itself is Core's - one available act reads as a button
       // naming it, several become a menu - so a divergence looks the same
-      // here, in the Cockpit and in the collaboration pane. Kanban decides
-      // only which nodes are offered one.
-      function reactionTools(node) {
+      // here, in the Cockpit and in the collaboration pane. S-Initiative
+      // decides only which nodes are offered one.
+      function reactionTools(node, density = "inline") {
         if (!needsReaction(node)) return [];
         const control = SovereignUI.reactionControl({
           info: transitionInfo(node.uuid),
-          className: "react-button",
+          density,
+          className: "initiative-react",
           onReact: (choice) => applyReaction(node.uuid, choice),
         });
         return control ? [control] : [];
@@ -882,15 +1892,12 @@
       }
 
       async function applyReaction(uuid, choice) {
-        const endpoint = choice.action === "rollback"
-          ? "/api/initiative/rollback"
-          : "/api/initiative/adopt";
-        await run(() => api(endpoint, {
+        await run(() => api("/api/initiative/react", {
           node_uuid: uuid,
           source_addr: choice.peerAddr,
-          adopt_absence: choice.action === "adopt" && choice.absent,
-          rollback_absence: choice.action === "rollback" && choice.absent,
-        }), choice.action === "rollback" ? "Rolled back" : "Adopted");
+          reaction: choice.action,
+          absent: choice.absent,
+        }), choice.action === "rollback" ? "Taken back" : "Adopted");
       }
 
       function openCard(card, columnUuid) {
@@ -923,7 +1930,7 @@
           key: "local",
           label: "Mine",
           node: card,
-          columnLabel: columnNameFor(state.board, card.parent_uuid),
+          columnLabel: columnNameFor(state.initiative, card.parent_uuid),
           absent: false,
         }];
         const events = (transitionInfo(card.uuid)?.events || [transitionInfo(card.uuid)])
@@ -989,7 +1996,7 @@
         const meta = el("cardPerspectiveMeta");
         meta.textContent = perspective?.absent
           ? `This card is absent from ${perspective.label}'s perspective.`
-          : `Column: ${perspective?.columnLabel || columnNameFor(state.board, modalColumn)}`;
+          : `Column: ${perspective?.columnLabel || columnNameFor(state.initiative, modalColumn)}`;
         el("saveCardBtn").style.display = isLocal ? "" : "none";
         el("deleteCardBtn").style.display = modalCard && isLocal ? "inline-block" : "none";
         renderCardPerspectiveSwitcher();
@@ -1036,6 +2043,7 @@
           const author = document.createElement("span");
           author.className = "comment-author";
           author.textContent = comment.author_label || "Unknown";
+          author.append(authorScopeMark(comment.author_label || "Unknown", true));
           const when = document.createElement("span");
           when.className = "comment-time";
           when.textContent = formatCommentTime(comment.created_at);
@@ -1126,8 +2134,11 @@
           link.title = `${file.name} (${file.mime})`;
           const meta = document.createElement("span");
           meta.className = "attachment-meta";
-          meta.textContent = formatFileSize(file.size)
-            + (file.author_label ? " · " + file.author_label : "");
+          meta.append(document.createTextNode(
+            formatFileSize(file.size)
+              + (file.author_label ? " · " + file.author_label : ""),
+          ));
+          meta.append(authorScopeMark(file.author_label || "Unknown", true));
           row.append(link, meta);
           if (file.author && file.author === myId) {
             const remove = document.createElement("button");
@@ -1145,7 +2156,8 @@
         if (!modalCard || !file) return;
         try {
           // Bytes go to Core's blob endpoint; only the reference goes to
-          // Kanban, so the application never handles the payload itself.
+          // S-Initiative, so the application never handles the payload
+          // itself.
           const response = await fetch("/api/blob", {
             method: "POST",
             headers: {
@@ -1327,11 +2339,11 @@
           await run(
             async () => {
               if (info?.stage === "awaiting_me") {
-                await api("/api/initiative/adopt", {
+                await api("/api/initiative/react", {
                   node_uuid: cardUuid,
                   source_addr: info.peer_addr,
-                  adopt_absence: false,
-                  rollback_absence: false,
+                  reaction: "adopt",
+                  absent: false,
                 });
               }
               return api("/api/initiative/cards/move", {
@@ -1371,9 +2383,9 @@
         ).child;
       }
 
-      function columns(board) {
+      function columns(initiative) {
         return sortNodes(
-          (board.children || []).filter((node) => node.data.type === "kanban_column" && !node.deleted),
+          (initiative.children || []).filter((node) => node.data.type === "kanban_column" && !node.deleted),
         );
       }
       function cards(column) {
@@ -1393,7 +2405,7 @@
         // authored the move is the one the transition names, so two peers
         // moving the same card cannot land it in two columns at once.
         const arrivals = new Map();
-        for (const column of columns(state.board)) {
+        for (const column of columns(state.initiative)) {
           for (const card of cards(column)) {
             if (!movedByPeer(card)) continue;
             const peerNode = peerCopyOf(card);
@@ -1409,10 +2421,10 @@
         const ghosts = new Map();
         // A column cannot change parent, so the only seat it leaves is the
         // one a deletion empties - ours when the peer deleted it.
-        for (const column of columns(state.board)) {
+        for (const column of columns(state.initiative)) {
           if (movedByPeer(column)) ghosts.set(column.uuid, column);
         }
-        for (const root of boardPeerRoots()) {
+        for (const root of initiativePeerRoots()) {
           for (const column of columns(root)) {
             if (ghosts.has(column.uuid)) continue;
             if (movedByMe(column) || peerOnlyNode(column)) {
@@ -1426,13 +2438,13 @@
         const ghosts = new Map();
         // The seat a card left when the peer moved or deleted it: our own
         // copy, still sitting here, no longer the current one.
-        const localColumn = findNode(state.board, columnUuid);
+        const localColumn = findNode(state.initiative, columnUuid);
         for (const card of cards(localColumn || { children: [] })) {
           if (movedByPeer(card)) ghosts.set(card.uuid, card);
         }
         // The seat the peer still gives a card after I moved or deleted it,
         // and cards only they hold - both drawn from their copy.
-        for (const root of boardPeerRoots()) {
+        for (const root of initiativePeerRoots()) {
           const peerColumn = findNode(root, columnUuid);
           for (const card of cards(peerColumn || { children: [] })) {
             if (ghosts.has(card.uuid)) continue;
@@ -1454,20 +2466,13 @@
         return (state.transition_by_node || {})[uuid] || null;
       }
       function applyTransitionClass(element, uuid, options = {}) {
-        element.classList.remove("diff");
-        [...element.classList]
-          .filter((name) => name.startsWith("stage-"))
-          .forEach((name) => element.classList.remove(name));
-        element.removeAttribute("title");
         delete element.dataset.transitionLabel;
         const info = transitionInfo(uuid);
-        if (!info || info.stage === "settled" || options.suppress) return;
-        // One border colour per stage, and nothing else. The badge said what
-        // relation the difference was, which is the one thing a person does
-        // not need at a glance - and it said "+" for a deletion, because it
-        // was keyed on the relation rather than on what actually changed.
-        element.classList.add("diff", `stage-${info.stage}`);
-        element.title = transitionLabel(info);
+        const visible = options.suppress ? null : info;
+        SovereignUI.decorateTransition(element, visible, {
+          perspective: element.classList.contains("ghost") ? "ghost" : "",
+        });
+        if (!visible || visible.stage === "settled") return;
         element.dataset.transitionLabel = transitionLabel(info);
       }
       function peerLabel(address) {
@@ -1495,17 +2500,17 @@
         // null if unknown. Purely informational, never affects behavior.
         return state.network?.peers?.[address]?.channel || null;
       }
-      function boardPeerAddresses() {
-        const boardUuid = state.board?.uuid;
-        if (!boardUuid) return [];
+      function initiativePeerAddresses() {
+        const initiativeUuid = state.initiative?.uuid;
+        if (!initiativeUuid) return [];
         return Object.entries(state.network?.peers || {})
-          .filter(([, info]) => (info.topic_uuids || []).includes(boardUuid))
+          .filter(([, info]) => (info.topic_uuids || []).includes(initiativeUuid))
           .map(([addr]) => addr);
       }
-      function boardPeerRoots() {
-        const boardUuid = state.board?.uuid;
-        return boardPeerAddresses()
-          .map((addr) => findNode(state.peers?.[addr], boardUuid))
+      function initiativePeerRoots() {
+        const initiativeUuid = state.initiative?.uuid;
+        return initiativePeerAddresses()
+          .map((addr) => findNode(state.peers?.[addr], initiativeUuid))
           .filter(Boolean);
       }
       function userForParticipant(participant) {
@@ -1589,31 +2594,32 @@
         }
       }
 
-      // The header indicator still opens the setting, which now lives in the
-      // shell's collaboration pane rather than this page's own panel.
-      // Hand the application's own header controls to the shell before it
-      // renders, so they land in its regions rather than beside it.
-      const kanbanControls = el("kanbanHeaderControls").content;
-      const adoptTools = kanbanControls.querySelector("#boardAdoptTools");
-      const autoAdoptIndicator = kanbanControls.querySelector("#autoAdoptHeaderControl");
+      // The adopt tools belong beside the initiative's name, which is the
+      // thing they decide about. The auto-adopt indicator that used to sit in
+      // the shell's right-hand slot is gone: a setting is not a header
+      // control, and it is read as a labelled row in the collaboration pane
+      // (U7).
+      const initiativeControls = el("initiativeHeaderControls").content;
+      const adoptTools = initiativeControls.querySelector("#boardAdoptTools");
 
       SovereignShell.mount({
         container: el("shell"),
         applicationId: "initiative",
-        topicUuid: () => state?.board?.uuid || "",
+        topicUuid: () => state?.initiative?.uuid || "",
         state: () => state || {},
-        // The pane is the shell's; Kanban supplies where its routes live and
-        // the two extra modes judged against card ownership, which Core
-        // stores without interpreting.
+        // The pane is the shell's; S-Initiative supplies the team-view
+        // vocabulary and the two selective modes, which Core stores without
+        // interpreting.
         agendaRoutes: {
-          topicKey: 'board_uuid',
+          topicKey: 'initiative_uuid',
           create: '/api/initiative/agenda/create',
           delete: '/api/initiative/agenda/delete',
           update: '/api/initiative/agenda/update',
           setPriority: '/api/initiative/agenda/set_priority',
           move: '/api/initiative/agenda/move',
         },
-        autoAdoptRoute: {path: '/api/initiative/auto_adopt', topicKey: 'board_uuid'},
+        autoAdoptRoute: {path: '/api/initiative/auto_adopt', topicKey: 'initiative_uuid'},
+        autoAdoptHeading: "Team-view changes",
         autoAdoptLabels: AUTO_ADOPT_LABELS,
         autoAdoptDescriptions: AUTO_ADOPT_DESCRIPTIONS,
         renderAutoAdoptIndicator: (container, mode) => {
@@ -1621,39 +2627,38 @@
           renderAutoAdoptSquare(container, mode);
         },
         describeNode: (uuid) => {
-          const node = findNode(state?.board, uuid);
+          const node = findNode(state?.initiative, uuid);
           return node ? (node.data.name || node.data.text || '') : '';
         },
         revealNode: (uuid) => highlightCard(uuid),
         reactNode: (uuid, choice) => applyReaction(uuid, choice),
         onChanged: () => loadBoard(),
       });
-      // The board-level decision sits with the board's name; the auto-adopt
-      // indicator is a setting for the application, so it stays on the right.
-      SovereignShell.setAppActions(autoAdoptIndicator);
       SovereignShell.setTopicActions(adoptTools);
 
-      el("autoAdoptHeaderControl").onclick = () => SovereignShell.openConnectionPanel();
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") SovereignShell.closeCollab();
       });
 
-      async function selectBoardFromUrl() {
+      // `topic` and not `initiative`: one name for "open this one", so the
+      // can compose a link to any application's topic without knowing what
+      // that application calls its topics.
+      async function selectInitiativeFromUrl() {
         const params = new URLSearchParams(window.location.search);
-        const boardUuid = params.get("board");
-        if (!boardUuid) return;
+        const initiativeUuid = params.get("topic");
+        if (!initiativeUuid) return;
         try {
-          await api("/api/initiative/boards/select", { board_uuid: boardUuid });
+          await api("/api/initiative/initiatives/select", { initiative_uuid: initiativeUuid });
         } catch (error) {
           showToast(error.message, true);
         }
-        params.delete("board");
+        params.delete("topic");
         const query = params.toString();
         window.history.replaceState({}, "", window.location.pathname + (query ? `?${query}` : ""));
       }
 
       setInterval(() => loadBoard(), 1500);
-      selectBoardFromUrl().then(loadBoard);
+      selectInitiativeFromUrl().then(loadBoard);
     </script>
   </body>
 </html>

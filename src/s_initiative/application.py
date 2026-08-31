@@ -16,9 +16,11 @@ APPLICATION_MANIFEST = ApplicationManifest(
     data_schema_version=1,
     asset_package="s_initiative.assets",
     icon=(
-        '<rect x="4" y="4" width="4" height="16" rx="1"></rect>'
-        '<rect x="10" y="4" width="4" height="11" rx="1"></rect>'
-        '<rect x="16" y="4" width="4" height="7" rx="1"></rect>'
+        # Two columns read as a board; three descending bars read as a
+        # bar chart (U8).
+        '<rect x="4" y="4" width="6" height="14" rx="2"></rect>'
+        '<rect x="14" y="4" width="6" height="8" rx="2"></rect>'
+        '<path d="M5.5 7.5h3"></path><path d="M15.5 7.5h3"></path>'
     ),
     ui_file="initiative.html",
     css_file="initiative.css",
@@ -31,9 +33,10 @@ def create_application(services: ApplicationServices) -> ApplicationInstance:
         dict(services.settings),
         services.collaboration,
     )
-    # The standalone Kanban product opens with one usable board. Bootstrap it
-    # during application activation; GET /api/initiative/board remains read-only.
-    logic.ensure_board()
+    # The standalone S-Initiative product opens with one usable initiative.
+    # Bootstrap it during application activation; GET /api/initiative/board
+    # remains read-only.
+    logic.ensure_initiative()
     return ApplicationInstance(
         manifest=APPLICATION_MANIFEST,
         logic=logic,

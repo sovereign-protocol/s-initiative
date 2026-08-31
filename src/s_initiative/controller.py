@@ -22,39 +22,185 @@ def build_routes(logic, runtime) -> list[Route]:
         data = await request.json()
         return await _json_result(
             runtime, logic.set_auto_adopt_mode(
-                data.get("mode", "always"), data.get("board_uuid"),
+                data.get("mode", "always"), data.get("initiative_uuid"),
             ),
         )
 
-    async def api_create_board(request: Request):
+    async def api_create_initiative(request: Request):
         data = await request.json()
         return await _json_result(
-            runtime, logic.create_board(data.get("name", "Kanban Board")),
+            runtime, logic.create_initiative(data.get("name", "Initiative")),
         )
 
-    async def api_select_board(request: Request):
+    async def api_select_initiative(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.select_board(data["board_uuid"]))
+        return await _json_result(runtime, logic.select_initiative(data["initiative_uuid"]))
 
-    async def api_rename_board(request: Request):
+    async def api_rename_initiative(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.rename_board(
-            data["board_uuid"], data.get("name", "Kanban Board"),
+        return await _json_result(runtime, logic.rename_initiative(
+            data["initiative_uuid"], data.get("name", "Initiative"),
         ))
 
-    async def api_set_board_objective(request: Request):
+    async def api_set_initiative_objective(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.set_board_objective(
-            data["board_uuid"], data.get("objective", ""),
+        return await _json_result(runtime, logic.set_initiative_objective(
+            data["initiative_uuid"], data.get("objective", ""),
         ))
 
-    async def api_copy_board(request: Request):
+    async def api_set_initiative_dates(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.copy_board(data["board_uuid"]))
+        # Absent means "leave it alone" and empty means "clear it", so the
+        # two ends can be planned one at a time.
+        return await _json_result(runtime, logic.set_initiative_dates(
+            data["initiative_uuid"],
+            data.get("planned_start"), data.get("planned_end"),
+        ))
 
-    async def api_delete_board(request: Request):
+    async def api_claim_initiative_date(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.delete_board(data["board_uuid"]))
+        return await _json_result(runtime, logic.claim_initiative_date(
+            data["initiative_uuid"], data.get("field", ""),
+            data.get("value", ""),
+        ))
+
+    async def api_copy_initiative(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.copy_initiative(data["initiative_uuid"]))
+
+    async def api_delete_initiative(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.delete_initiative(data["initiative_uuid"]))
+
+    async def api_create_need(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.create_need(
+            data.get("text", ""), data.get("beneficiary_label", ""),
+            data.get("beneficiary_actor_uuid", ""),
+        ))
+
+    async def api_update_need(request: Request):
+        data = await request.json()
+        # Absent means "leave it alone" and empty means "clear it", so one
+        # field can be rewritten without restating the others.
+        return await _json_result(runtime, logic.update_need(
+            data["need_uuid"], data.get("text"),
+            data.get("beneficiary_label"), data.get("beneficiary_actor_uuid"),
+        ))
+
+    async def api_delete_need(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.delete_need(data["need_uuid"]))
+
+    async def api_move_need(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.move_need(
+            data["need_uuid"], int(data.get("index", 0)),
+        ))
+
+    async def api_create_section(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.create_section(data.get("title", "")),
+        )
+
+    async def api_rename_section(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.rename_section(
+            data["section_uuid"], data.get("title", ""),
+        ))
+
+    async def api_delete_section(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.delete_section(data["section_uuid"]),
+        )
+
+    async def api_move_section(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.move_section(
+            data["section_uuid"], int(data.get("index", 0)),
+        ))
+
+    async def api_create_clause(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.create_clause(
+            data["parent_uuid"], data.get("text", ""),
+        ))
+
+    async def api_update_clause(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.update_clause(
+            data["clause_uuid"], data.get("text", ""),
+        ))
+
+    async def api_delete_clause(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.delete_clause(data["clause_uuid"]),
+        )
+
+    async def api_move_clause(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.move_clause(
+            data["clause_uuid"], int(data.get("index", 0)),
+        ))
+
+    async def api_create_reality(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.create_reality(
+            data["parent_uuid"], data.get("text", ""),
+        ))
+
+    async def api_delete_reality(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.delete_reality(data["reality_uuid"]),
+        )
+
+    async def api_create_investment(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.create_investment(
+            data.get("actor_uuid", ""), data.get("availability", ""),
+        ))
+
+    async def api_delete_investment(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.delete_investment(data["investment_uuid"]),
+        )
+
+    async def api_create_milestone(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.create_milestone(
+            data.get("title", ""), data.get("planned_at", ""),
+            data.get("intention", ""),
+        ))
+
+    async def api_update_milestone(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.update_milestone(
+            data["milestone_uuid"], data.get("title"), data.get("planned_at"),
+            data.get("intention"),
+        ))
+
+    async def api_delete_milestone(request: Request):
+        data = await request.json()
+        return await _json_result(
+            runtime, logic.delete_milestone(data["milestone_uuid"]),
+        )
+
+    async def api_move_milestone(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.move_milestone(
+            data["milestone_uuid"], int(data.get("index", 0)),
+        ))
+
+    async def api_reach_milestone(request: Request):
+        data = await request.json()
+        return await _json_result(runtime, logic.claim_milestone_reached(
+            data["milestone_uuid"], data.get("value", ""),
+        ))
 
     async def api_create_column(request: Request):
         data = await request.json()
@@ -136,26 +282,19 @@ def build_routes(logic, runtime) -> list[Route]:
             runtime, logic.delete_card_attachment(data["attachment_uuid"]),
         )
 
-    async def api_adopt(request: Request):
+    async def api_react(request: Request):
         data = await request.json()
-        return await _json_result(runtime, logic.accept_peer_node(
+        return await _json_result(runtime, logic.react_to_node(
             data["source_addr"],
             data["node_uuid"],
-            bool(data.get("adopt_absence")),
-        ))
-
-    async def api_rollback(request: Request):
-        data = await request.json()
-        return await _json_result(runtime, logic.rollback_peer_node(
-            data["source_addr"],
-            data["node_uuid"],
-            bool(data.get("rollback_absence")),
+            data.get("reaction", ""),
+            bool(data.get("absent")),
         ))
 
     async def api_create_agenda_item(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.create_agenda_item(
-            data.get("text", ""), data.get("priority"), data.get("board_uuid"),
+            data.get("text", ""), data.get("priority"), data.get("initiative_uuid"),
         ))
 
     async def api_delete_agenda_item(request: Request):
@@ -176,6 +315,7 @@ def build_routes(logic, runtime) -> list[Route]:
             data["item_uuid"], data.get("priority"),
         ))
 
+
     async def api_move_agenda_item(request: Request):
         data = await request.json()
         return await _json_result(runtime, logic.move_agenda_item(
@@ -185,12 +325,43 @@ def build_routes(logic, runtime) -> list[Route]:
     return [
         Route("/api/initiative/board", api_board),
         Route("/api/initiative/auto_adopt", api_auto_adopt, methods=["POST"]),
-        Route("/api/initiative/boards/create", api_create_board, methods=["POST"]),
-        Route("/api/initiative/boards/select", api_select_board, methods=["POST"]),
-        Route("/api/initiative/boards/rename", api_rename_board, methods=["POST"]),
-        Route("/api/initiative/boards/set_objective", api_set_board_objective, methods=["POST"]),
-        Route("/api/initiative/boards/copy", api_copy_board, methods=["POST"]),
-        Route("/api/initiative/boards/delete", api_delete_board, methods=["POST"]),
+        Route("/api/initiative/initiatives/create", api_create_initiative,
+              methods=["POST"]),
+        Route("/api/initiative/initiatives/select", api_select_initiative,
+              methods=["POST"]),
+        Route("/api/initiative/initiatives/rename", api_rename_initiative,
+              methods=["POST"]),
+        Route("/api/initiative/initiatives/set_objective",
+              api_set_initiative_objective, methods=["POST"]),
+        Route("/api/initiative/initiatives/set_dates",
+              api_set_initiative_dates, methods=["POST"]),
+        Route("/api/initiative/initiatives/claim_date",
+              api_claim_initiative_date, methods=["POST"]),
+        Route("/api/initiative/initiatives/copy", api_copy_initiative,
+              methods=["POST"]),
+        Route("/api/initiative/initiatives/delete", api_delete_initiative,
+              methods=["POST"]),
+        Route("/api/initiative/needs/create", api_create_need, methods=["POST"]),
+        Route("/api/initiative/needs/update", api_update_need, methods=["POST"]),
+        Route("/api/initiative/needs/delete", api_delete_need, methods=["POST"]),
+        Route("/api/initiative/needs/move", api_move_need, methods=["POST"]),
+        Route("/api/initiative/sections/create", api_create_section, methods=["POST"]),
+        Route("/api/initiative/sections/rename", api_rename_section, methods=["POST"]),
+        Route("/api/initiative/sections/delete", api_delete_section, methods=["POST"]),
+        Route("/api/initiative/sections/move", api_move_section, methods=["POST"]),
+        Route("/api/initiative/clauses/create", api_create_clause, methods=["POST"]),
+        Route("/api/initiative/clauses/update", api_update_clause, methods=["POST"]),
+        Route("/api/initiative/clauses/delete", api_delete_clause, methods=["POST"]),
+        Route("/api/initiative/clauses/move", api_move_clause, methods=["POST"]),
+        Route("/api/initiative/realities/create", api_create_reality, methods=["POST"]),
+        Route("/api/initiative/realities/delete", api_delete_reality, methods=["POST"]),
+        Route("/api/initiative/investments/create", api_create_investment, methods=["POST"]),
+        Route("/api/initiative/investments/delete", api_delete_investment, methods=["POST"]),
+        Route("/api/initiative/milestones/create", api_create_milestone, methods=["POST"]),
+        Route("/api/initiative/milestones/update", api_update_milestone, methods=["POST"]),
+        Route("/api/initiative/milestones/delete", api_delete_milestone, methods=["POST"]),
+        Route("/api/initiative/milestones/move", api_move_milestone, methods=["POST"]),
+        Route("/api/initiative/milestones/reach", api_reach_milestone, methods=["POST"]),
         Route("/api/initiative/columns/create", api_create_column, methods=["POST"]),
         Route("/api/initiative/columns/rename", api_rename_column, methods=["POST"]),
         Route("/api/initiative/columns/delete", api_delete_column, methods=["POST"]),
@@ -203,8 +374,7 @@ def build_routes(logic, runtime) -> list[Route]:
         Route("/api/initiative/cards/comments/delete", api_delete_card_comment, methods=["POST"]),
         Route("/api/initiative/cards/attachments/create", api_create_card_attachment, methods=["POST"]),
         Route("/api/initiative/cards/attachments/delete", api_delete_card_attachment, methods=["POST"]),
-        Route("/api/initiative/adopt", api_adopt, methods=["POST"]),
-        Route("/api/initiative/rollback", api_rollback, methods=["POST"]),
+        Route("/api/initiative/react", api_react, methods=["POST"]),
         Route("/api/initiative/agenda/create", api_create_agenda_item, methods=["POST"]),
         Route("/api/initiative/agenda/delete", api_delete_agenda_item, methods=["POST"]),
         Route("/api/initiative/agenda/update", api_update_agenda_item, methods=["POST"]),
