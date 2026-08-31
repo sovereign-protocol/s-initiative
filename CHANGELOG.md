@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0a6 - 2026-08-31
 
 - **The team and flows an initiative runs move to the header, and start
   actually sharing.** `initiative_relationship`, this application's own
